@@ -64,7 +64,7 @@ current spend. From then on:
   price), tool calls are denied with a reason. `/model opus` keeps the
   context and lifts the gate; `/governor:budget set 25` raises it.
 - `governor:implementer`, `governor:senior-implementer`,
-  `governor:test-implementer` (from py-testing) and `governor:scout` cannot
+  `py-testing:test-implementer` and `governor:scout` cannot
   finish without a report in their contract: `## Result` with
   DONE/PARTIAL/BLOCKED, `## Changed files`, `## Evidence` with the command on
   a `$ ` line and its output. The hook sends them back otherwise.
