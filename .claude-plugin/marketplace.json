@@ -1,7 +1,10 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "konyklabs-plugins",
-  "owner": {"name": "Oleg Konyk", "url": "https://olegkonyk.com"},
+  "owner": {
+    "name": "Oleg Konyk",
+    "url": "https://olegkonyk.com"
+  },
   "description": "Claude Code plugins for expensive-model sessions on a budget: the governor harness, and domain skills for Python test engineering.",
   "plugins": [
     {
@@ -13,8 +16,14 @@
     {
       "name": "py-testing",
       "source": "./plugins/py-testing",
-      "description": "Python test engineering skills — pytest project structure, Playwright API and browser tests, SQLAlchemy test fixtures — and the untangling workflow for large unmerged test suites.",
+      "description": "Python test engineering skills \u2014 pytest project structure, Playwright API and browser tests, SQLAlchemy test fixtures \u2014 and the untangling workflow for large unmerged test suites.",
       "category": "testing"
+    },
+    {
+      "name": "prod-readiness",
+      "source": "./plugins/prod-readiness",
+      "description": "Production-readiness and security-scanning checks: a categorized deterministic scan, summarized external scanners, and an auditor agent, ordered by observed impact.",
+      "category": "security"
     }
   ]
 }

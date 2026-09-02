@@ -5,8 +5,21 @@
   "packages": {
     ".": {
       "extra-files": [
-        {"type": "json", "path": "plugins/governor/.claude-plugin/plugin.json", "jsonpath": "$.version"},
-        {"type": "json", "path": "plugins/py-testing/.claude-plugin/plugin.json", "jsonpath": "$.version"}
+        {
+          "type": "json",
+          "path": "plugins/governor/.claude-plugin/plugin.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "json",
+          "path": "plugins/py-testing/.claude-plugin/plugin.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "json",
+          "path": "plugins/prod-readiness/.claude-plugin/plugin.json",
+          "jsonpath": "$.version"
+        }
       ]
     }
   }
