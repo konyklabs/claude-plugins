@@ -1,0 +1,733 @@
+"""Unit tests for the governor hook engine.
+
+Transcripts are synthesised in the shape Claude Code writes them (verified
+against a real session on 2.1.258): one JSONL line per content block, the
+message's usage repeated on each line, subagent transcripts under
+``<session>/subagents/agent-<id>.jsonl`` with a ``.meta.json`` beside each.
+"""
+import importlib.util
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+BIN = Path(__file__).resolve().parents[1] / "bin"
+spec = importlib.util.spec_from_file_location("governor", BIN / "governor.py")
+governor = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(governor)
+
+
+# --------------------------------------------------------------------------- helpers
+
+
+def usage(inp=0, out=0, w5=0, w1h=0, read=0):
+    return {
+        "input_tokens": inp,
+        "output_tokens": out,
+        "cache_creation_input_tokens": w5 + w1h,
+        "cache_read_input_tokens": read,
+        "cache_creation": {"ephemeral_5m_input_tokens": w5, "ephemeral_1h_input_tokens": w1h},
+    }
+
+
+def assistant_lines(msg_id, model, use, effort="xhigh", blocks=2, text="", tool_use=None, bash=None):
+    """The same message id and usage repeated once per content block."""
+    content = []
+    if text:
+        content.append({"type": "text", "text": text})
+    if tool_use:
+        content.append({"type": "tool_use", "id": tool_use[0], "name": tool_use[1], "input": {}})
+    if bash:
+        content.append({"type": "tool_use", "id": "tb", "name": "Bash", "input": {"command": bash}})
+    lines = []
+    for i in range(max(blocks, 1)):
+        lines.append(json.dumps({
+            "type": "assistant",
+            "effort": effort,
+            "message": {"id": msg_id, "model": model, "role": "assistant", "content": content, "usage": use},
+        }))
+    return lines
+
+
+def tool_result_line(tool_use_id, body):
+    return json.dumps({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": tool_use_id, "content": body}]}})
+
+
+@pytest.fixture
+def env(tmp_path, monkeypatch):
+    state = tmp_path / "state"
+    project = tmp_path / "project"
+    (project / ".claude").mkdir(parents=True)
+    monkeypatch.setenv("GOVERNOR_STATE_DIR", str(state))
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(project))
+    monkeypatch.delenv("GOVERNOR_CONFIG", raising=False)
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path / "home"))
+    (tmp_path / "home" / ".claude").mkdir(parents=True)
+    return {"state": state, "project": project, "tmp": tmp_path}
+
+
+def make_session(tmp: Path, sid="sess1", main_lines=(), agents=None):
+    """agents: {agent_id: (meta dict, [lines])}"""
+    tp = tmp / f"{sid}.jsonl"
+    tp.write_text("\n".join(main_lines) + ("\n" if main_lines else ""))
+    if agents:
+        sub = tmp / sid / "subagents"
+        sub.mkdir(parents=True, exist_ok=True)
+        for aid, (meta, lines) in agents.items():
+            (sub / f"agent-{aid}.jsonl").write_text("\n".join(lines) + "\n")
+            (sub / f"agent-{aid}.meta.json").write_text(json.dumps(meta))
+    return tp
+
+
+def ledger_for(tp: Path, sid="sess1"):
+    led = governor.Ledger(sid, governor.Pricing.load())
+    led.update(str(tp))
+    return led
+
+
+# --------------------------------------------------------------------------- pricing
+
+
+def test_pricing_resolves_longest_prefix_and_aliases():
+    p = governor.Pricing.load()
+    assert p.resolve("claude-fable-5-1") == "claude-fable-5-1"
+    assert p.resolve("claude-fable-5") == "claude-fable-5"
+    assert p.resolve("fable") == "claude-fable-5-1"
+    assert p.resolve("claude-sonnet-5") == "claude-sonnet-5"
+    assert p.resolve("no-such-model") is None
+
+
+def test_cost_uses_all_five_rates():
+    p = governor.Pricing.load()
+    u = usage(inp=1_000_000, out=1_000_000, w5=1_000_000, w1h=1_000_000, read=1_000_000)
+    assert p.cost_usd("claude-fable-5-1", u) == pytest.approx(10 + 50 + 12.5 + 20 + 0.25)
+    assert p.cost_usd("claude-sonnet-5", u) == pytest.approx(2 + 10 + 2.5 + 4 + 0.2)
+    # an unknown model is priced at the dearest known rate, never at zero
+    assert p.cost_usd("unknown-model", u) == pytest.approx(10 + 50 + 12.5 + 20 + 0.25)
+    assert p.priced_key("unknown-model") == ("claude-fable-5-1", False)
+
+
+def test_cost_falls_back_when_cache_creation_breakdown_is_absent():
+    p = governor.Pricing.load()
+    u = {"input_tokens": 0, "output_tokens": 0, "cache_creation_input_tokens": 1_000_000, "cache_read_input_tokens": 0}
+    assert p.cost_usd("claude-opus-5", u) == pytest.approx(6.25)
+
+
+# --------------------------------------------------------------------------- ledger
+
+
+def test_ledger_counts_each_message_once_despite_repeated_lines(env):
+    tp = make_session(env["tmp"], main_lines=assistant_lines("m1", "claude-fable-5-1", usage(out=1000), blocks=5))
+    led = ledger_for(tp)
+    t = led.state["models"]["claude-fable-5-1"]
+    assert t["messages"] == 1
+    assert t["output"] == 1000
+    assert led.main_model() == "claude-fable-5-1"
+    assert led.state["main_effort"] == "xhigh"
+
+
+def test_ledger_is_incremental_and_ignores_partial_trailing_line(env):
+    tp = make_session(env["tmp"], main_lines=assistant_lines("m1", "claude-fable-5-1", usage(out=100), blocks=1))
+    led = ledger_for(tp)
+    led.save()
+    with tp.open("a") as f:
+        f.write("\n".join(assistant_lines("m2", "claude-fable-5-1", usage(out=200), blocks=1)) + "\n")
+        f.write('{"type": "assistant", "message": {"id": "m3", "model": "claude-fable-5-1", "usage": {"output_tokens": 999')  # no newline
+    led2 = governor.Ledger("sess1", governor.Pricing.load())
+    led2.update(str(tp))
+    assert led2.state["models"]["claude-fable-5-1"]["output"] == 300
+    assert led2.state["models"]["claude-fable-5-1"]["messages"] == 2
+
+
+def test_ledger_reads_subagent_transcripts_and_flags_inherited_effort(env):
+    agents = {
+        "aimpl-1": ({"customAgentType": "implementer", "model": "sonnet"},
+                    assistant_lines("s1", "claude-sonnet-5", usage(out=5000), effort="xhigh", blocks=1)),
+    }
+    tp = make_session(env["tmp"], main_lines=assistant_lines("m1", "claude-fable-5-1", usage(out=100), blocks=1), agents=agents)
+    led = ledger_for(tp)
+    assert led.state["agents"]["aimpl-1"]["model"] == "claude-sonnet-5"
+    assert led.expensive_spend(governor.DEFAULTS) == pytest.approx(100 * 50 / 1e6)
+    assert led.total_spend() == pytest.approx(100 * 50 / 1e6 + 5000 * 10 / 1e6)
+    assert "inherited session effort?" in led.report(governor.DEFAULTS)
+
+
+def test_ledger_attributes_tool_result_bytes_to_tool_names(env):
+    lines = assistant_lines("m1", "claude-fable-5-1", usage(out=10), blocks=1, tool_use=("tu1", "Read"))
+    lines.append(tool_result_line("tu1", "x" * 5000))
+    lines += assistant_lines("m2", "claude-fable-5-1", usage(out=10), blocks=1, tool_use=("tu2", "Bash"))
+    lines.append(tool_result_line("tu2", [{"type": "text", "text": "y" * 100}]))
+    tp = make_session(env["tmp"], main_lines=lines)
+    led = ledger_for(tp)
+    assert led.state["tool_results"]["Read"] == 5000
+    assert led.state["tool_results"]["Bash"] > 100
+
+
+# --------------------------------------------------------------------------- config
+
+
+def test_config_precedence_and_project_files_only_tighten(env, monkeypatch):
+    (env["tmp"] / "home" / ".claude" / "governor.json").write_text(json.dumps({"budget_usd": 10, "worker_model": "haiku"}))
+    (env["project"] / ".claude" / "governor.json").write_text(json.dumps({"budget_usd": 2, "report_contracts": {"extra": "worker"}}))
+    cfg = governor.load_config(str(env["project"]))
+    assert cfg["budget_usd"] == 2  # a project may lower the budget
+    assert cfg["worker_model"] == "haiku"
+    assert cfg["report_contracts"]["extra"] == "worker"
+    assert cfg["report_contracts"]["implementer"] == "worker"  # dict merge keeps defaults
+    # a project may not raise it, allow forks, drop enforcement or empty the expensive list
+    (env["project"] / ".claude" / "governor.json").write_text(json.dumps(
+        {"budget_usd": 99, "allow_fork": True, "enforce_reports": False, "enforce_budget": False, "expensive_models": [], "max_expensive_spawns": 50}))
+    cfg = governor.load_config(str(env["project"]))
+    assert cfg["budget_usd"] == 10 and cfg["allow_fork"] is False and cfg["enforce_reports"] is True
+    assert cfg["enforce_budget"] is True and cfg["expensive_models"] == ["fable", "mythos"] and cfg["max_expensive_spawns"] == 3
+    assert len(cfg["_ignored"]) == 6 and all("loosen" in n for n in cfg["_ignored"])
+    # the user's own file may raise it for this project, and $GOVERNOR_CONFIG may set anything
+    (env["tmp"] / "home" / ".claude" / "governor.json").write_text(json.dumps(
+        {"budget_usd": 10, "projects": {str(env["project"].resolve()): {"budget_usd": 40, "allow_fork": True}}}))
+    cfg = governor.load_config(str(env["project"]))
+    assert cfg["budget_usd"] == 40 and cfg["allow_fork"] is True
+    override = env["tmp"] / "o.json"
+    override.write_text(json.dumps({"budget_usd": 3, "allow_fork": True}))
+    monkeypatch.setenv("GOVERNOR_CONFIG", str(override))
+    cfg = governor.load_config(str(env["project"]))
+    assert cfg["budget_usd"] == 3 and cfg["allow_fork"] is True
+
+
+def test_config_values_are_validated_not_trusted(env):
+    (env["project"] / ".claude" / "governor.json").write_text(
+        '{"budget_usd": null, "warn_at": "0.7", "allow_fork": "yes", "expensive_models": "fable", "worker_model": "fable", "nope": 1, "max_report_blocks": 1e999}')
+    cfg = governor.load_config(str(env["project"]))
+    assert cfg["budget_usd"] == 15.0 and cfg["warn_at"] == 0.7 and cfg["allow_fork"] is False
+    assert cfg["expensive_models"] == ["fable", "mythos"] and cfg["worker_model"] == "sonnet"
+    assert cfg["max_report_blocks"] == 2
+    assert len(cfg["_ignored"]) == 7
+    (env["project"] / ".claude" / "governor.json").write_text("not json")
+    cfg = governor.load_config(str(env["project"]))
+    assert cfg["budget_usd"] == 15.0 and any("unreadable" in n for n in cfg["_ignored"])
+
+
+# --------------------------------------------------------------------------- agent policy
+
+
+def fable_session(env):
+    return ledger_for(make_session(env["tmp"], main_lines=assistant_lines("m1", "claude-fable-5-1", usage(out=10), blocks=1)))
+
+
+def test_model_less_spawn_is_pinned_to_worker_model(env):
+    led = fable_session(env)
+    d = governor.agent_policy({"subagent_type": "general-purpose", "prompt": "do x"}, governor.DEFAULTS, led, str(env["project"]))
+    assert d["action"] == "rewrite"
+    assert d["updated_input"]["model"] == "sonnet"
+    assert d["updated_input"]["prompt"] == "do x"
+
+
+def test_inherit_is_treated_as_model_less(env):
+    led = fable_session(env)
+    d = governor.agent_policy({"subagent_type": "x", "model": "inherit", "prompt": "p"}, governor.DEFAULTS, led, str(env["project"]))
+    assert d["action"] == "rewrite"
+
+
+def test_explicit_cheap_model_passes_untouched(env):
+    led = fable_session(env)
+    d = governor.agent_policy({"subagent_type": "x", "model": "opus", "prompt": "p"}, governor.DEFAULTS, led, str(env["project"]))
+    assert d["action"] == "allow"
+    assert d["model"] == "opus"
+
+
+def test_project_agent_with_pinned_model_is_respected(env):
+    (env["project"] / ".claude" / "agents").mkdir()
+    (env["project"] / ".claude" / "agents" / "deep-reviewer.md").write_text("---\nname: deep-reviewer\nmodel: opus\n---\nbody\n")
+    led = fable_session(env)
+    d = governor.agent_policy({"subagent_type": "deep-reviewer", "prompt": "p"}, governor.DEFAULTS, led, str(env["project"]))
+    assert d["action"] == "allow" and d["model"] == "opus"
+
+
+def test_project_agent_with_inherit_is_pinned(env):
+    (env["project"] / ".claude" / "agents").mkdir()
+    (env["project"] / ".claude" / "agents" / "inh.md").write_text("---\nname: inh\nmodel: inherit\n---\nbody\n")
+    led = fable_session(env)
+    d = governor.agent_policy({"subagent_type": "inh", "prompt": "p"}, governor.DEFAULTS, led, str(env["project"]))
+    assert d["action"] == "rewrite"
+
+
+def test_plugin_own_agents_are_found_with_namespace_prefix(env):
+    led = fable_session(env)
+    d = governor.agent_policy({"subagent_type": "governor:scout", "prompt": "p"}, governor.DEFAULTS, led, str(env["project"]))
+    assert d["action"] == "allow"
+    assert d["model"] == "haiku"
+
+
+def test_fork_is_denied_by_default_and_allowed_by_config(env):
+    led = fable_session(env)
+    d = governor.agent_policy({"subagent_type": "fork", "prompt": "p"}, governor.DEFAULTS, led, str(env["project"]))
+    assert d["action"] == "deny" and "fork" in d["reason"]
+    cfg = dict(governor.DEFAULTS, allow_fork=True)
+    d = governor.agent_policy({"subagent_type": "fork", "prompt": "p"}, cfg, led, str(env["project"]))
+    assert d["action"] != "deny"
+
+
+def test_expensive_spawn_needs_a_brief(env):
+    led = fable_session(env)
+    d = governor.agent_policy({"subagent_type": "governor:architect", "prompt": "just think about it"}, governor.DEFAULTS, led, str(env["project"]))
+    assert d["action"] == "deny"
+    assert "## Question" in d["reason"] and "## Definition of done" in d["reason"]
+    brief = "## Question\nA or B?\n## Context\nsee src/x.py\n## Definition of done\nA decision with reasons."
+    d = governor.agent_policy({"subagent_type": "governor:architect", "prompt": brief}, governor.DEFAULTS, led, str(env["project"]))
+    assert d["action"] == "allow"
+
+
+def test_expensive_spawn_brief_size_cap(env):
+    led = fable_session(env)
+    brief = "## Question\nq\n## Context\n" + "x" * 9000 + "\n## Definition of done\nd"
+    d = governor.agent_policy({"subagent_type": "x", "model": "fable", "prompt": brief}, governor.DEFAULTS, led, str(env["project"]))
+    assert d["action"] == "deny" and "chars" in d["reason"]
+
+
+def test_expensive_spawn_count_cap(env):
+    led = fable_session(env)
+    led.state["expensive_spawns"] = 3
+    brief = "## Question\nq\n## Context\nc\n## Definition of done\nd"
+    d = governor.agent_policy({"subagent_type": "x", "model": "fable", "prompt": brief}, governor.DEFAULTS, led, str(env["project"]))
+    assert d["action"] == "deny" and "limit 3" in d["reason"]
+
+
+def test_always_pin_workers_false_lets_cheap_sessions_inherit(env):
+    tp = make_session(env["tmp"], main_lines=assistant_lines("m1", "claude-sonnet-5", usage(out=10), blocks=1))
+    led = ledger_for(tp)
+    cfg = dict(governor.DEFAULTS, always_pin_workers=False)
+    d = governor.agent_policy({"subagent_type": "general-purpose", "prompt": "p"}, cfg, led, str(env["project"]))
+    assert d["action"] == "allow"
+
+
+# --------------------------------------------------------------------------- pre-tool-use hook
+
+
+def hook_base(tp, sid="sess1"):
+    return {"session_id": sid, "transcript_path": str(tp), "cwd": ".", "hook_event_name": "PreToolUse"}
+
+
+def test_budget_gate_denies_when_expensive_spend_reaches_budget(env):
+    # 400k Fable output tokens = $20 > $15 default budget
+    tp = make_session(env["tmp"], main_lines=assistant_lines("m1", "claude-fable-5-1", usage(out=400_000), blocks=1))
+    led = governor.Ledger("sess1", governor.Pricing.load())
+    out = governor.h_pre_tool_use(dict(hook_base(tp), tool_name="Read", tool_input={"file_path": "x"}), governor.DEFAULTS, led, str(env["project"]))
+    assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "/model opus" in out["hookSpecificOutput"]["permissionDecisionReason"]
+
+
+def test_budget_gate_lifts_after_model_switch(env):
+    lines = assistant_lines("m1", "claude-fable-5-1", usage(out=400_000), blocks=1)
+    lines += assistant_lines("m2", "claude-opus-5", usage(out=10), blocks=1)
+    tp = make_session(env["tmp"], main_lines=lines)
+    led = governor.Ledger("sess1", governor.Pricing.load())
+    out = governor.h_pre_tool_use(dict(hook_base(tp), tool_name="Read", tool_input={}), governor.DEFAULTS, led, str(env["project"]))
+    assert out == {}
+
+
+def test_budget_warning_fires_once(env):
+    # 220k output tokens = $11 = 73% of $15
+    tp = make_session(env["tmp"], main_lines=assistant_lines("m1", "claude-fable-5-1", usage(out=220_000), blocks=1))
+    led = governor.Ledger("sess1", governor.Pricing.load())
+    out = governor.h_pre_tool_use(dict(hook_base(tp), tool_name="Read", tool_input={}), governor.DEFAULTS, led, str(env["project"]))
+    assert "systemMessage" in out
+    out2 = governor.h_pre_tool_use(dict(hook_base(tp), tool_name="Read", tool_input={}), governor.DEFAULTS, led, str(env["project"]))
+    assert out2 == {}
+
+
+def test_under_budget_non_agent_tool_is_silent(env):
+    tp = make_session(env["tmp"], main_lines=assistant_lines("m1", "claude-fable-5-1", usage(out=10), blocks=1))
+    led = governor.Ledger("sess1", governor.Pricing.load())
+    out = governor.h_pre_tool_use(dict(hook_base(tp), tool_name="Bash", tool_input={"command": "ls"}), governor.DEFAULTS, led, str(env["project"]))
+    assert out == {}
+
+
+def test_agent_rewrite_goes_out_as_updated_input(env):
+    tp = make_session(env["tmp"], main_lines=assistant_lines("m1", "claude-fable-5-1", usage(out=10), blocks=1))
+    led = governor.Ledger("sess1", governor.Pricing.load())
+    out = governor.h_pre_tool_use(dict(hook_base(tp), tool_name="Agent", tool_input={"subagent_type": "general-purpose", "prompt": "p", "description": "d"}), governor.DEFAULTS, led, str(env["project"]))
+    hso = out["hookSpecificOutput"]
+    assert "permissionDecision" not in hso
+    assert hso["updatedInput"]["model"] == "sonnet"
+    assert led.state["spawns"][-1]["action"] == "rewrite"
+
+
+def test_expensive_spawn_increments_counter_only_when_allowed(env):
+    tp = make_session(env["tmp"], main_lines=assistant_lines("m1", "claude-fable-5-1", usage(out=10), blocks=1))
+    led = governor.Ledger("sess1", governor.Pricing.load())
+    brief = "## Question\nq\n## Context\nc\n## Definition of done\nd"
+    governor.h_pre_tool_use(dict(hook_base(tp), tool_name="Agent", tool_input={"subagent_type": "x", "model": "fable", "prompt": "no brief"}), governor.DEFAULTS, led, str(env["project"]))
+    assert led.state["expensive_spawns"] == 0
+    governor.h_pre_tool_use(dict(hook_base(tp), tool_name="Agent", tool_input={"subagent_type": "x", "model": "fable", "prompt": brief}), governor.DEFAULTS, led, str(env["project"]))
+    assert led.state["expensive_spawns"] == 1
+
+
+# --------------------------------------------------------------------------- report contracts
+
+GOOD_WORKER = """## Result
+DONE
+
+## Changed files
+- src/a.py
+
+## Evidence
+```
+$ pytest -q tests/test_a.py
+3 passed in 0.4s
+```
+"""
+
+
+def test_worker_report_contract():
+    assert governor.report_problems(GOOD_WORKER, "worker") == []
+    assert any("Result" in p for p in governor.report_problems("## Changed files\n- a\n## Evidence\n```\n$ x\nok\n```", "worker"))
+    assert any("DONE" in p for p in governor.report_problems("## Result\nit went fine\n## Changed files\nnone\n## Evidence\n```\n$ x\nok\n```", "worker"))
+    assert any("Evidence" in p for p in governor.report_problems("## Result\nDONE\n## Changed files\nnone\n## Evidence\ntests pass, trust me", "worker"))
+    assert any("'$ '" in p for p in governor.report_problems("## Result\nDONE\n## Changed files\nnone\n## Evidence\n```\n3 passed\n```", "worker"))
+    assert governor.report_problems("## Result: BLOCKED\nwhy\n## Changed files\nnone\n## Evidence\n```\n$ pytest\n1 failed\n```", "worker") == []
+
+
+def test_scout_and_reviewer_contracts():
+    assert governor.report_problems("## Findings\n- src/x.py:12 does y", "scout") == []
+    assert governor.report_problems("## Findings\n- somewhere in the code", "scout")
+    ok = 'done\n```json\n{"findings": [{"file": "a.py", "failure_scenario": "x"}]}\n```'
+    assert governor.report_problems(ok, "reviewer") == []
+    assert governor.report_problems('```json\n{"findings": [{"file": "a.py"}]}\n```', "reviewer")
+    assert governor.report_problems('no json at all', "reviewer")
+
+
+def test_subagent_stop_blocks_then_gives_up(env):
+    agents = {"aimpl-1": ({"customAgentType": "implementer"}, assistant_lines("s1", "claude-sonnet-5", usage(out=5), blocks=1, text="I finished, tests pass."))}
+    tp = make_session(env["tmp"], main_lines=assistant_lines("m1", "claude-fable-5-1", usage(out=10), blocks=1), agents=agents)
+    led = governor.Ledger("sess1", governor.Pricing.load())
+    hook = {"session_id": "sess1", "transcript_path": str(tp), "agent_id": "aimpl-1", "hook_event_name": "SubagentStop"}
+    out1 = governor.h_subagent_stop(hook, governor.DEFAULTS, led)
+    assert out1["decision"] == "block" and "Evidence" in out1["reason"]
+    out2 = governor.h_subagent_stop(hook, governor.DEFAULTS, led)
+    assert out2["decision"] == "block"
+    out3 = governor.h_subagent_stop(hook, governor.DEFAULTS, led)
+    assert "decision" not in out3 and "systemMessage" in out3
+
+
+def test_subagent_stop_accepts_good_report_and_ignores_unknown_agents(env):
+    agents = {
+        "aimpl-2": ({"customAgentType": "governor:implementer"}, assistant_lines("s1", "claude-sonnet-5", usage(out=5), blocks=1, text=GOOD_WORKER, bash="pytest -q tests/test_a.py")),
+        "aother": ({"customAgentType": "researcher"}, assistant_lines("s2", "claude-sonnet-5", usage(out=5), blocks=1, text="whatever")),
+    }
+    tp = make_session(env["tmp"], main_lines=assistant_lines("m1", "claude-fable-5-1", usage(out=10), blocks=1), agents=agents)
+    led = governor.Ledger("sess1", governor.Pricing.load())
+    assert governor.h_subagent_stop({"session_id": "sess1", "transcript_path": str(tp), "agent_id": "aimpl-2"}, governor.DEFAULTS, led) == {}
+    assert governor.h_subagent_stop({"session_id": "sess1", "transcript_path": str(tp), "agent_id": "aother"}, governor.DEFAULTS, led) == {}
+
+
+def test_subagent_stop_uses_agent_type_and_transcript_from_hook_when_present(env):
+    tp = make_session(env["tmp"], main_lines=assistant_lines("m1", "claude-fable-5-1", usage(out=10), blocks=1))
+    at = env["tmp"] / "elsewhere.jsonl"
+    at.write_text("\n".join(assistant_lines("s9", "claude-sonnet-5", usage(out=5), blocks=1, text="no report")) + "\n")
+    led = governor.Ledger("sess1", governor.Pricing.load())
+    out = governor.h_subagent_stop({"session_id": "sess1", "transcript_path": str(tp), "agent_id": "zzz", "agent_type": "scout", "agent_transcript_path": str(at)}, governor.DEFAULTS, led)
+    assert out["decision"] == "block" and "Findings" in out["reason"]
+
+
+# --------------------------------------------------------------------------- session hooks and CLI
+
+
+def test_session_start_injects_policy_and_readout(env):
+    tp = make_session(env["tmp"], main_lines=[])
+    led = governor.Ledger("sess1", governor.Pricing.load())
+    out = governor.h_session_start({"session_id": "sess1", "transcript_path": str(tp)}, governor.DEFAULTS, led)
+    ctx = out["hookSpecificOutput"]["additionalContext"]
+    assert "[governor]" in ctx and "governor" in ctx.lower()
+    assert out["hookSpecificOutput"]["hookEventName"] == "SessionStart"
+
+
+def test_session_end_appends_history(env):
+    tp = make_session(env["tmp"], main_lines=assistant_lines("m1", "claude-fable-5-1", usage(out=1000), blocks=1))
+    led = governor.Ledger("sess1", governor.Pricing.load())
+    governor.h_session_end({"session_id": "sess1", "transcript_path": str(tp), "reason": "exit"}, governor.DEFAULTS, led)
+    rows = [json.loads(l) for l in (env["state"] / "history.jsonl").read_text().splitlines()]
+    assert rows[-1]["main_model"] == "claude-fable-5-1"
+    assert rows[-1]["expensive_usd"] == pytest.approx(0.05)
+
+
+def run_cli(env, args, stdin=None):
+    return subprocess.run([sys.executable, str(BIN / "governor.py"), *args], input=stdin, capture_output=True, text=True,
+                          env={**os.environ, "GOVERNOR_STATE_DIR": str(env["state"]), "CLAUDE_PROJECT_DIR": str(env["project"]), "HOME": str(env["tmp"] / "home")})
+
+
+def test_cli_hook_roundtrip_and_fail_open(env):
+    tp = make_session(env["tmp"], main_lines=assistant_lines("m1", "claude-fable-5-1", usage(out=10), blocks=1))
+    r = run_cli(env, ["pre-tool-use"], stdin=json.dumps({"session_id": "sess1", "transcript_path": str(tp), "tool_name": "Agent", "tool_input": {"subagent_type": "fork", "prompt": "p"}}))
+    assert r.returncode == 0
+    assert json.loads(r.stdout)["hookSpecificOutput"]["permissionDecision"] == "deny"
+    r = run_cli(env, ["pre-tool-use"], stdin="not json")
+    assert r.returncode == 0 and r.stdout.strip() in ("", "{}")
+    r = run_cli(env, ["no-such-event"], stdin="{}")
+    assert r.returncode == 2
+
+
+def test_cli_status_and_budget(env):
+    tp = make_session(env["tmp"], main_lines=assistant_lines("m1", "claude-fable-5-1", usage(out=1000), blocks=1))
+    run_cli(env, ["user-prompt"], stdin=json.dumps({"session_id": "sess1", "transcript_path": str(tp), "prompt": "hi"}))
+    r = run_cli(env, ["status"])
+    assert "claude-fable-5-1" in r.stdout and "Budget" in r.stdout
+    r = run_cli(env, ["budget", "set", "42"])
+    assert r.returncode == 0, r.stdout + r.stderr
+    user_file = json.loads((env["tmp"] / "home" / ".claude" / "governor.json").read_text())
+    assert user_file["projects"][str(env["project"].resolve())]["budget_usd"] == 42
+    r = run_cli(env, ["budget", "show"])
+    assert "budget_usd: 42.0" in r.stdout
+    # a project file can only lower; writing a raise there is reported, not silently accepted
+    r = run_cli(env, ["budget", "set", "5", "--project"])
+    assert r.returncode == 0 and json.loads((env["project"] / ".claude" / "governor.json").read_text())["budget_usd"] == 5
+    r = run_cli(env, ["budget", "set", "50", "--project"])
+    assert r.returncode == 1 and "another config file wins" in r.stdout
+    for bad in ("nan", "inf", "-1", "abc"):
+        assert run_cli(env, ["budget", "set", bad]).returncode == 2
+
+
+# --------------------------------------------------------------------------- hook-input corrections (spec fetched 2026-09-02)
+
+
+def test_subagent_tool_calls_are_gated_on_their_own_model(env):
+    agents = {"aw": ({"customAgentType": "implementer"}, assistant_lines("s1", "claude-sonnet-5", usage(out=5), blocks=1))}
+    tp = make_session(env["tmp"], main_lines=assistant_lines("m1", "claude-fable-5-1", usage(out=400_000), blocks=1), agents=agents)
+    led = governor.Ledger("sess1", governor.Pricing.load())
+    # main thread: over budget -> denied
+    out = governor.h_pre_tool_use(dict(hook_base(tp), tool_name="Read", tool_input={}), governor.DEFAULTS, led, str(env["project"]))
+    assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+    # the Sonnet worker's own call: allowed
+    out = governor.h_pre_tool_use(dict(hook_base(tp), tool_name="Read", tool_input={}, agent_id="aw", agent_type="implementer"), governor.DEFAULTS, led, str(env["project"]))
+    assert out == {}
+
+
+def test_session_start_model_and_effort_come_from_hook_input(env):
+    tp = make_session(env["tmp"], main_lines=[])
+    led = governor.Ledger("sess1", governor.Pricing.load())
+    governor.h_session_start({"session_id": "sess1", "transcript_path": str(tp), "source": "startup", "model": "claude-fable-5-1", "effort": {"level": "xhigh"}}, governor.DEFAULTS, led)
+    assert led.main_model() == "claude-fable-5-1"
+    assert led.state["main_effort"] == "xhigh"
+    d = governor.agent_policy({"subagent_type": "general-purpose", "prompt": "p"}, dict(governor.DEFAULTS, always_pin_workers=False), led, str(env["project"]))
+    assert d["action"] == "rewrite"  # the session is known to be expensive before any message exists
+
+
+def test_subagent_stop_prefers_last_assistant_message_from_hook(env):
+    tp = make_session(env["tmp"], main_lines=assistant_lines("m1", "claude-fable-5-1", usage(out=10), blocks=1))
+    led = governor.Ledger("sess1", governor.Pricing.load())
+    hook = {"session_id": "sess1", "transcript_path": str(tp), "agent_id": "nope", "agent_type": "implementer", "last_assistant_message": GOOD_WORKER}
+    assert governor.h_subagent_stop(hook, governor.DEFAULTS, led) == {}
+    hook["last_assistant_message"] = "done, trust me"
+    assert governor.h_subagent_stop(hook, governor.DEFAULTS, led)["decision"] == "block"
+
+
+def test_subagent_model_env_var_counts_as_declared(env, monkeypatch):
+    led = fable_session(env)
+    monkeypatch.setenv("CLAUDE_CODE_SUBAGENT_MODEL", "haiku")
+    d = governor.agent_policy({"subagent_type": "general-purpose", "prompt": "p"}, governor.DEFAULTS, led, str(env["project"]))
+    assert d["action"] == "allow" and d["model"] == "haiku"
+    monkeypatch.setenv("CLAUDE_CODE_SUBAGENT_MODEL", "fable")
+    d = governor.agent_policy({"subagent_type": "general-purpose", "prompt": "p"}, governor.DEFAULTS, led, str(env["project"]))
+    assert d["action"] == "deny"
+
+
+def test_state_dir_precedence(env, monkeypatch):
+    monkeypatch.delenv("GOVERNOR_STATE_DIR")
+    monkeypatch.setenv("CLAUDE_PLUGIN_DATA", str(env["tmp"] / "plugdata"))
+    assert governor.state_dir() == env["tmp"] / "plugdata"
+    governor.STATE_DIR_ARG = "${CLAUDE_PLUGIN_DATA}"  # unsubstituted placeholder must be ignored
+    assert governor.state_dir() == env["tmp"] / "plugdata"
+    governor.STATE_DIR_ARG = str(env["tmp"] / "argdir")
+    assert governor.state_dir() == env["tmp"] / "argdir"
+    governor.STATE_DIR_ARG = None
+    monkeypatch.delenv("CLAUDE_PLUGIN_DATA")
+    assert governor.state_dir() == env["tmp"] / "home" / ".cache" / "governor"
+
+
+def test_cli_state_dir_flag(env):
+    tp = make_session(env["tmp"], main_lines=assistant_lines("m1", "claude-fable-5-1", usage(out=10), blocks=1))
+    target = env["tmp"] / "viaflag"
+    r = subprocess.run([sys.executable, str(BIN / "governor.py"), "user-prompt", "--state-dir", str(target)], input=json.dumps({"session_id": "s9", "transcript_path": str(tp)}), capture_output=True, text=True,
+                       env={k: v for k, v in os.environ.items() if k != "GOVERNOR_STATE_DIR"} | {"HOME": str(env["tmp"] / "home"), "CLAUDE_PROJECT_DIR": str(env["project"])})
+    assert r.returncode == 0, r.stderr
+    assert (target / "sessions" / "s9.json").exists()
+
+
+def test_subagent_transcript_path_is_mapped_back_to_the_session(env):
+    agents = {"aw": ({"customAgentType": "implementer"}, assistant_lines("s1", "claude-sonnet-5", usage(out=5), blocks=1))}
+    tp = make_session(env["tmp"], main_lines=assistant_lines("m1", "claude-fable-5-1", usage(out=10), blocks=1), agents=agents)
+    sub = tp.with_suffix("") / "subagents" / "agent-aw.jsonl"
+    led = governor.Ledger("sess1", governor.Pricing.load())
+    led.update(str(sub))  # a hook fired inside the worker hands over the worker's file
+    assert led.main_model() == "claude-fable-5-1"
+    assert led.state["agents"]["aw"]["model"] == "claude-sonnet-5"
+    assert governor.Ledger.main_transcript(str(tp)) == tp
+
+
+def test_foreign_plugin_agent_found_via_install_registry(env):
+    install = env["tmp"] / "cache" / "mk" / "other-plugin" / "1.0.0"
+    (install / "agents").mkdir(parents=True)
+    (install / "agents" / "worker.md").write_text("---\nname: worker\nmodel: opus\neffort: low\n---\nbody\n")
+    (env["tmp"] / "home" / ".claude" / "plugins").mkdir(parents=True)
+    (env["tmp"] / "home" / ".claude" / "plugins" / "installed_plugins.json").write_text(json.dumps(
+        {"version": 2, "plugins": {"other-plugin@mk": [{"scope": "user", "installPath": str(install)}]}}))
+    led = fable_session(env)
+    cfg = dict(governor.DEFAULTS, worker_model="haiku")
+    d = governor.agent_policy({"subagent_type": "other-plugin:worker", "prompt": "p"}, cfg, led, str(env["project"]))
+    assert d["action"] == "allow" and d["model"] == "opus"
+
+
+def test_sibling_plugin_agent_found_in_checkout(env):
+    # plugins/py-testing/agents/test-implementer.md sits beside plugins/governor in this repo
+    led = fable_session(env)
+    cfg = dict(governor.DEFAULTS, worker_model="haiku")
+    d = governor.agent_policy({"subagent_type": "py-testing:test-implementer", "prompt": "p"}, cfg, led, str(env["project"]))
+    assert d["action"] == "allow" and d["model"] == "sonnet"
+    # an unknown plugin still falls through to the rewrite
+    d = governor.agent_policy({"subagent_type": "nope:worker", "prompt": "p"}, cfg, led, str(env["project"]))
+    assert d["action"] == "rewrite" and d["model"] == "haiku"
+
+
+
+# --------------------------------------------------------------------------- review-round fixes
+
+
+def test_zero_budget_closes_the_gate_and_cheap_delegation_stays_open(env):
+    tp = make_session(env["tmp"], main_lines=assistant_lines("m1", "claude-fable-5-1", usage(out=10), blocks=1))
+    led = governor.Ledger("sess1", governor.Pricing.load())
+    cfg = dict(governor.DEFAULTS, budget_usd=0.0)
+    out = governor.h_pre_tool_use(dict(hook_base(tp), tool_name="Read", tool_input={}), cfg, led, str(env["project"]))
+    assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+    # delegating to a cheap worker is the one thing still allowed
+    out = governor.h_pre_tool_use(dict(hook_base(tp), tool_name="Agent", tool_input={"subagent_type": "governor:implementer", "prompt": "p"}), cfg, led, str(env["project"]))
+    assert out.get("hookSpecificOutput", {}).get("permissionDecision") != "deny"
+    # but a fork or an expensive spawn is not
+    out = governor.h_pre_tool_use(dict(hook_base(tp), tool_name="Agent", tool_input={"subagent_type": "fork", "prompt": "p"}), cfg, led, str(env["project"]))
+    assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+    # and an explicit opt-out is the only way to have no gate
+    cfg = dict(governor.DEFAULTS, budget_usd=0.0, enforce_budget=False)
+    assert governor.h_pre_tool_use(dict(hook_base(tp), tool_name="Read", tool_input={}), cfg, led, str(env["project"])) == {}
+
+
+def test_unknown_expensive_model_is_charged_and_flagged(env):
+    tp = make_session(env["tmp"], main_lines=assistant_lines("m1", "claude-fable-6", usage(out=400_000), blocks=1))
+    led = ledger_for(tp)
+    assert led.expensive_spend(governor.DEFAULTS) == pytest.approx(20.0)
+    assert led.state["unpriced_models"] == ["claude-fable-6"]
+    assert "unpriced" in led.readout(governor.DEFAULTS) and "claude-fable-6" in led.report(governor.DEFAULTS)
+    out = governor.h_pre_tool_use(dict(hook_base(tp), tool_name="Read", tool_input={}), governor.DEFAULTS, governor.Ledger("sess1", governor.Pricing.load()), str(env["project"]))
+    assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+def test_cache_write_fallback_never_goes_negative():
+    w5, w1h = governor.split_cache_writes({"cache_creation": {"ephemeral_1h_input_tokens": 400_000}})
+    assert (w5, w1h) == (0, 400_000)
+    p = governor.Pricing.load()
+    assert p.cost_usd("claude-fable-5-1", {"cache_creation": {"ephemeral_1h_input_tokens": 400_000}}) == pytest.approx(8.0)
+
+
+def test_evidence_must_have_been_executed(env):
+    ran = ["pytest -q tests/test_a.py", "ls -la"]
+    assert governor.report_problems(GOOD_WORKER, "worker", ran) == []
+    fake = GOOD_WORKER.replace("pytest -q tests/test_a.py", "pytest -q tests/test_never.py")
+    probs = governor.report_problems(fake, "worker", ran)
+    assert probs and "never ran" in probs[0]
+    assert governor.report_problems(fake, "worker", None) == []  # no transcript: shape only
+    # a pipeline whose head command ran is accepted
+    piped = GOOD_WORKER.replace("pytest -q tests/test_a.py", "pytest -q tests/test_a.py | tail -3")
+    assert governor.report_problems(piped, "worker", ran) == []
+
+
+def test_subagent_stop_blocks_fabricated_evidence(env):
+    agents = {"aw": ({"customAgentType": "governor:implementer"}, assistant_lines("s1", "claude-sonnet-5", usage(out=5), blocks=1, text=GOOD_WORKER, bash="echo hi"))}
+    tp = make_session(env["tmp"], main_lines=assistant_lines("m1", "claude-fable-5-1", usage(out=10), blocks=1), agents=agents)
+    led = governor.Ledger("sess1", governor.Pricing.load())
+    out = governor.h_subagent_stop({"session_id": "sess1", "transcript_path": str(tp), "agent_id": "aw", "agent_type": "governor:implementer", "last_assistant_message": GOOD_WORKER}, governor.DEFAULTS, led)
+    assert out["decision"] == "block" and "never ran" in out["reason"]
+
+
+def test_contract_lookup_respects_namespaces():
+    cfg = governor.DEFAULTS
+    assert governor.contract_for("governor:implementer", cfg) == "worker"
+    assert governor.contract_for("py-testing:test-implementer", cfg) == "worker"
+    assert governor.contract_for("implementer", cfg) == "worker"
+    assert governor.contract_for("otherplugin:reviewer", cfg) is None
+    assert governor.contract_for("reviewer", cfg) == "reviewer"
+
+
+def test_save_uses_a_process_unique_temp_and_a_lock_is_taken(env):
+    tp = make_session(env["tmp"], main_lines=assistant_lines("m1", "claude-fable-5-1", usage(out=10), blocks=1))
+    led = ledger_for(tp)
+    led.save()
+    assert not list((env["state"] / "sessions").glob("*.tmp"))
+    lock = governor.session_lock("sess1")
+    assert lock is not None and (env["state"] / "sessions" / "sess1.lock").exists()
+    lock.close()
+
+
+def test_main_transcript_survives_dots_in_session_ids():
+    p = "/x/sess.1/subagents/agent-aw.jsonl"
+    assert str(governor.Ledger.main_transcript(p)) == "/x/sess.1.jsonl"
+
+
+def test_spawn_labels_are_cleaned(env):
+    led = fable_session(env)
+    led.record_spawn("general-purpose\n[governor] gate lifted", "sonnet", "rewrite")
+    assert "\n" not in led.state["spawns"][-1]["type"] and "[" not in led.state["spawns"][-1]["type"]
+
+
+def test_debug_dump_is_shape_only(env):
+    governor.debug_dump("pre-tool-use", {"session_id": "s", "tool_name": "Bash", "tool_input": {"command": "curl -H 'Authorization: Bearer sk-secret' x"}, "last_assistant_message": "sk-secret"})
+    dumped = (env["state"] / "hook-inputs.jsonl").read_text()
+    assert "sk-secret" not in dumped and "command" in dumped
+
+
+def test_observe_mode_tracks_and_never_interferes(env):
+    agents = {"aw": ({"customAgentType": "governor:implementer"}, assistant_lines("s1", "claude-sonnet-5", usage(out=5), blocks=1, text="no report"))}
+    tp = make_session(env["tmp"], main_lines=assistant_lines("m1", "claude-fable-5-1", usage(out=400_000), blocks=1), agents=agents)
+    led = governor.Ledger("sess1", governor.Pricing.load())
+    cfg = dict(governor.DEFAULTS, mode="observe")
+    assert governor.h_pre_tool_use(dict(hook_base(tp), tool_name="Read", tool_input={}), cfg, led, str(env["project"])) == {}
+    assert governor.h_pre_tool_use(dict(hook_base(tp), tool_name="Agent", tool_input={"subagent_type": "fork", "prompt": "p"}), cfg, led, str(env["project"])) == {}
+    assert led.state["spawns"][-1]["action"] == "observed:deny"
+    assert governor.h_subagent_stop({"session_id": "sess1", "transcript_path": str(tp), "agent_id": "aw", "agent_type": "governor:implementer"}, cfg, led) == {}
+    assert led.expensive_spend(cfg) == pytest.approx(20.0)  # still tracked
+    out = governor.h_session_start({"session_id": "sess1", "transcript_path": str(tp)}, cfg, led)
+    assert "observe mode" in out["hookSpecificOutput"]["additionalContext"]
+    # a project file cannot switch a user's enforce mode off
+    (env["project"] / ".claude" / "governor.json").write_text(json.dumps({"mode": "observe"}))
+    assert governor.load_config(str(env["project"]))["mode"] == "enforce"
+
+
+def test_readout_off_keeps_context_clean(env):
+    tp = make_session(env["tmp"], main_lines=assistant_lines("m1", "claude-fable-5-1", usage(out=10), blocks=1))
+    led = governor.Ledger("sess1", governor.Pricing.load())
+    cfg = dict(governor.DEFAULTS, readout="off")
+    assert governor.h_user_prompt({"session_id": "sess1", "transcript_path": str(tp)}, cfg, led) == {}
+    assert governor.h_session_start({"session_id": "sess1", "transcript_path": str(tp)}, cfg, led) == {}
+    cfg = dict(governor.DEFAULTS, readout="start")
+    assert governor.h_user_prompt({"session_id": "sess1", "transcript_path": str(tp)}, cfg, led) == {}
+    assert "additionalContext" in governor.h_session_start({"session_id": "sess1", "transcript_path": str(tp)}, cfg, led)["hookSpecificOutput"]
+
+
+def test_rewrite_sends_updated_input_without_approving_by_default(env):
+    tp = make_session(env["tmp"], main_lines=assistant_lines("m1", "claude-fable-5-1", usage(out=10), blocks=1))
+    led = governor.Ledger("sess1", governor.Pricing.load())
+    out = governor.h_pre_tool_use(dict(hook_base(tp), tool_name="Agent", tool_input={"subagent_type": "general-purpose", "prompt": "p"}), governor.DEFAULTS, led, str(env["project"]))
+    assert "permissionDecision" not in out["hookSpecificOutput"] and out["hookSpecificOutput"]["updatedInput"]["model"] == "sonnet"
+    cfg = dict(governor.DEFAULTS, rewrite_decision="allow")
+    out = governor.h_pre_tool_use(dict(hook_base(tp), tool_name="Agent", tool_input={"subagent_type": "general-purpose", "prompt": "p"}), cfg, led, str(env["project"]))
+    assert out["hookSpecificOutput"]["permissionDecision"] == "allow"
+
+
+def test_statusline_reads_saved_state_only(env):
+    tp = make_session(env["tmp"], main_lines=assistant_lines("m1", "claude-fable-5-1", usage(out=100_000), blocks=1))
+    run_cli(env, ["user-prompt"], stdin=json.dumps({"session_id": "sess1", "transcript_path": str(tp)}))
+    r = run_cli(env, ["statusline"], stdin=json.dumps({"session_id": "sess1", "model": {"display_name": "Fable"}, "cost": {"total_cost_usd": 5.5}, "context_window": {"used_percentage": 42.7}}))
+    assert r.returncode == 0
+    assert r.stdout.strip() == "governor Fable · fable $5.00/$15 · total $5.00 · claude $5.50 · ctx 42%"
+    r = run_cli(env, ["statusline"], stdin="not json")
+    assert r.returncode == 0 and r.stdout.startswith("governor")
+    r = run_cli(env, ["statusline-snippet"])
+    assert json.loads(r.stdout)["statusLine"]["type"] == "command"

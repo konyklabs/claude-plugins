@@ -1,0 +1,40 @@
+name: validate
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  manifests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install Claude Code
+        run: npm install -g @anthropic-ai/claude-code
+      - name: Validate marketplace, plugins, skills and agents (strict)
+        run: bash scripts/validate.sh
+      - name: Dependency audit (stdlib only, no network code)
+        run: bash scripts/audit-deps.sh
+
+  hooks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.9 is the floor the hook scripts promise (stdlib only, no walrus-free
+        # tricks beyond it); 3.13 is a current release.
+        python-version: ["3.9", "3.13"]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v7
+      - name: Hook and script tests
+        run: uv run --python ${{ matrix.python-version }} --with pytest python -m pytest -q plugins

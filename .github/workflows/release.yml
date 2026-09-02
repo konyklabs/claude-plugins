@@ -1,0 +1,14 @@
+name: release
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  release-please:
+    permissions:
+      contents: write
+      pull-requests: write
+    uses: konyklabs/.github/.github/workflows/release-please.yml@main
+    with:
+      release-type: simple
