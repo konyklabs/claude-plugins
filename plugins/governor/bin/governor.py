@@ -439,11 +439,43 @@ def agent_dirs(project_dir: Optional[str]) -> List[Path]:
     return dirs
 
 
+def plugin_agent_dirs(plugin: str) -> List[Path]:
+    """Where another plugin's agent files can be: the install registry Claude
+    Code keeps (installed_plugins.json, keyed plugin@marketplace), a sibling
+    plugin in the same checkout (plugins/<name>/agents, the --plugin-dir and
+    monorepo case), and a sibling in the version cache
+    (<cache>/<marketplace>/<name>/<version>/agents)."""
+    dirs: List[Path] = []
+    registry = Path.home() / ".claude" / "plugins" / "installed_plugins.json"
+    try:
+        data = json.loads(registry.read_text())
+    except (OSError, ValueError):
+        data = {}
+    for key, entries in (data.get("plugins") or {}).items():
+        if key.split("@", 1)[0] != plugin:
+            continue
+        for e in entries if isinstance(entries, list) else [entries]:
+            path = e.get("installPath") if isinstance(e, dict) else None
+            if path:
+                dirs.append(Path(path) / "agents")
+    dirs.append(PLUGIN_ROOT.parent / plugin / "agents")
+    try:
+        dirs += sorted(PLUGIN_ROOT.parent.parent.glob(f"{plugin}/*/agents"))
+    except OSError:
+        pass
+    return dirs
+
+
 def declared_model(subagent_type: str, cfg: Dict[str, Any], project_dir: Optional[str]) -> Optional[str]:
     """The model an agent definition pins, or None when it inherits."""
     if subagent_type in cfg["pinned_agents"]:
         return cfg["pinned_agents"][subagent_type]
     short = subagent_type.split(":", 1)[-1]
+    if ":" in subagent_type:
+        for d in plugin_agent_dirs(subagent_type.split(":", 1)[0]):
+            model = agent_model_from_file(d / f"{short}.md")
+            if model and model != "inherit":
+                return model
     for d in agent_dirs(project_dir):
         for name in (subagent_type, short):
             model = agent_model_from_file(d / f"{name}.md")

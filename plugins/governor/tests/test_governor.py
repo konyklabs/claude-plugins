@@ -525,3 +525,27 @@ def test_subagent_transcript_path_is_mapped_back_to_the_session(env):
     assert led.main_model() == "claude-fable-5-1"
     assert led.state["agents"]["aw"]["model"] == "claude-sonnet-5"
     assert governor.Ledger.main_transcript(str(tp)) == tp
+
+
+def test_foreign_plugin_agent_found_via_install_registry(env):
+    install = env["tmp"] / "cache" / "mk" / "other-plugin" / "1.0.0"
+    (install / "agents").mkdir(parents=True)
+    (install / "agents" / "worker.md").write_text("---\nname: worker\nmodel: opus\neffort: low\n---\nbody\n")
+    (env["tmp"] / "home" / ".claude" / "plugins").mkdir(parents=True)
+    (env["tmp"] / "home" / ".claude" / "plugins" / "installed_plugins.json").write_text(json.dumps(
+        {"version": 2, "plugins": {"other-plugin@mk": [{"scope": "user", "installPath": str(install)}]}}))
+    led = fable_session(env)
+    cfg = dict(governor.DEFAULTS, worker_model="haiku")
+    d = governor.agent_policy({"subagent_type": "other-plugin:worker", "prompt": "p"}, cfg, led, str(env["project"]))
+    assert d["action"] == "allow" and d["model"] == "opus"
+
+
+def test_sibling_plugin_agent_found_in_checkout(env):
+    # plugins/py-testing/agents/test-implementer.md sits beside plugins/governor in this repo
+    led = fable_session(env)
+    cfg = dict(governor.DEFAULTS, worker_model="haiku")
+    d = governor.agent_policy({"subagent_type": "py-testing:test-implementer", "prompt": "p"}, cfg, led, str(env["project"]))
+    assert d["action"] == "allow" and d["model"] == "sonnet"
+    # an unknown plugin still falls through to the rewrite
+    d = governor.agent_policy({"subagent_type": "nope:worker", "prompt": "p"}, cfg, led, str(env["project"]))
+    assert d["action"] == "rewrite" and d["model"] == "haiku"
