@@ -1,0 +1,20 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "konyklabs-plugins",
+  "owner": {"name": "Oleg Konyk", "url": "https://olegkonyk.com"},
+  "description": "Claude Code plugins for expensive-model sessions on a budget: the governor harness, and domain skills for Python test engineering.",
+  "plugins": [
+    {
+      "name": "governor",
+      "source": "./plugins/governor",
+      "description": "Token guardrails for sessions on Fable-tier models: pins spawns to cheap workers, denies forks, requires a brief for expensive spawns, prices a per-session budget from the transcript, and holds workers to an evidence contract.",
+      "category": "productivity"
+    },
+    {
+      "name": "py-testing",
+      "source": "./plugins/py-testing",
+      "description": "Python test engineering skills — pytest project structure, Playwright API and browser tests, SQLAlchemy test fixtures — and the untangling workflow for large unmerged test suites.",
+      "category": "testing"
+    }
+  ]
+}

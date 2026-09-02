@@ -1,0 +1,8 @@
+__pycache__/
+.pytest_cache/
+*.pyc
+.governor/
+evals/results/
+**/evals/results/
+.DS_Store
+.local/
