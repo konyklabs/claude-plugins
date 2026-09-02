@@ -21,7 +21,21 @@ claude plugin install prod-readiness@konyklabs-plugins
 ```
 
 From a checkout, for development: `claude --plugin-dir ./plugins/governor`.
-Both plugins need `python3` (3.9+) on PATH; nothing else.
+The plugins need `python3` (3.9+) on PATH; nothing else.
+
+**On a machine with no git access to this repository** (a work machine):
+build the zips once anywhere that has the checkout, copy them over, and
+load them directly:
+
+```
+bash scripts/dist.sh                      # dist/<plugin>.zip from the committed tree, each scanned
+claude --plugin-dir governor.zip --plugin-dir py-testing.zip --plugin-dir prod-readiness.zip
+```
+
+The zips are made with `git archive`, so nothing ignored can be inside
+them, and they are checked by the readiness scanner's archive-hygiene rule
+before they are reported. Nothing in the plugins phones home, installs
+anything, or reads outside the session's own transcript and the project.
 
 ## Try it in five minutes
 

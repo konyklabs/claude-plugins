@@ -115,6 +115,21 @@ ids, agent ids, tool names with byte counts, and spawn types; never the
 content of a prompt, a file, a command or a message. The debug capture
 (`GOVERNOR_DEBUG=1`) records field names and sizes, not values.
 
+## A work machine
+
+The checklist for a machine where every installed thing is audited:
+
+1. Bring the plugins as zips built by `scripts/dist.sh` (from a committed
+   tree, scanned), and load them with `claude --plugin-dir <zip>`. No
+   marketplace, no git clone, no network.
+2. Start in observe mode (`{"mode": "observe", "readout": "off"}` in
+   `~/.claude/governor.json`) with the status line. Nothing is denied,
+   nothing is injected; the ledger still prices every turn.
+3. After a few sessions, `governor.py budget history` says what a session
+   costs there. Set the budget from that number, switch to enforce.
+4. Every file the plugins read or write is listed under "Supply chain";
+   the state directory is the only thing they create.
+
 ## Supply chain
 
 For a workplace that audits what it installs:

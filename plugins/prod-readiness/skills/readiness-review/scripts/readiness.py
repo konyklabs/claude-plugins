@@ -20,10 +20,13 @@ written. Exit 0 when no check is "fail", 1 when any is, 2 on usage error.
 Findings never carry matched secret text — only a path, a line, and a rule
 name — so this script's own output is safe to paste anywhere.
 
-Standard library only. No network calls. External tools (gitleaks,
-pip-audit, bandit, semgrep, osv-scanner, trivy, npm, lychee) are invoked only
-if already on PATH; nothing is installed. Deterministic: same tree, same
-output (the report carries no timestamps).
+Standard library only: the scanner itself makes no network calls. External
+tools it can invoke (gitleaks, pip-audit, bandit, semgrep, osv-scanner,
+trivy, npm audit, lychee) are run only if already on PATH, nothing is
+installed by this script, and several of them (pip-audit, osv-scanner,
+trivy, npm audit, lychee) do reach the network themselves to check advisory
+databases or links — that traffic is theirs, not this script's. Deterministic:
+same tree, same output (the report carries no timestamps).
 """
 from __future__ import annotations
 
@@ -38,6 +41,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 import zipfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -73,9 +77,26 @@ _WEB_FRAMEWORK_RE = re.compile(r"\b(fastapi|starlette|flask|django|aiohttp\.web|
 # key-shaped strings; larger entries are almost never source text.
 ARCHIVE_TEXT_LIMIT = 256 * 1024
 
-# External tools get up to five minutes; long enough for a full dependency
-# scan, short enough that a hung tool does not stall the whole report.
+# External tools get up to five minutes by default (overridable per run via
+# --tool-timeout); long enough for a full dependency scan, short enough that
+# a hung tool does not stall the whole report.
 TOOL_TIMEOUT = 300
+
+# The `tools` check stops starting new tools once this many seconds have been
+# spent across all of them combined, so one slow scanner cannot swallow the
+# whole run; tools it never got to are reported as "not run: time budget".
+TOOL_TOTAL_BUDGET = 600
+
+# dos-surface holds several files' text in memory at once (it cross-checks
+# them against many patterns); a hostile tree could otherwise exhaust
+# memory, so the total bytes it reads is capped, and files skipped once the
+# cap is hit are reported rather than silently dropped.
+DOS_SCAN_BYTE_CAP = 64 * 1024 * 1024
+
+# Workflows that run one of these are the only ones the tip-only-checkout
+# rule applies to; a workflow that merely references `secrets.X` for
+# deployment credentials is not running a secret scanner.
+_SECRET_SCANNER_WORKFLOW_RE = re.compile(r"gitleaks|trufflehog|detect-secrets|secret[-_ ]scan", re.IGNORECASE)
 
 TEST_FILE_RE = re.compile(r"^(test_.*|.*_test)\.py$")
 
@@ -182,13 +203,24 @@ _OUTBOUND_CALL_LINE_RE = re.compile(r"\bhttpx\.\w+\(|\brequests\.\w+\(")
 
 
 def iter_files(root: Path):
-    """Walk root, skipping SKIP_DIRS and minified JS, in deterministic order."""
-    for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = sorted(d for d in dirnames if d not in SKIP_DIRS)
+    """Walk root, skipping SKIP_DIRS, symlinked directories/files, and
+    minified JS, in deterministic order. The scanned tree is untrusted: a
+    symlink (to a directory or a file) is never followed, so a hostile
+    repository cannot use one to point the scan at anything outside root.
+    followlinks=False is os.walk's default; it is passed explicitly here as
+    documentation, and dirnames is additionally filtered so a symlinked
+    directory entry is never even considered."""
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        dirnames[:] = sorted(
+            d for d in dirnames
+            if d not in SKIP_DIRS and not (Path(dirpath) / d).is_symlink()
+        )
         for f in sorted(filenames):
             if f.endswith(".min.js"):
                 continue
             path = Path(dirpath) / f
+            if path.is_symlink():
+                continue
             if path.resolve() == SELF_PATH:
                 continue
             yield path
@@ -208,10 +240,15 @@ def read_text(path: Path) -> Optional[str]:
 
 
 def rel(path: Path, root: Path) -> str:
+    """Path relative to root, POSIX-separated. Never falls back to an
+    absolute path: something that resolves outside root (which iter_files
+    and _tracked_or_walked_files should already have kept from ever being
+    read) is reported as the fixed sentinel below rather than leaking a
+    real filesystem path from outside the scan."""
     try:
         return path.resolve().relative_to(root.resolve()).as_posix()
     except ValueError:
-        return path.as_posix()
+        return "<outside-root>"
 
 
 def _matches_any_glob(path: str, globs: List[str]) -> bool:
@@ -254,17 +291,84 @@ def _compose_files(root: Path):
             yield path
 
 
+# Path segments (directory or file name) that mark deployment/infra config,
+# where request-level controls (body limits, rate limits, concurrency caps)
+# commonly live instead of in application code.
+_DEPLOY_DIR_PATTERNS = ("deploy", "k8s", "helm", "ingress*")
+
+
+def _infra_sources(root: Path) -> List[Path]:
+    """Files outside application code where deploy-time DoS controls live:
+    Dockerfiles, compose files, Procfile, scripts/, pyproject.toml, reverse
+    proxy configs (nginx/apache/caddy), and YAML under deploy/k8s/helm/ingress."""
+    sources: List[Path] = list(_dockerfiles(root)) + list(_compose_files(root))
+    procfile = root / "Procfile"
+    if procfile.exists():
+        sources.append(procfile)
+    scripts_dir = root / "scripts"
+    if scripts_dir.is_dir():
+        sources += [p for p in scripts_dir.rglob("*") if p.is_file() and not p.is_symlink()]
+    pyproject = root / "pyproject.toml"
+    if pyproject.exists():
+        sources.append(pyproject)
+    for path in iter_files(root):
+        n = path.name
+        if fnmatch.fnmatch(n, "*.conf") or fnmatch.fnmatch(n, "nginx*") or n == "Caddyfile" or fnmatch.fnmatch(n, "httpd*"):
+            sources.append(path)
+            continue
+        if path.suffix in (".yml", ".yaml") and any(
+            fnmatch.fnmatch(part, pat) for part in path.parts for pat in _DEPLOY_DIR_PATTERNS
+        ):
+            sources.append(path)
+    # Dedupe while keeping a deterministic order.
+    seen = set()
+    unique: List[Path] = []
+    for p in sorted(sources, key=lambda x: rel(x, root)):
+        if p not in seen:
+            seen.add(p)
+            unique.append(p)
+    return unique
+
+
 def _tracked_or_walked_files(root: Path, ctx: Dict[str, Any]):
     if ctx["is_git"]:
         rc, out, _err, _kind = run_tool(["git", "ls-files"], root, timeout=60)
         if rc == 0:
             for name in sorted(l for l in out.splitlines() if l.strip()):
                 p = root / name
-                if p.is_file():
+                if p.is_file() and not p.is_symlink():
                     yield p
             return
     for p in iter_files(root):
         yield p
+
+
+# --------------------------------------------------------------------------- untrusted-string hygiene
+
+# The scanned repository is untrusted: its config, its filenames, and any
+# tool's report of its content can all contain attacker-chosen text aimed at
+# whatever reads the report (a model, most likely). Anything that
+# originates there — a config-file pattern name, a tool's rule id or
+# reported file, a tool's stderr, a filename from the tree — passes through
+# sanitize() before it can reach a finding's path/note or a check's reason.
+_SANITIZE_STRIP_RE = re.compile(r"[^A-Za-z0-9 ._:/@+#()\[\]-]")
+_SANITIZE_COLLAPSE_RE = re.compile(r"_{2,}")
+
+
+def sanitize(value: Any, limit: int = 120) -> str:
+    """Strip everything outside a safe punctuation set (this removes
+    newlines too, so an injected 'blank line + markdown heading' collapses
+    onto the surrounding line instead of becoming a rendered heading of its
+    own), collapse the resulting underscore runs, and cap the length."""
+    text = _SANITIZE_STRIP_RE.sub("_", str(value))
+    text = _SANITIZE_COLLAPSE_RE.sub("_", text)
+    if len(text) > limit:
+        text = text[: max(0, limit - 1)] + "…"
+    return text
+
+
+def sanitize_path(value: Any) -> str:
+    return sanitize(value, limit=200)
 
 
 # --------------------------------------------------------------------------- result shape
@@ -292,7 +396,10 @@ def make_check(
 
 
 def finding(path: str, line: int, note: str) -> Dict[str, Any]:
-    return {"path": path, "line": line, "note": note}
+    """path and note may both originate in the scanned repository (a
+    filename, a config-derived pattern name, a tool-reported file or rule
+    id) — sanitize() runs on both here, once, so no call site can forget."""
+    return {"path": sanitize_path(path) if path else path, "line": line, "note": sanitize(note)}
 
 
 # --------------------------------------------------------------------------- archive helpers
@@ -304,31 +411,6 @@ def _archive_name_rule(name: str) -> Optional[str]:
         if pat.search(norm):
             return title
     return None
-
-
-def _list_archive(path: Path) -> List[Tuple[str, int, bool]]:
-    """Deterministically sorted (name, size, is_file) for every entry."""
-    if zipfile.is_zipfile(str(path)):
-        with zipfile.ZipFile(str(path)) as zf:
-            entries = [(i.filename, i.file_size, not i.filename.endswith("/")) for i in zf.infolist()]
-    else:
-        with tarfile.open(str(path)) as tf:
-            entries = [(m.name, m.size, m.isfile()) for m in tf.getmembers()]
-    entries.sort(key=lambda e: e[0])
-    return entries
-
-
-def _read_archive_entry(path: Path, name: str) -> Optional[bytes]:
-    try:
-        if zipfile.is_zipfile(str(path)):
-            with zipfile.ZipFile(str(path)) as zf:
-                return zf.read(name)
-        with tarfile.open(str(path)) as tf:
-            member = tf.getmember(name)
-            f = tf.extractfile(member)
-            return f.read() if f else None
-    except (OSError, KeyError):
-        return None
 
 
 # --------------------------------------------------------------------------- route (AST) helpers
@@ -409,9 +491,58 @@ def _has_pagination_param(route: Dict[str, Any]) -> bool:
 # --------------------------------------------------------------------------- checks
 
 
+def _scan_archive_single_pass(archive_path: Path, ignore_globs: List[str]) -> Tuple[List[Dict[str, Any]], int]:
+    """Open the archive exactly once and walk its members in one pass: every
+    entry is checked against the name rules, and every qualifying text entry
+    is scanned for key-shaped strings in the same loop, so nothing is
+    reopened or reparsed per entry."""
+    findings: List[Dict[str, Any]] = []
+
+    def _scan_text_entry(name: str, data: Optional[bytes]) -> None:
+        if data is None:
+            return
+        text = data.decode("utf-8", errors="replace")
+        for lineno, line in enumerate(text.splitlines(), 1):
+            for rule_name, pat in SECRET_PATTERNS:
+                if pat.search(line):
+                    findings.append(finding(name, lineno, rule_name))
+
+    if zipfile.is_zipfile(str(archive_path)):
+        with zipfile.ZipFile(str(archive_path)) as zf:
+            infos = sorted(zf.infolist(), key=lambda i: i.filename)
+            for info in infos:
+                name = info.filename
+                is_file = not name.endswith("/")
+                rule = _archive_name_rule(name)
+                if rule:
+                    findings.append(finding(name, 0, rule))
+                if is_file and info.file_size <= ARCHIVE_TEXT_LIMIT and not _matches_any_glob(name, ignore_globs):
+                    try:
+                        data = zf.read(name)
+                    except (OSError, KeyError):
+                        data = None
+                    _scan_text_entry(name, data)
+            entry_count = len(infos)
+    else:
+        with tarfile.open(str(archive_path)) as tf:
+            members = sorted(tf.getmembers(), key=lambda m: m.name)
+            for m in members:
+                name = m.name
+                rule = _archive_name_rule(name)
+                if rule:
+                    findings.append(finding(name, 0, rule))
+                if m.isfile() and m.size <= ARCHIVE_TEXT_LIMIT and not _matches_any_glob(name, ignore_globs):
+                    f = tf.extractfile(m)
+                    data = f.read() if f else None
+                    _scan_text_entry(name, data)
+            entry_count = len(members)
+
+    return findings, entry_count
+
+
 def check_archive_hygiene(root: Path, config: Dict[str, Any], ctx: Dict[str, Any]) -> Dict[str, Any]:
     cid, title, group, tier = "archive-hygiene", "Archive hygiene", "secrets", "precommit"
-    command = "git archive --format=tar HEAD"
+    command = "git archive --format=tar HEAD -- ."
     archive_arg = ctx.get("archive")
     tmp_path: Optional[Path] = None
     try:
@@ -425,7 +556,10 @@ def check_archive_hygiene(root: Path, config: Dict[str, Any], ctx: Dict[str, Any
             fd, tmp_name = tempfile.mkstemp(suffix=".tar")
             os.close(fd)
             tmp_path = Path(tmp_name)
-            rc, _out, err, _kind = run_tool(["git", "archive", "--format=tar", "HEAD", "-o", str(tmp_path)], root, timeout=120)
+            # "-- ." scopes the archive to root itself (git's cwd here, via
+            # run_tool's cwd=root), not the whole repository root, so a
+            # ROOT that is a subdirectory of a larger repo is not leaked.
+            rc, _out, err, _kind = run_tool(["git", "archive", "--format=tar", "HEAD", "-o", str(tmp_path), "--", "."], root, timeout=120)
             if rc != 0:
                 return make_check(cid, title, group, tier, status="skip",
                                    reason=f"git archive failed: {(err or '').strip()[:200]}",
@@ -437,26 +571,10 @@ def check_archive_hygiene(root: Path, config: Dict[str, Any], ctx: Dict[str, Any
                                fp_note=_ARCHIVE_FP_NOTE, command=command)
 
         ignore_globs = config.get("archive_ignore_globs") or []
-        entries = _list_archive(archive_path)
-        findings: List[Dict[str, Any]] = []
-        for name, _size, _is_file in entries:
-            rule = _archive_name_rule(name)
-            if rule:
-                findings.append(finding(name, 0, rule))
-        for name, size, is_file in entries:
-            if not is_file or size > ARCHIVE_TEXT_LIMIT or _matches_any_glob(name, ignore_globs):
-                continue
-            data = _read_archive_entry(archive_path, name)
-            if data is None:
-                continue
-            text = data.decode("utf-8", errors="replace")
-            for lineno, line in enumerate(text.splitlines(), 1):
-                for rule_name, pat in SECRET_PATTERNS:
-                    if pat.search(line):
-                        findings.append(finding(name, lineno, rule_name))
+        findings, entry_count = _scan_archive_single_pass(archive_path, ignore_globs)
 
         status = "fail" if findings else "pass"
-        counts = {"entries": len(entries), "findings": len(findings)}
+        counts = {"entries": entry_count, "findings": len(findings)}
 
         if ctx["is_git"]:
             rc, out, _err, _kind = run_tool(["git", "ls-files", "--others", "--ignored", "--exclude-standard"], root, timeout=30)
@@ -468,6 +586,12 @@ def check_archive_hygiene(root: Path, config: Dict[str, Any], ctx: Dict[str, Any
                         f"{len(names)} ignored files present in the working tree; a zip built from the working tree would ship them",
                     ))
                     counts["ignored_in_worktree"] = len(names)
+                    # This is new information the archive itself didn't have
+                    # (and doesn't downgrade an already-failing archive), so
+                    # it must move the status or render_markdown will never
+                    # show it: findings only render in detail for fail/review.
+                    if status != "fail":
+                        status = "review"
 
         return make_check(cid, title, group, tier, status=status, findings=findings, counts=counts,
                            fp_note=_ARCHIVE_FP_NOTE, command=command)
@@ -484,50 +608,63 @@ def check_history_secrets(root: Path, config: Dict[str, Any], ctx: Dict[str, Any
     findings: List[Dict[str, Any]] = []
     counts: Dict[str, Any] = {}
     status, reason = "pass", ""
+    install_hint = "; install from https://github.com/gitleaks/gitleaks/releases (pin version and checksum)"
 
-    if which("gitleaks"):
+    if not ctx.get("is_git"):
+        status, reason = "skip", "not a git repository"
+    elif not which("gitleaks"):
+        status, reason = "skip", "gitleaks not installed"
+        command += install_hint
+    else:
         fd, tmp_name = tempfile.mkstemp(suffix=".json")
         os.close(fd)
         tmp_report = Path(tmp_name)
         try:
-            _rc, _out, err, kind = run_tool(
+            rc, _out, err, kind = run_tool(
                 ["gitleaks", "detect", "--source", str(root), "--no-banner",
                  "--report-format", "json", "--report-path", str(tmp_report)],
                 root, timeout=300,
             )
             if kind == "timeout":
-                status, reason = "skip", "gitleaks timed out after 300s"
+                status, reason = "review", "gitleaks timed out after 300s"
             elif kind == "not found":
                 status, reason = "skip", "gitleaks not installed"
-                command += "; install from https://github.com/gitleaks/gitleaks/releases (pin version and checksum)"
+                command += install_hint
             elif kind == "error":
-                status, reason = "skip", f"gitleaks could not run: {err.strip()[:200]}"
+                status, reason = "review", sanitize(f"gitleaks could not run: {(err or '').strip()[:200]}")
+            elif rc not in (0, 1):
+                # 0 = clean, 1 = leaks found; anything else is gitleaks itself
+                # failing (bad flags, unreadable repo, ...), not a scan result.
+                status, reason = "review", sanitize(f"gitleaks exited {rc}: {(err or '').strip()[:200]}")
+            elif not tmp_report.exists():
+                status, reason = "review", f"gitleaks exited {rc} but produced no report file"
             else:
                 try:
                     report_text = tmp_report.read_text(encoding="utf-8", errors="replace")
                     report = json.loads(report_text) if report_text.strip() else []
-                except (OSError, json.JSONDecodeError):
-                    report = []
-                by_rule: Dict[str, int] = {}
-                for item in report:
-                    rule_id = item.get("RuleID", "unknown")
-                    by_rule[rule_id] = by_rule.get(rule_id, 0) + 1
-                    findings.append(finding(item.get("File", ""), item.get("StartLine", 0), rule_id))
-                counts = dict(sorted(by_rule.items()))
-                status = "fail" if findings else "pass"
+                except (OSError, json.JSONDecodeError) as e:
+                    status, reason = "review", sanitize(f"gitleaks report could not be parsed: {e}")
+                    report = None
+                if report is not None:
+                    by_rule: Dict[str, int] = {}
+                    for item in report:
+                        rule_id = item.get("RuleID", "unknown")
+                        by_rule[rule_id] = by_rule.get(rule_id, 0) + 1
+                        findings.append(finding(item.get("File", ""), item.get("StartLine", 0), f"gitleaks:{rule_id}"))
+                    counts = dict(sorted(by_rule.items()))
+                    status = "fail" if findings else "pass"
         finally:
             tmp_report.unlink(missing_ok=True)
-    else:
-        status, reason = "skip", "gitleaks not installed"
-        command += "; install from https://github.com/gitleaks/gitleaks/releases (pin version and checksum)"
 
+    # Independent of whether gitleaks ran: a workflow that runs a secret
+    # scanner but checks out only the tip never actually scans history.
     wf_dir = root / ".github" / "workflows"
     if wf_dir.is_dir():
         for wf in sorted(wf_dir.glob("*.y*ml")):
             text = read_text(wf)
             if text is None:
                 continue
-            if re.search(r"gitleaks|secret", text, re.IGNORECASE) and re.search(r"actions/checkout", text) and not re.search(r"fetch-depth:\s*0", text):
+            if _SECRET_SCANNER_WORKFLOW_RE.search(text) and re.search(r"actions/checkout", text) and not re.search(r"fetch-depth:\s*0", text):
                 line_no = 1
                 for i, l in enumerate(text.splitlines(), 1):
                     if "actions/checkout" in l:
@@ -541,33 +678,72 @@ def check_history_secrets(root: Path, config: Dict[str, Any], ctx: Dict[str, Any
                        counts=counts, fp_note=fp_note, command=command)
 
 
+# A configured pattern this long, or one that already looks like a nested
+# quantifier (the scanner's own DoS heuristic), is rejected outright rather
+# than ever being run against file content — the .readiness.json this comes
+# from is attacker-controlled, so "just compile and try it" is itself a DoS
+# surface.
+CONFIGURED_PATTERN_MAX_LEN = 200
+# A configured pattern is applied to at most this many characters of a
+# scanned line, regardless of the line's real length.
+CONFIGURED_PATTERN_LINE_CAP = 2000
+
+
+def _compile_patterns(raw_patterns: List[Any]) -> Tuple[List[Tuple[str, str, re.Pattern[str]]], List[Dict[str, Any]]]:
+    """(display_name, regex_str, compiled) for every entry that compiles and
+    passes the length/DoS-shape check, plus a review finding for every entry
+    that doesn't — an unusable or dangerous pattern is reported, never
+    silently dropped or silently run. display_name is prefixed "cfg:" since
+    the name itself comes from the untrusted .readiness.json."""
+    patterns = []
+    bad_findings: List[Dict[str, Any]] = []
+    for i, p in enumerate(raw_patterns):
+        raw_name = p.get("name", f"<entry {i}>") if isinstance(p, dict) else f"<entry {i}>"
+        name = f"cfg:{raw_name}"
+        try:
+            regex_str = p["regex"]
+        except (KeyError, TypeError) as e:
+            bad_findings.append(finding("", 0, f"pattern {name}: invalid regex ({e})"))
+            continue
+        if not isinstance(regex_str, str):
+            bad_findings.append(finding("", 0, f"pattern {name}: invalid regex (not a string)"))
+            continue
+        if len(regex_str) > CONFIGURED_PATTERN_MAX_LEN or _REGEX_DOS_RE.search(regex_str):
+            bad_findings.append(finding("", 0, f"pattern {name}: rejected - nested quantifier"))
+            continue
+        try:
+            compiled = re.compile(regex_str)
+        except re.error as e:
+            bad_findings.append(finding("", 0, f"pattern {name}: invalid regex ({e})"))
+            continue
+        patterns.append((name, regex_str, compiled))
+    return patterns, bad_findings
+
+
 def check_credential_patterns(root: Path, config: Dict[str, Any], ctx: Dict[str, Any]) -> Dict[str, Any]:
     cid, title, group, tier = "credential-patterns", "Credential pattern scan", "secrets", "precommit"
     fp_note = ("hosted push protection only recognizes registered partner token formats; "
                "an org-specific format needs its own regex here")
-    command = "grep -nE '<regex>' $(git ls-files)"
+    command = ("grep -nE '<regex>' $(git ls-files); with --history N: "
+               "git grep -nE -e '<regex>' <rev> (POSIX ERE) for each of the last N revs")
     raw_patterns = config.get("credential_patterns") or []
     if not raw_patterns:
         return make_check(cid, title, group, tier, status="skip",
                            reason="no credential_patterns configured; hosted push protection only knows registered partner formats, add your own",
                            fp_note=fp_note, command=command)
 
-    patterns = []
-    for p in raw_patterns:
-        try:
-            patterns.append((p["name"], p["regex"], re.compile(p["regex"])))
-        except (KeyError, re.error):
-            continue
+    patterns, bad_findings = _compile_patterns(raw_patterns)
 
-    findings: List[Dict[str, Any]] = []
+    scan_findings: List[Dict[str, Any]] = []
     for path in _tracked_or_walked_files(root, ctx):
         text = read_text(path)
         if text is None:
             continue
         for lineno, line in enumerate(text.splitlines(), 1):
+            line = line[:CONFIGURED_PATTERN_LINE_CAP]
             for name, _regex_str, pat in patterns:
                 if pat.search(line):
-                    findings.append(finding(rel(path, root), lineno, name))
+                    scan_findings.append(finding(rel(path, root), lineno, name))
 
     history_n = ctx.get("history", 0)
     if ctx["is_git"] and history_n > 0:
@@ -576,16 +752,27 @@ def check_credential_patterns(root: Path, config: Dict[str, Any], ctx: Dict[str,
         for rev_hash in revs:
             short = rev_hash[:8]
             for name, regex_str, _pat in patterns:
-                rc2, out2, _err2, _kind2 = run_tool(["git", "grep", "-nE", regex_str, rev_hash], root, timeout=60)
+                # "-e <pattern>" marks the argument as a pattern regardless
+                # of a leading "-", so a pattern like "-O..." is not taken
+                # as an unknown option. A trailing "--" before <rev> was
+                # tried first and rejected: git then treats <rev> as a
+                # pathspec (a literal path named e.g. "HEAD"), not a
+                # revision, and the scan silently finds nothing — verified
+                # empirically, not merely asserted.
+                rc2, out2, err2, _kind2 = run_tool(["git", "grep", "-nE", "-e", regex_str, rev_hash], root, timeout=60)
+                if rc2 == 1:
+                    continue  # no match in this rev
                 if rc2 != 0:
+                    bad_findings.append(finding("", 0, f"pattern {name}: git grep failed ({rc2}) @ {short}: {(err2 or '').strip()[:120]}"))
                     continue
                 for line in out2.splitlines():
                     parts = line.split(":", 3)
                     if len(parts) >= 3:
                         lineno = int(parts[2]) if parts[2].isdigit() else 0
-                        findings.append(finding(parts[1], lineno, f"{name} @ {short}"))
+                        scan_findings.append(finding(parts[1], lineno, f"{name} @ {short}"))
 
-    status = "fail" if findings else "pass"
+    findings = scan_findings + bad_findings
+    status = "fail" if scan_findings else ("review" if bad_findings else "pass")
     return make_check(cid, title, group, tier, status=status, findings=findings, fp_note=fp_note, command=command)
 
 
@@ -599,14 +786,9 @@ def check_identifier_shapes(root: Path, config: Dict[str, Any], ctx: Dict[str, A
         return make_check(cid, title, group, tier, status="skip",
                            reason="no identifier_patterns configured", fp_note=fp_note, command=command)
 
-    patterns = []
-    for p in raw_patterns:
-        try:
-            patterns.append((p["name"], re.compile(p["regex"])))
-        except (KeyError, re.error):
-            continue
+    patterns, bad_findings = _compile_patterns(raw_patterns)
 
-    findings: List[Dict[str, Any]] = []
+    scan_findings: List[Dict[str, Any]] = []
     for path in iter_files(root):
         relp = rel(path, root)
         parts = Path(relp).parts[:-1]
@@ -616,11 +798,13 @@ def check_identifier_shapes(root: Path, config: Dict[str, Any], ctx: Dict[str, A
         if text is None:
             continue
         for lineno, line in enumerate(text.splitlines(), 1):
-            for name, pat in patterns:
+            line = line[:CONFIGURED_PATTERN_LINE_CAP]
+            for name, _regex_str, pat in patterns:
                 if pat.search(line):
-                    findings.append(finding(relp, lineno, name))
+                    scan_findings.append(finding(relp, lineno, name))
 
-    status = "fail" if findings else "pass"
+    findings = scan_findings + bad_findings
+    status = "fail" if scan_findings else ("review" if bad_findings else "pass")
     return make_check(cid, title, group, tier, status=status, findings=findings, fp_note=fp_note, command=command)
 
 
@@ -699,10 +883,18 @@ def check_debug_endpoint_exposure(root: Path, config: Dict[str, Any], ctx: Dict[
     any_fail = False
     for r in routes:
         text = r["text"]
-        has_addr = bool(_CLIENT_ADDR_RE.search(text))
-        has_loopback = bool(_LOOPBACK_LITERAL_RE.search(text))
         lines = text.splitlines()
-        window = "\n".join(lines[max(0, r["line"] - 1): r["line"] - 1 + 40])
+        # Scope to the handler, not the whole module: the 40-line window used
+        # for the token check, unioned with the handler's own body (decorator
+        # to its end), so a loopback check in an unrelated function elsewhere
+        # in the file does not falsely clear this route.
+        func_src = _function_source(r) or ""
+        func_end = (r["line"] - 1) + len(func_src.splitlines())
+        window_end = (r["line"] - 1) + 40
+        scope_end = max(window_end, func_end)
+        window = "\n".join(lines[max(0, r["line"] - 1): scope_end])
+        has_addr = bool(_CLIENT_ADDR_RE.search(window))
+        has_loopback = bool(_LOOPBACK_LITERAL_RE.search(window))
         has_token = "token" in window.lower()
         if has_addr and has_loopback:
             findings.append(finding(r["rel"], r["line"], "per-request loopback check present"))
@@ -710,7 +902,7 @@ def check_debug_endpoint_exposure(root: Path, config: Dict[str, Any], ctx: Dict[
             findings.append(finding(r["rel"], r["line"], "no per-request loopback check"))
             any_fail = True
         if has_token:
-            findings.append(finding(r["rel"], r["line"], "token is a tripwire, not auth"))
+            findings.append(finding(r["rel"], r["line"], "token is a tripwire - not auth"))
 
     status = "fail" if any_fail else "pass"
     return make_check(cid, title, group, tier, status=status, findings=findings, fp_note=fp_note, command=command)
@@ -794,7 +986,7 @@ def check_vendor_mode_probes(root: Path, config: Dict[str, Any], ctx: Dict[str, 
         if text is None:
             continue
         if _TEST_MODE_RE.search(text) and _LIVE_MODE_RE.search(text):
-            findings.append(finding(rel(path, root), 1, "probe capabilities, never infer them from a key"))
+            findings.append(finding(rel(path, root), 1, "probe capabilities - never infer them from a key"))
 
     status = "review" if findings else "pass"
     return make_check(cid, title, group, tier, status=status, findings=findings, fp_note=fp_note, command=command)
@@ -916,19 +1108,21 @@ def check_contract_artifact_drift(root: Path, config: Dict[str, Any], ctx: Dict[
                        counts={"artifacts": len(artifacts)}, fp_note=fp_note, command=command)
 
 
-def _classify_uses(ref: str) -> str:
+def _classify_uses(ref: str) -> Tuple[str, bool]:
+    """(pin_kind, is_reusable). pin_kind in local/unpinned/sha/tag/branch;
+    is_reusable is independent of pin_kind (a reusable workflow call can be
+    sha-, tag- or branch-pinned just like an action)."""
     if ref.startswith(("./", ".\\")):
-        return "local"
+        return "local", False
     if "@" not in ref:
-        return "unpinned"
+        return "unpinned", False
     path_part, _sep, version = ref.rpartition("@")
-    if "/.github/workflows/" in path_part:
-        return "reusable"
+    is_reusable = "/.github/workflows/" in path_part
     if _SHA_RE.match(version):
-        return "sha"
+        return "sha", is_reusable
     if re.match(r"^v?\d", version):
-        return "tag"
-    return "branch"
+        return "tag", is_reusable
+    return "branch", is_reusable
 
 
 def check_action_pinning(root: Path, config: Dict[str, Any], ctx: Dict[str, Any]) -> Dict[str, Any]:
@@ -951,18 +1145,32 @@ def check_action_pinning(root: Path, config: Dict[str, Any], ctx: Dict[str, Any]
             if not m:
                 continue
             ref = m.group(1).strip().strip("'\"")
-            kind = _classify_uses(ref)
+            kind, is_reusable = _classify_uses(ref)
             counts[kind] = counts.get(kind, 0) + 1
-            if kind in ("local", "reusable"):
+            if kind == "local":
                 continue
             owner = ref.split("/", 1)[0] if "/" in ref else ""
-            if kind != "sha" and owner not in ("actions", "github"):
+            is_first_party = owner in ("actions", "github")
+
+            if is_reusable:
+                # A reusable workflow is a call into someone else's CI, not
+                # a third-party binary running in this one; a first-party
+                # or sha-pinned reusable is fine either way, an unpinned or
+                # loosely-pinned third-party one is a judgment call for a
+                # human, not an automatic fail — it's that owner's decision.
+                if kind != "sha" and not is_first_party:
+                    findings.append(finding(rel(wf, root), lineno, f"reusable workflow from {owner} pinned to {kind}"))
+                continue
+
+            if kind != "sha" and not is_first_party:
                 findings.append(finding(rel(wf, root), lineno,
                                          f"{kind}-pinned third-party action {ref}: prefer the upstream CLI pinned by version and checksum where the action has relicensed"))
-            elif kind == "tag" and owner in ("actions", "github"):
+            elif kind == "tag" and is_first_party:
                 findings.append(finding(rel(wf, root), lineno, f"tag-pinned first-party action {ref}"))
+            elif kind == "branch" and is_first_party:
+                findings.append(finding(rel(wf, root), lineno, f"branch-pinned first-party action {ref}"))
 
-    fail_count = sum(1 for f in findings if "third-party" in f["note"])
+    fail_count = sum(1 for f in findings if "third-party action" in f["note"])
     status = "fail" if fail_count else ("review" if findings else "pass")
     return make_check(cid, title, group, tier, status=status, findings=findings, counts=counts, fp_note=fp_note, command=command)
 
@@ -1093,11 +1301,12 @@ def check_docs_endpoint_drift(root: Path, config: Dict[str, Any], ctx: Dict[str,
     for p, locs in sorted(docs_paths.items()):
         if not any(p == sp or p.rstrip("/") == sp.rstrip("/") for sp in spec_paths):
             path, lineno = locs[0]
-            findings.append(finding(rel(path, root), lineno, f"documented, not in spec: {p}"))
+            findings.append(finding(rel(path, root), lineno, f"documented - not in spec: {p}"))
 
     in_spec_not_documented = sum(1 for sp in spec_paths if sp not in docs_paths)
     counts = {"documented_not_in_spec": len(findings), "in_spec_not_documented": in_spec_not_documented}
-    return make_check(cid, title, group, tier, status="review", findings=findings, counts=counts, fp_note=fp_note, command=command)
+    status = "pass" if (not findings and in_spec_not_documented == 0) else "review"
+    return make_check(cid, title, group, tier, status=status, findings=findings, counts=counts, fp_note=fp_note, command=command)
 
 
 def check_dos_surface(root: Path, config: Dict[str, Any], ctx: Dict[str, Any]) -> Dict[str, Any]:
@@ -1110,12 +1319,37 @@ def check_dos_surface(root: Path, config: Dict[str, Any], ctx: Dict[str, Any]) -
     findings: List[Dict[str, Any]] = []
     verdicts: List[str] = []
 
+    # A hostile tree can be enormous; this check builds several in-memory
+    # dicts of file content, so the total read here is capped rather than
+    # unbounded. size is checked via stat() before a file is read, so a file
+    # that would blow the budget is never actually loaded.
+    byte_budget = [DOS_SCAN_BYTE_CAP]
+    skipped_for_cap: List[Path] = []
+
+    def read_capped(p: Path) -> str:
+        if byte_budget[0] <= 0:
+            skipped_for_cap.append(p)
+            return ""
+        try:
+            size = p.stat().st_size
+        except OSError:
+            return ""
+        if size > byte_budget[0]:
+            skipped_for_cap.append(p)
+            return ""
+        text = read_text(p)
+        if text is None:
+            return ""
+        byte_budget[0] -= size
+        return text
+
     py_files = [p for p in iter_files(root) if p.suffix == ".py"]
-    texts = {p: (read_text(p) or "") for p in py_files}
+    texts = {p: read_capped(p) for p in py_files}
     non_test_texts = {p: t for p, t in texts.items() if not TEST_FILE_RE.match(p.name)}
-    server_sources = list(non_test_texts.values()) + [read_text(p) or "" for p in list(_dockerfiles(root)) + list(_compose_files(root))]
-    if (root / "Procfile").exists():
-        server_sources.append(read_text(root / "Procfile") or "")
+    infra_files = _infra_sources(root)
+    infra_texts = {p: read_capped(p) for p in infra_files}
+    combined_texts = {**texts, **infra_texts}
+    server_sources = list(non_test_texts.values()) + list(infra_texts.values())
     web_app = any(_WEB_FRAMEWORK_RE.search(t) for t in server_sources)
 
     def first_match(pat: re.Pattern[str], source=None):
@@ -1126,9 +1360,9 @@ def check_dos_surface(root: Path, config: Dict[str, Any], ctx: Dict[str, Any]) -
                     return p, lineno
         return None
 
-    def unconditional(pat: re.Pattern[str], label: str) -> None:
+    def unconditional(pat: re.Pattern[str], label: str, source=None) -> None:
         """A control with no per-site marker: judged only for web apps."""
-        hit = first_match(pat)
+        hit = first_match(pat, source)
         if hit:
             findings.append(finding(rel(hit[0], root), hit[1], f"{label} present at {rel(hit[0], root)}:{hit[1]}"))
             verdicts.append("present")
@@ -1139,8 +1373,9 @@ def check_dos_surface(root: Path, config: Dict[str, Any], ctx: Dict[str, Any]) -
             findings.append(finding("", 0, f"{label}: not applicable, no web server framework found"))
             verdicts.append("n/a")
 
-    # 1. request body size limit
-    unconditional(_BODY_LIMIT_RE, "request body size limit")
+    # 1. request body size limit — application code or deploy-time config
+    # (reverse proxy, ingress, compose/Dockerfile) can each set this.
+    unconditional(_BODY_LIMIT_RE, "request body size limit", combined_texts)
 
     # 2. outbound timeouts
     bad_calls = []
@@ -1160,23 +1395,13 @@ def check_dos_surface(root: Path, config: Dict[str, Any], ctx: Dict[str, Any]) -
         findings.append(finding("", 0, "outbound timeouts present"))
         verdicts.append("present")
 
-    # 3. rate limiting
-    unconditional(_RATE_LIMIT_RE, "rate limiting")
+    # 3. rate limiting — same combined sources as the body-size limit.
+    unconditional(_RATE_LIMIT_RE, "rate limiting", combined_texts)
 
     # 4. server concurrency / keep-alive caps
-    concurrency_sources = list(_dockerfiles(root)) + list(_compose_files(root))
-    procfile = root / "Procfile"
-    if procfile.exists():
-        concurrency_sources.append(procfile)
-    scripts_dir = root / "scripts"
-    if scripts_dir.is_dir():
-        concurrency_sources += [p for p in scripts_dir.rglob("*") if p.is_file()]
-    pyproject = root / "pyproject.toml"
-    if pyproject.exists():
-        concurrency_sources.append(pyproject)
     hit = None
-    for p in sorted(set(concurrency_sources), key=lambda x: rel(x, root)):
-        text = read_text(p) or ""
+    for p in sorted(infra_files, key=lambda x: rel(x, root)):
+        text = infra_texts[p]
         for lineno, line in enumerate(text.splitlines(), 1):
             if _CONCURRENCY_RE.search(line):
                 hit = (p, lineno)
@@ -1284,10 +1509,77 @@ def check_dos_surface(root: Path, config: Dict[str, Any], ctx: Dict[str, Any]) -
         findings.append(finding("", 0, "absent"))
         verdicts.append("absent-review")
 
+    if skipped_for_cap:
+        findings.append(finding("", 0, f"tree larger than the scan cap: {len(skipped_for_cap)} files not read"))
+        verdicts.append("flag-review")
+
     fail = any(v in ("absent", "flag-fail") for v in verdicts)
     review = any(v in ("unknown", "flag-review", "absent-review") for v in verdicts)
     status = "fail" if fail else ("review" if review else "pass")
     return make_check(cid, title, group, tier, status=status, findings=findings, fp_note=fp_note, command=command)
+
+
+def _is_local_rules_path(root: Path, cfg: Any) -> bool:
+    """True only for a semgrep_config that is an existing file inside root
+    and cannot itself reach out: not a URL, not a registry shorthand
+    (p/... or r/...), and not something that could be parsed as a flag."""
+    if not isinstance(cfg, str) or not cfg:
+        return False
+    if cfg.startswith(("http://", "https://", "p/", "r/", "-")):
+        return False
+    try:
+        resolved = (root / cfg).resolve()
+        resolved.relative_to(root.resolve())
+    except (ValueError, OSError):
+        return False
+    return resolved.is_file() and not resolved.is_symlink()
+
+
+def _invoke_tool(cmd: List[str], root: Path, ok_codes: Tuple[int, ...], tool_timeout: int) -> Tuple[Any, ...]:
+    """Run an external tool expected to emit JSON on ok_codes. Returns one of:
+    ("not-found",) ("timeout",) ("error", stderr_snippet)
+    ("bad-exit", rc, stderr_snippet) ("bad-json", rc, snippet) ("ok", data)."""
+    rc, out, err, kind = run_tool(cmd, root, timeout=tool_timeout)
+    if kind == "not found":
+        return ("not-found",)
+    if kind == "timeout":
+        return ("timeout",)
+    if kind == "error":
+        return ("error", (err or "").strip()[:120])
+    if rc not in ok_codes:
+        return ("bad-exit", rc, (err or "").strip()[:120])
+    try:
+        data = json.loads(out) if out.strip() else {}
+    except json.JSONDecodeError:
+        return ("bad-json", rc, (err or out or "").strip()[:120])
+    return ("ok", data)
+
+
+def _report_tool_outcome(name: str, outcome: Tuple[Any, ...], tool_timeout: int,
+                          findings: List[Dict[str, Any]], problems: List[str]) -> Optional[Any]:
+    """A finding + a problems() entry for every non-ok, non-not-found outcome
+    — a tool that failed is never silently treated as a clean run. Returns
+    the parsed JSON on an interpretable ('ok') result, else None."""
+    kind = outcome[0]
+    if kind == "not-found":
+        return None
+    if kind == "timeout":
+        findings.append(finding("", 0, f"tool {name}: timeout after {tool_timeout} s"))
+        problems.append(f"{name}: timeout")
+        return None
+    if kind == "error":
+        findings.append(finding("", 0, f"tool {name}: could not run ({outcome[1]})"))
+        problems.append(f"{name}: could not run")
+        return None
+    if kind == "bad-exit":
+        findings.append(finding("", 0, f"tool {name} exited {outcome[1]}: {outcome[2]}"))
+        problems.append(f"{name}: exited {outcome[1]}")
+        return None
+    if kind == "bad-json":
+        findings.append(finding("", 0, f"tool {name} exited {outcome[1]}: could not parse output ({outcome[2]})"))
+        problems.append(f"{name}: unparseable output")
+        return None
+    return outcome[1]
 
 
 def check_tools(root: Path, config: Dict[str, Any], ctx: Dict[str, Any]) -> Dict[str, Any]:
@@ -1300,18 +1592,31 @@ def check_tools(root: Path, config: Dict[str, Any], ctx: Dict[str, Any]) -> Dict
     any_findings = False
     any_high = False
     skip_reasons: List[str] = []
+    problems: List[str] = []
+
+    tool_timeout = ctx.get("tool_timeout", TOOL_TIMEOUT)
+    start = time.monotonic()
+
+    def budget_left() -> bool:
+        return (time.monotonic() - start) < TOOL_TOTAL_BUDGET
 
     def not_installed(name: str, cmd: List[str], source: str) -> None:
         skip_reasons.append(f"{name}: not installed. Run `{' '.join(cmd)}`. Install from {source}.")
 
-    # pip-audit
-    cmd = ["pip-audit", "-f", "json"]
-    if which("pip-audit"):
-        _rc, out, _err, kind = run_tool(cmd, root, timeout=TOOL_TIMEOUT)
-        if kind is None:
+    def not_run(name: str) -> None:
+        findings.append(finding("", 0, f"tool {name}: not run: time budget"))
+
+    # pip-audit — exit 1 means vulnerabilities found, not an error.
+    name, cmd = "pip-audit", ["pip-audit", "-f", "json"]
+    if not which(name):
+        not_installed(name, cmd, "https://pypi.org/project/pip-audit/ (PyPA)")
+    elif not budget_left():
+        not_run(name)
+    else:
+        data = _report_tool_outcome(name, _invoke_tool(cmd, root, (0, 1), tool_timeout), tool_timeout, findings, problems)
+        if data is not None:
             any_ran = True
             try:
-                data = json.loads(out) if out.strip() else {}
                 deps = data.get("dependencies", data if isinstance(data, list) else [])
                 vuln_pkgs = sum(1 for d in deps if d.get("vulns"))
                 vuln_count = sum(len(d.get("vulns", [])) for d in deps)
@@ -1319,152 +1624,151 @@ def check_tools(root: Path, config: Dict[str, Any], ctx: Dict[str, Any]) -> Dict
                 if vuln_count:
                     any_findings = True
                     findings.append(finding("", 0, f"pip-audit: {vuln_count} vulnerabilities in {vuln_pkgs} packages"))
-            except (json.JSONDecodeError, AttributeError):
+            except AttributeError:
                 pass
-    else:
-        not_installed("pip-audit", cmd, "https://pypi.org/project/pip-audit/ (PyPA)")
 
-    # bandit
-    cmd = ["bandit", "-r", str(root), "-f", "json", "-q"]
-    if which("bandit"):
-        _rc, out, _err, kind = run_tool(cmd, root, timeout=TOOL_TIMEOUT)
-        if kind is None:
+    # bandit — exit 1 means findings, not an error.
+    name, cmd = "bandit", ["bandit", "-r", str(root), "-f", "json", "-q"]
+    if not which(name):
+        not_installed(name, cmd, "https://pypi.org/project/bandit/ (PyCQA)")
+    elif not budget_left():
+        not_run(name)
+    else:
+        data = _report_tool_outcome(name, _invoke_tool(cmd, root, (0, 1), tool_timeout), tool_timeout, findings, problems)
+        if data is not None:
             any_ran = True
-            try:
-                data = json.loads(out) if out.strip() else {}
-                by_sev: Dict[str, int] = {}
-                for item in data.get("results", []):
-                    sev = item.get("issue_severity", "UNKNOWN")
-                    by_sev[sev] = by_sev.get(sev, 0) + 1
-                counts["bandit"] = dict(sorted(by_sev.items()))
-                total = sum(by_sev.values())
-                if total:
-                    any_findings = True
-                    findings.append(finding("", 0, f"bandit: {total} findings"))
-                if by_sev.get("HIGH") or by_sev.get("CRITICAL"):
-                    any_high = True
-            except json.JSONDecodeError:
-                pass
-    else:
-        not_installed("bandit", cmd, "https://pypi.org/project/bandit/ (PyCQA)")
+            by_sev: Dict[str, int] = {}
+            for item in data.get("results", []):
+                sev = item.get("issue_severity", "UNKNOWN")
+                by_sev[sev] = by_sev.get(sev, 0) + 1
+            counts["bandit"] = dict(sorted(by_sev.items()))
+            total = sum(by_sev.values())
+            if total:
+                any_findings = True
+                findings.append(finding("", 0, f"bandit: {total} findings"))
+            if by_sev.get("HIGH") or by_sev.get("CRITICAL"):
+                any_high = True
 
-    # semgrep — only with a local config; the default registry configs need network
+    # semgrep — only with a local config; the default registry configs need
+    # network, and a registry shorthand or URL is also how semgrep would
+    # reach out on its own, so those are rejected the same as no config at
+    # all. Exit 1 means findings, not an error.
     semgrep_cfg = config.get("semgrep_config")
-    if semgrep_cfg:
-        cmd = ["semgrep", "--json", "--config", str(semgrep_cfg)]
-        if which("semgrep"):
-            _rc, out, _err, kind = run_tool(cmd, root, timeout=TOOL_TIMEOUT)
-            if kind is None:
-                any_ran = True
-                try:
-                    data = json.loads(out) if out.strip() else {}
-                    results = data.get("results", [])
-                    counts["semgrep"] = len(results)
-                    if results:
-                        any_findings = True
-                        findings.append(finding("", 0, f"semgrep: {len(results)} findings"))
-                except json.JSONDecodeError:
-                    pass
-        else:
-            not_installed("semgrep", cmd, "https://github.com/semgrep/semgrep (local rules only)")
-    else:
+    name = "semgrep"
+    if not semgrep_cfg:
         skip_reasons.append("semgrep: skipped, no semgrep_config set (the default registry config needs network access)")
-
-    # osv-scanner
-    cmd = ["osv-scanner", "--format", "json", "-r", str(root)]
-    if which("osv-scanner"):
-        _rc, out, _err, kind = run_tool(cmd, root, timeout=TOOL_TIMEOUT)
-        if kind is None:
-            any_ran = True
-            try:
-                data = json.loads(out) if out.strip() else {}
-                vuln_count = sum(len(pkg.get("vulnerabilities", [])) for r in data.get("results", []) for pkg in r.get("packages", []))
-                counts["osv_scanner"] = {"vulnerabilities": vuln_count}
-                if vuln_count:
-                    any_findings = True
-                    findings.append(finding("", 0, f"osv-scanner: {vuln_count} vulnerabilities"))
-            except json.JSONDecodeError:
-                pass
+    elif not _is_local_rules_path(root, semgrep_cfg):
+        skip_reasons.append("semgrep: semgrep_config must be a local rules path inside the repository")
+    elif not which(name):
+        not_installed(name, ["semgrep", "--json", "--config", str(semgrep_cfg)], "https://github.com/semgrep/semgrep (local rules only)")
+    elif not budget_left():
+        not_run(name)
     else:
-        not_installed("osv-scanner", cmd, "https://github.com/google/osv-scanner (Google)")
-
-    # trivy
-    cmd = ["trivy", "fs", "--format", "json", str(root)]
-    if which("trivy"):
-        _rc, out, _err, kind = run_tool(cmd, root, timeout=TOOL_TIMEOUT)
-        if kind is None:
+        cmd = ["semgrep", "--json", "--config", str((root / semgrep_cfg).resolve())]
+        data = _report_tool_outcome(name, _invoke_tool(cmd, root, (0, 1), tool_timeout), tool_timeout, findings, problems)
+        if data is not None:
             any_ran = True
-            try:
-                data = json.loads(out) if out.strip() else {}
-                by_sev = {}
-                for result in data.get("Results", []) or []:
-                    for v in result.get("Vulnerabilities", []) or []:
-                        sev = v.get("Severity", "UNKNOWN")
-                        by_sev[sev] = by_sev.get(sev, 0) + 1
-                counts["trivy"] = dict(sorted(by_sev.items()))
-                total = sum(by_sev.values())
+            results = data.get("results", [])
+            counts["semgrep"] = len(results)
+            if results:
+                any_findings = True
+                findings.append(finding("", 0, f"semgrep: {len(results)} findings"))
+
+    # osv-scanner — exit 1 means vulnerabilities found, not an error.
+    name, cmd = "osv-scanner", ["osv-scanner", "--format", "json", "-r", str(root)]
+    if not which(name):
+        not_installed(name, cmd, "https://github.com/google/osv-scanner (Google)")
+    elif not budget_left():
+        not_run(name)
+    else:
+        data = _report_tool_outcome(name, _invoke_tool(cmd, root, (0, 1), tool_timeout), tool_timeout, findings, problems)
+        if data is not None:
+            any_ran = True
+            vuln_count = sum(len(pkg.get("vulnerabilities", [])) for r in data.get("results", []) for pkg in r.get("packages", []))
+            counts["osv_scanner"] = {"vulnerabilities": vuln_count}
+            if vuln_count:
+                any_findings = True
+                findings.append(finding("", 0, f"osv-scanner: {vuln_count} vulnerabilities"))
+
+    # trivy — findings appear in the JSON even on a clean exit 0; any other
+    # exit is trivy itself failing.
+    name, cmd = "trivy", ["trivy", "fs", "--format", "json", str(root)]
+    if not which(name):
+        not_installed(name, cmd, "https://github.com/aquasecurity/trivy (Aqua)")
+    elif not budget_left():
+        not_run(name)
+    else:
+        data = _report_tool_outcome(name, _invoke_tool(cmd, root, (0,), tool_timeout), tool_timeout, findings, problems)
+        if data is not None:
+            any_ran = True
+            by_sev = {}
+            for result in data.get("Results", []) or []:
+                for v in result.get("Vulnerabilities", []) or []:
+                    sev = v.get("Severity", "UNKNOWN")
+                    by_sev[sev] = by_sev.get(sev, 0) + 1
+            counts["trivy"] = dict(sorted(by_sev.items()))
+            total = sum(by_sev.values())
+            if total:
+                any_findings = True
+                findings.append(finding("", 0, f"trivy: {total} findings"))
+            if by_sev.get("HIGH") or by_sev.get("CRITICAL"):
+                any_high = True
+
+    # npm audit — only when there is a lockfile; exit 1 means findings.
+    if (root / "package-lock.json").exists():
+        name, cmd = "npm", ["npm", "audit", "--json"]
+        if not which(name):
+            not_installed(name, cmd, "https://docs.npmjs.com/cli/v10/commands/npm-audit")
+        elif not budget_left():
+            not_run(name)
+        else:
+            data = _report_tool_outcome(name, _invoke_tool(cmd, root, (0, 1), tool_timeout), tool_timeout, findings, problems)
+            if data is not None:
+                any_ran = True
+                findings.append(finding("", 0, "npm audit honours the .npmrc registry in this repository"))
+                by_sev = data.get("metadata", {}).get("vulnerabilities", {})
+                counts["npm_audit"] = by_sev
+                total = sum(v for k, v in by_sev.items() if k != "total" and isinstance(v, int))
                 if total:
                     any_findings = True
-                    findings.append(finding("", 0, f"trivy: {total} findings"))
-                if by_sev.get("HIGH") or by_sev.get("CRITICAL"):
+                    findings.append(finding("", 0, f"npm audit: {total} findings"))
+                if by_sev.get("high") or by_sev.get("critical"):
                     any_high = True
-            except json.JSONDecodeError:
-                pass
-    else:
-        not_installed("trivy", cmd, "https://github.com/aquasecurity/trivy (Aqua)")
 
-    # npm audit — only when there is a lockfile
-    if (root / "package-lock.json").exists():
-        cmd = ["npm", "audit", "--json"]
-        if which("npm"):
-            _rc, out, _err, kind = run_tool(cmd, root, timeout=TOOL_TIMEOUT)
-            if kind is None:
-                any_ran = True
-                try:
-                    data = json.loads(out) if out.strip() else {}
-                    by_sev = data.get("metadata", {}).get("vulnerabilities", {})
-                    counts["npm_audit"] = by_sev
-                    total = sum(v for k, v in by_sev.items() if k != "total" and isinstance(v, int))
-                    if total:
-                        any_findings = True
-                        findings.append(finding("", 0, f"npm audit: {total} findings"))
-                    if by_sev.get("high") or by_sev.get("critical"):
-                        any_high = True
-                except json.JSONDecodeError:
-                    pass
-        else:
-            not_installed("npm", cmd, "https://docs.npmjs.com/cli/v10/commands/npm-audit")
-
-    # lychee — network tool, run only if the operator already installed it
+    # lychee — network tool, run only if the operator already installed it.
+    # Its "broken links found" exit code varies by version, so both 0 and a
+    # nonzero exit are treated as potentially-clean/findings here; anything
+    # producing no parseable JSON still surfaces as a problem via _report_tool_outcome.
     docs_dirs = config.get("docs_dirs") or ["docs", "README.md"]
+    name = "lychee"
     cmd = ["lychee", "--format", "json"] + docs_dirs
-    if which("lychee"):
-        _rc, out, _err, kind = run_tool(cmd, root, timeout=TOOL_TIMEOUT)
-        if kind is None:
-            any_ran = True
-            try:
-                data = json.loads(out) if out.strip() else {}
-                error_map = data.get("error_map", {})
-                count = sum(len(v) for v in error_map.values()) if isinstance(error_map, dict) else 0
-                counts["lychee"] = {"broken_links": count}
-                if count:
-                    any_findings = True
-                    findings.append(finding("", 0, f"lychee: {count} broken links"))
-            except json.JSONDecodeError:
-                pass
+    if not which(name):
+        not_installed(name, cmd, "https://github.com/lycheeverse/lychee (this tool makes network requests; run it deliberately)")
+    elif not budget_left():
+        not_run(name)
     else:
-        not_installed("lychee", cmd, "https://github.com/lycheeverse/lychee (this tool makes network requests; run it deliberately)")
+        data = _report_tool_outcome(name, _invoke_tool(cmd, root, (0, 1, 2), tool_timeout), tool_timeout, findings, problems)
+        if data is not None:
+            any_ran = True
+            error_map = data.get("error_map", {})
+            count = sum(len(v) for v in error_map.values()) if isinstance(error_map, dict) else 0
+            counts["lychee"] = {"broken_links": count}
+            if count:
+                any_findings = True
+                findings.append(finding("", 0, f"lychee: {count} broken links"))
 
     if any_high:
         status = "fail"
-    elif any_findings:
+    elif any_findings or problems:
         status = "review"
     elif any_ran:
         status = "pass"
     else:
         status = "skip"
-    reason = "; ".join(skip_reasons) if status == "skip" else ""
-    command = ("pip-audit -f json && bandit -r <root> -f json -q && osv-scanner --format json -r <root> && "
+    reason = "; ".join(skip_reasons) if status == "skip" else "; ".join(problems)
+    command = ("the scanner itself makes no network calls; the external tools it invokes may "
+               "(pip-audit, osv-scanner, trivy, npm audit, lychee): "
+               "pip-audit -f json && bandit -r <root> -f json -q && osv-scanner --format json -r <root> && "
                "trivy fs --format json <root> && npm audit --json (if package-lock.json) && "
                "lychee --format json <docs> (network!)")
     return make_check(cid, title, group, tier, status=status, reason=reason, findings=findings,
@@ -1499,22 +1803,48 @@ def build_registry() -> List[Tuple[str, str, str, str, Any]]:
     ]
 
 
+class ConfigError(Exception):
+    """.readiness.json exists but is unusable: bad JSON, wrong shape, or a
+    field of the wrong type. This is a usage error, not '{}'."""
+
+
 def load_config(path: Optional[Path]) -> Dict[str, Any]:
     if path is None or not path.exists():
         return {}
     try:
-        data = json.loads(path.read_text(encoding="utf-8", errors="replace"))
-        return data if isinstance(data, dict) else {}
-    except (OSError, json.JSONDecodeError):
-        return {}
+        text = path.read_text(encoding="utf-8", errors="strict")
+    except (OSError, UnicodeDecodeError) as e:
+        raise ConfigError(f"could not read {path}: {e}") from e
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as e:
+        raise ConfigError(f"{path} is not valid JSON: {e}") from e
+    if not isinstance(data, dict):
+        raise ConfigError(f"{path} must be a JSON object")
+    if "docs_dirs" in data and not (isinstance(data["docs_dirs"], list) and all(isinstance(x, str) for x in data["docs_dirs"])):
+        raise ConfigError(f"{path}: docs_dirs must be a list of strings")
+    if "disable" in data and not (isinstance(data["disable"], list) and all(isinstance(x, str) for x in data["disable"])):
+        raise ConfigError(f"{path}: disable must be a list of strings")
+    if "semgrep_config" in data and not isinstance(data["semgrep_config"], str):
+        raise ConfigError(f"{path}: semgrep_config must be a string")
+    return data
 
 
 def run_checks(
     root: Path, tier: str, config: Dict[str, Any],
     only: Optional[List[str]], archive: Optional[str], history: int,
+    tool_timeout: int = TOOL_TIMEOUT, honour_disable: bool = True,
 ) -> Dict[str, Any]:
-    ctx: Dict[str, Any] = {"archive": archive, "history": history, "is_git": is_git_repo(root)}
-    disabled = set(config.get("disable") or [])
+    ctx: Dict[str, Any] = {
+        "archive": archive, "history": history, "is_git": is_git_repo(root),
+        "tool_timeout": tool_timeout,
+    }
+    requested_disable = sorted(set(config.get("disable") or []))
+    # The scanned repository's own .readiness.json is untrusted: honouring
+    # its "disable" list would let a hostile target turn off the checks run
+    # against it. Only an operator explicitly passing --config opts in.
+    disabled = set(requested_disable) if honour_disable else set()
+    ignored_disable = [] if honour_disable else requested_disable
     checks_out: List[Dict[str, Any]] = []
 
     for cid, ctitle, group, ctier, fn in build_registry():
@@ -1526,28 +1856,55 @@ def run_checks(
         if cid in disabled:
             checks_out.append(make_check(cid, ctitle, group, ctier, status="skip", reason="disabled via config"))
             continue
-        checks_out.append(fn(root, config, ctx))
+        # A check crashing on hostile input must not take the whole run down
+        # with it: the failure is isolated and reported, the rest continues.
+        try:
+            result = fn(root, config, ctx)
+        except Exception as e:  # noqa: BLE001 - deliberately broad, see above
+            result = make_check(cid, ctitle, group, ctier, status="review",
+                                 reason=f"check crashed: {type(e).__name__}")
+        checks_out.append(result)
 
     summary = {"pass": 0, "fail": 0, "review": 0, "skip": 0}
     for c in checks_out:
         summary[c["status"]] = summary.get(c["status"], 0) + 1
 
-    return {"root": str(root), "tier": tier, "checks": checks_out, "summary": summary}
+    return {"root": str(root), "tier": tier, "checks": checks_out, "summary": summary, "ignored_disable": ignored_disable}
 
 
 # --------------------------------------------------------------------------- rendering
+
+
+def _truncate(s: str, limit: int = 160) -> str:
+    """Bounds a single line in the markdown summary; the JSON report keeps
+    the full text — this only protects the human-facing table."""
+    return s if len(s) <= limit else s[: limit - 1] + "…"
+
+
+def _md_cell(s: str) -> str:
+    """Defense in depth for a rendered table/list cell: re-apply the same
+    untrusted-string sanitizer (finding()/make_check() already applied it
+    once at construction) and escape any literal pipe so it cannot break a
+    markdown table row."""
+    return sanitize(s, limit=200).replace("|", "\\|")
 
 
 def render_markdown(report: Dict[str, Any]) -> str:
     s = report["summary"]
     out = [
         f"# Production readiness — tier: {report['tier']} — pass {s['pass']} · fail {s['fail']} · review {s['review']} · skip {s['skip']}",
+    ]
+    ignored = report.get("ignored_disable") or []
+    if ignored:
+        ids = ", ".join(sanitize(i) for i in ignored)
+        out.append(f"repository config asked to disable {len(ignored)} checks: {ids} (ignored; pass --config to honour)")
+    out += [
         "",
         "| id | status | findings | note |",
         "|---|---|---:|---|",
     ]
     for c in report["checks"]:
-        note = c["reason"] or c["title"]
+        note = _md_cell(c["reason"] or c["title"])
         if len(note) > 80:
             note = note[:79] + "…"
         out.append(f"| {c['id']} | {c['status']} | {len(c['findings'])} | {note} |")
@@ -1559,8 +1916,8 @@ def render_markdown(report: Dict[str, Any]) -> str:
         out.append(f"## {c['id']} ({c['status']})")
         shown = c["findings"][:5]
         for f in shown:
-            loc = f"{f['path']}:{f['line']}" if f["path"] else "-"
-            out.append(f"- {loc} — {f['note']}")
+            loc = _md_cell(f"{f['path']}:{f['line']}") if f["path"] else "-"
+            out.append(f"- {loc} — {_truncate(_md_cell(f['note']))}")
         remaining = len(c["findings"]) - len(shown)
         if remaining > 0:
             out.append(f"- {remaining} more")
@@ -1570,7 +1927,7 @@ def render_markdown(report: Dict[str, Any]) -> str:
     if skips:
         out.append("## skipped")
         for c in skips:
-            out.append(f"- {c['id']}: {c['reason']}")
+            out.append(f"- {c['id']}: {_truncate(_md_cell(c['reason']))}")
         out.append("")
 
     text = "\n".join(out).rstrip("\n") + "\n"
@@ -1596,6 +1953,8 @@ def main(argv: List[str]) -> int:
     parser.add_argument("--archive", default=None, help="Inspect this tar or zip instead of running git archive")
     parser.add_argument("--history", type=int, default=0, help="Also grep the last N commits for credential_patterns")
     parser.add_argument("--only", default=None, help="Comma-separated check ids to run, ignoring --tier")
+    parser.add_argument("--tool-timeout", type=int, default=TOOL_TIMEOUT, dest="tool_timeout",
+                         help=f"Seconds allowed per external tool in the tools check (default {TOOL_TIMEOUT})")
     args = parser.parse_args(argv)
 
     root = Path(args.root).resolve()
@@ -1603,16 +1962,32 @@ def main(argv: List[str]) -> int:
         print(f"readiness: {root} is not a directory", file=sys.stderr)
         return 2
 
-    config_path = Path(args.config) if args.config else root / ".readiness.json"
-    config = load_config(config_path)
     only = [c.strip() for c in args.only.split(",") if c.strip()] if args.only else None
+    if only is not None:
+        valid_ids = [c[0] for c in build_registry()]
+        unknown = [i for i in only if i not in valid_ids]
+        if unknown:
+            print(f"readiness: unknown check id(s): {', '.join(unknown)}. Valid ids: {', '.join(valid_ids)}", file=sys.stderr)
+            return 2
 
-    report = run_checks(root, args.tier, config, only, args.archive, args.history)
+    honour_disable = args.config is not None
+    config_path = Path(args.config) if args.config else root / ".readiness.json"
+    try:
+        config = load_config(config_path)
+    except ConfigError as e:
+        print(f"readiness: {e}", file=sys.stderr)
+        return 2
+
+    out_dir = Path(args.out) if args.out else root / ".readiness"
+    if not args.json and out_dir.is_symlink():
+        print(f"readiness: refusing to write through a symlink: {out_dir}", file=sys.stderr)
+        return 2
+
+    report = run_checks(root, args.tier, config, only, args.archive, args.history, args.tool_timeout, honour_disable)
 
     if args.json:
         sys.stdout.write(json.dumps(report, indent=2, sort_keys=True) + "\n")
     else:
-        out_dir = Path(args.out) if args.out else root / ".readiness"
         out_dir.mkdir(parents=True, exist_ok=True)
         (out_dir / "report.json").write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         sys.stdout.write(render_markdown(report))

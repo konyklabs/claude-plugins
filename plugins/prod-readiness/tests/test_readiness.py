@@ -141,6 +141,48 @@ def test_markdown_never_contains_matched_secret_text(tmp_path):
     assert any("stripe-live-key" in n for n in finding_notes)
 
 
+def test_only_with_unknown_check_id_is_a_usage_error(tmp_path):
+    r = run_cli([".", "--only", "not-a-real-check"], cwd=tmp_path)
+    assert r.returncode == 2
+    assert "not-a-real-check" in r.stderr
+    assert "archive-hygiene" in r.stderr  # the valid-ids list is included
+
+
+def test_malformed_readiness_json_is_a_usage_error(tmp_path):
+    write(tmp_path / ".readiness.json", "{not valid json")
+    r = run_cli(["."], cwd=tmp_path)
+    assert r.returncode == 2
+    assert r.stdout == ""
+    assert ".readiness.json" in r.stderr
+
+
+def test_readiness_json_docs_dirs_wrong_type_is_a_usage_error(tmp_path):
+    write(tmp_path / ".readiness.json", json.dumps({"docs_dirs": "docs"}))
+    r = run_cli(["."], cwd=tmp_path)
+    assert r.returncode == 2
+    assert "docs_dirs" in r.stderr
+
+
+def test_readiness_json_disable_wrong_type_is_a_usage_error(tmp_path):
+    write(tmp_path / ".readiness.json", json.dumps({"disable": "tools"}))
+    r = run_cli(["."], cwd=tmp_path)
+    assert r.returncode == 2
+    assert "disable" in r.stderr
+
+
+def test_readiness_json_semgrep_config_wrong_type_is_a_usage_error(tmp_path):
+    write(tmp_path / ".readiness.json", json.dumps({"semgrep_config": 5}))
+    r = run_cli(["."], cwd=tmp_path)
+    assert r.returncode == 2
+    assert "semgrep_config" in r.stderr
+
+
+def test_readiness_json_non_object_is_a_usage_error(tmp_path):
+    write(tmp_path / ".readiness.json", json.dumps([1, 2, 3]))
+    r = run_cli(["."], cwd=tmp_path)
+    assert r.returncode == 2
+
+
 # --------------------------------------------------------------------------- archive-hygiene
 
 
@@ -198,8 +240,14 @@ def test_archive_hygiene_against_real_git_archive(tmp_path):
     write(tmp_path / ".gitignore", ".env\n")
     init_git(tmp_path)
     result = readiness.check_archive_hygiene(tmp_path, {}, mkctx(is_git=True))
-    # .env is gitignored so it never enters the archive; the archive itself is clean.
-    assert result["status"] == "pass"
+    # .env is gitignored so it never enters the archive; the archive content
+    # itself is clean. But .env still sits ignored in the working tree, which
+    # is real signal (a hand-built zip would ship it), so this is a review,
+    # not a silent pass — distinct from a "dotenv file"/secret hit in the
+    # archive content itself, which would be a fail.
+    assert result["status"] == "review"
+    assert not any(f["note"] == "dotenv file" for f in result["findings"])
+    assert any("ignored files present in the working tree" in f["note"] for f in result["findings"])
 
 
 @pytest.mark.skipif(GIT is None, reason="git not on PATH")
@@ -209,9 +257,24 @@ def test_archive_hygiene_reports_ignored_worktree_files_without_failing(tmp_path
     init_git(tmp_path)
     write(tmp_path / "secrets.local", "SECRET=1\n")
     result = readiness.check_archive_hygiene(tmp_path, {}, mkctx(is_git=True))
-    assert result["status"] == "pass"
+    # The archive content is clean, so this is a review, not a fail — the
+    # ignored file never entered the archive, it's just present on disk.
+    assert result["status"] == "review"
     notes = [f["note"] for f in result["findings"]]
     assert any("ignored files present in the working tree" in n for n in notes)
+
+
+@pytest.mark.skipif(GIT is None, reason="git not on PATH")
+def test_archive_hygiene_scopes_to_root_subdirectory(tmp_path):
+    # A .env at the repo root, outside the scanned subdirectory, must not be
+    # reported: the archive is scoped to ROOT ("-- ."), not the whole repo.
+    write(tmp_path / ".env", "TOP_LEVEL_SECRET=1\n")
+    app_dir = tmp_path / "app"
+    write(app_dir / "main.py", "x = 1\n")
+    init_git(tmp_path)
+    result = readiness.check_archive_hygiene(app_dir, {}, mkctx(is_git=True))
+    assert result["status"] == "pass"
+    assert not any(".env" in f["path"] for f in result["findings"])
 
 
 def test_archive_hygiene_archive_not_found_skips(tmp_path):
@@ -242,10 +305,16 @@ def make_fake_tool(bin_dir: Path, name: str, script: str) -> Path:
     return p
 
 
+def test_history_secrets_skips_when_not_a_git_repo(tmp_path):
+    result = readiness.check_history_secrets(tmp_path, {}, mkctx(is_git=False))
+    assert result["status"] == "skip"
+    assert result["reason"] == "not a git repository"
+
+
 def test_history_secrets_skips_when_gitleaks_absent(tmp_path, monkeypatch):
     monkeypatch.setenv("PATH", str(tmp_path / "empty-bin"))
     (tmp_path / "empty-bin").mkdir()
-    result = readiness.check_history_secrets(tmp_path, {}, mkctx(is_git=False))
+    result = readiness.check_history_secrets(tmp_path, {}, mkctx(is_git=True))
     assert result["status"] == "skip"
     assert result["reason"] == "gitleaks not installed"
     assert "gitleaks.com" not in result["command"]
@@ -256,7 +325,7 @@ def test_history_secrets_parses_fake_gitleaks_report_without_secret_text(tmp_pat
     bin_dir = tmp_path / "bin"
     make_fake_tool(bin_dir, "gitleaks", FAKE_GITLEAKS_HIT)
     monkeypatch.setenv("PATH", str(bin_dir) + os.pathsep + os.environ.get("PATH", ""))
-    result = readiness.check_history_secrets(tmp_path, {}, mkctx(is_git=False))
+    result = readiness.check_history_secrets(tmp_path, {}, mkctx(is_git=True))
     assert result["status"] == "fail"
     assert result["findings"] == [{"path": "app.py", "line": 3, "note": "aws-access-key"}]
     assert result["counts"] == {"aws-access-key": 1}
@@ -280,9 +349,24 @@ def test_history_secrets_fetch_depth_zero_avoids_finding(tmp_path, monkeypatch):
     write(tmp_path / ".github" / "workflows" / "secrets-scan.yml",
           "jobs:\n  scan:\n    steps:\n      - uses: actions/checkout@v6\n"
           "        with:\n          fetch-depth: 0\n      - run: gitleaks detect\n")
-    result = readiness.check_history_secrets(tmp_path, {}, mkctx(is_git=False))
-    assert result["status"] == "skip"  # gitleaks itself still not installed
+    result = readiness.check_history_secrets(tmp_path, {}, mkctx(is_git=True))
+    assert result["status"] == "skip"
+    assert result["reason"] == "gitleaks not installed"  # gitleaks itself still not installed
     assert not any("tip-only checkout" in f["note"] for f in result["findings"])
+
+
+def test_history_secrets_tip_only_rule_ignores_mere_secrets_reference(tmp_path, monkeypatch):
+    # A workflow that references `secrets.TOKEN` for deployment credentials
+    # is not running a secret scanner, so a tip-only checkout there is none
+    # of this check's business.
+    monkeypatch.setenv("PATH", str(tmp_path / "empty-bin"))
+    (tmp_path / "empty-bin").mkdir()
+    write(tmp_path / ".github" / "workflows" / "deploy.yml",
+          "jobs:\n  deploy:\n    steps:\n      - uses: actions/checkout@v6\n"
+          "      - run: deploy.sh\n        env:\n          TOKEN: ${{ secrets.TOKEN }}\n")
+    result = readiness.check_history_secrets(tmp_path, {}, mkctx(is_git=True))
+    assert not any("tip-only checkout" in f["note"] for f in result["findings"])
+    assert result["status"] == "skip"  # gitleaks not installed, nothing else fired
 
 
 # --------------------------------------------------------------------------- credential-patterns
@@ -321,6 +405,45 @@ def test_credential_patterns_history_scan_finds_removed_secret(tmp_path):
     assert any("acme-key @" in f["note"] for f in result["findings"])
 
 
+def test_credential_patterns_invalid_regex_is_a_review_finding_not_silent(tmp_path):
+    write(tmp_path / "app.py", "x = 1\n")
+    config = {"credential_patterns": [
+        {"name": "good", "regex": r"ACME-[0-9]{6}"},
+        {"name": "bad", "regex": r"("},  # unbalanced group: invalid Python regex too
+    ]}
+    result = readiness.check_credential_patterns(tmp_path, config, mkctx())
+    assert result["status"] == "review"
+    assert any(f["note"].startswith("pattern bad: invalid regex") for f in result["findings"])
+
+
+@pytest.mark.skipif(GIT is None, reason="git not on PATH")
+def test_credential_patterns_history_dash_leading_pattern_uses_double_dash(tmp_path):
+    # Without "--" before the pattern, git grep would treat a leading "-" as
+    # an unknown option and fail; this proves the fix finds the match.
+    write(tmp_path / "app.py", 'key = "-secret-999999"\n')
+    init_git(tmp_path)
+    write(tmp_path / "app.py", "x = 1\n")
+    subprocess.run(["git", "add", "-A"], cwd=str(tmp_path), check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "remove secret"], cwd=str(tmp_path), check=True)
+    config = {"credential_patterns": [{"name": "dash-key", "regex": r"-secret-[0-9]{6}"}]}
+    result = readiness.check_credential_patterns(tmp_path, config, mkctx(is_git=True, history=5))
+    assert result["status"] == "fail"
+    assert any("dash-key @" in f["note"] for f in result["findings"])
+
+
+@pytest.mark.skipif(GIT is None, reason="git not on PATH")
+def test_credential_patterns_history_git_grep_error_is_a_review_finding(tmp_path):
+    # A pattern that is valid Python re but not valid POSIX ERE (git grep -E)
+    # makes git itself fail (exit 128, not "no match" which is exit 1); that
+    # must surface as a review finding naming the pattern, not be swallowed.
+    write(tmp_path / "app.py", "x = 1\n")
+    init_git(tmp_path)
+    config = {"credential_patterns": [{"name": "bad-ere", "regex": r"(?:foo)"}]}
+    result = readiness.check_credential_patterns(tmp_path, config, mkctx(is_git=True, history=1))
+    assert result["status"] == "review"
+    assert any(f["note"].startswith("pattern bad-ere: git grep failed") for f in result["findings"])
+
+
 # --------------------------------------------------------------------------- identifier-shapes
 
 
@@ -343,6 +466,14 @@ def test_identifier_shapes_flags_hit_under_tests_dir(tmp_path):
     result = readiness.check_identifier_shapes(tmp_path, config, mkctx())
     assert result["status"] == "fail"
     assert result["findings"] == [{"path": "tests/fixtures.py", "line": 1, "note": "order-id"}]
+
+
+def test_identifier_shapes_invalid_regex_is_a_review_finding_not_silent(tmp_path):
+    write(tmp_path / "tests" / "fixtures.py", "x = 1\n")
+    config = {"identifier_patterns": [{"name": "bad", "regex": r"["}]}  # unterminated char class
+    result = readiness.check_identifier_shapes(tmp_path, config, mkctx())
+    assert result["status"] == "review"
+    assert any(f["note"].startswith("pattern bad: invalid regex") for f in result["findings"])
 
 
 # --------------------------------------------------------------------------- config-endpoint-secrets
@@ -426,6 +557,24 @@ def test_debug_endpoint_passes_with_loopback_check_and_flags_token_tripwire(tmp_
     notes = [f["note"] for f in result["findings"]]
     assert "per-request loopback check present" in notes
     assert "token is a tripwire, not auth" in notes
+
+
+def test_debug_endpoint_exposure_scoped_to_handler_not_whole_module(tmp_path):
+    # The loopback literal and client-address term appear in an unrelated,
+    # earlier function; a whole-module scan would wrongly see them as
+    # "guarding" the debug route below, which has no check of its own.
+    write(tmp_path / "app.py",
+          "def unrelated():\n"
+          "    if request.client.host == '127.0.0.1':\n"
+          "        return True\n"
+          "    return False\n"
+          "\n"
+          "@app.get('/debug/status')\n"
+          "def status():\n"
+          "    return {}\n")
+    result = readiness.check_debug_endpoint_exposure(tmp_path, {}, mkctx())
+    assert result["status"] == "fail"
+    assert result["findings"][0]["note"] == "no per-request loopback check"
 
 
 # --------------------------------------------------------------------------- html-sinks
@@ -671,6 +820,15 @@ def test_docs_endpoint_drift_review_flags_undocumented_and_underspecified(tmp_pa
     assert any("documented, not in spec" in f["note"] for f in result["findings"])
 
 
+def test_docs_endpoint_drift_pass_when_spec_and_docs_agree(tmp_path):
+    write(tmp_path / "openapi.json", json.dumps({"paths": {"/api/orders": {}}}))
+    write(tmp_path / "docs" / "guide.md", "Call `/api/orders` to list orders.\n")
+    result = readiness.check_docs_endpoint_drift(tmp_path, {}, mkctx())
+    assert result["status"] == "pass"
+    assert result["findings"] == []
+    assert result["counts"] == {"documented_not_in_spec": 0, "in_spec_not_documented": 0}
+
+
 # --------------------------------------------------------------------------- dos-surface
 
 
@@ -740,7 +898,14 @@ def test_dos_surface_graceful_shutdown_absent_is_review_not_fail_alone(tmp_path)
     result = readiness.check_dos_surface(tmp_path, {}, mkctx())
     notes = [f["note"] for f in result["findings"]]
     assert "absent" in notes
-    assert result["status"] in ("fail", "review")  # body-limit/rate-limit absence also present in this minimal app
+    assert result["status"] in ("fail", "review")  # graceful-shutdown absence alone is enough for review
+
+
+def test_dos_surface_body_limit_found_in_nginx_conf_with_no_python_at_all(tmp_path):
+    write(tmp_path / "nginx.conf", "server {\n    client_max_body_size 10m;\n}\n")
+    result = readiness.check_dos_surface(tmp_path, {}, mkctx())
+    notes = [f["note"] for f in result["findings"]]
+    assert any(n.startswith("request body size limit present") and "nginx.conf" in n for n in notes)
 
 
 # --------------------------------------------------------------------------- tools (external, fake + absence)
@@ -792,6 +957,89 @@ def test_tools_semgrep_skipped_without_config_note(tmp_path, monkeypatch):
     assert any("semgrep" in r and "network" in r for r in [result["reason"]])
 
 
+FAKE_TOOL_BAD_EXIT = """#!/bin/sh
+echo 'not json, and this is an error message' 1>&2
+exit 3
+"""
+
+FAKE_TOOL_BAD_JSON = """#!/bin/sh
+echo 'not json at all'
+exit 0
+"""
+
+FAKE_TOOL_SLEEPER = """#!/bin/sh
+# Absolute path: the test sets PATH to only the fake-tool bin dir, so a bare
+# "sleep" would not resolve and the script would fall through instantly.
+/bin/sleep 5
+echo '{}'
+"""
+
+
+def test_tools_bad_exit_with_no_parseable_json_is_review_not_clean(tmp_path, monkeypatch):
+    bin_dir = tmp_path / "bin"
+    make_fake_tool(bin_dir, "pip-audit", FAKE_TOOL_BAD_EXIT)
+    monkeypatch.setenv("PATH", str(bin_dir))
+    result = readiness.check_tools(tmp_path, {}, mkctx())
+    assert result["status"] == "review"
+    assert any(f["note"].startswith("tool pip-audit exited 3:") for f in result["findings"])
+    assert "pip-audit" in result["reason"]
+    assert "pip_audit" not in result["counts"]  # never counted as a clean run
+
+
+def test_tools_ok_exit_with_unparseable_json_is_review(tmp_path, monkeypatch):
+    bin_dir = tmp_path / "bin"
+    make_fake_tool(bin_dir, "trivy", FAKE_TOOL_BAD_JSON)
+    monkeypatch.setenv("PATH", str(bin_dir))
+    result = readiness.check_tools(tmp_path, {}, mkctx())
+    assert result["status"] == "review"
+    assert any("could not parse output" in f["note"] for f in result["findings"])
+    assert "trivy" not in result["counts"]
+
+
+def test_tools_timeout_is_a_review_finding_not_a_clean_run(tmp_path, monkeypatch):
+    bin_dir = tmp_path / "bin"
+    make_fake_tool(bin_dir, "bandit", FAKE_TOOL_SLEEPER)
+    monkeypatch.setenv("PATH", str(bin_dir))
+    ctx = {**mkctx(), "tool_timeout": 1}
+    result = readiness.check_tools(tmp_path, {}, ctx)
+    assert result["status"] == "review"
+    assert any("timeout after 1 s" in f["note"] for f in result["findings"])
+    assert "bandit" not in result["counts"]
+
+
+def test_tools_time_budget_stops_further_tools(tmp_path, monkeypatch):
+    bin_dir = tmp_path / "bin"
+    make_fake_tool(bin_dir, "pip-audit", FAKE_PIP_AUDIT_CLEAN)
+    make_fake_tool(bin_dir, "bandit", FAKE_PIP_AUDIT_CLEAN)  # content unused; budget exhausted before it runs
+    monkeypatch.setenv("PATH", str(bin_dir))
+    monkeypatch.setattr(readiness, "TOOL_TOTAL_BUDGET", 0)
+    result = readiness.check_tools(tmp_path, {}, mkctx())
+    notes = [f["note"] for f in result["findings"]]
+    assert any("pip-audit: not run: time budget" in n for n in notes)
+    assert any("bandit: not run: time budget" in n for n in notes)
+    assert "pip_audit" not in result["counts"]
+
+
+def test_tools_command_notes_external_tools_may_reach_the_network(tmp_path):
+    result = readiness.check_tools(tmp_path, {}, mkctx())
+    assert "the scanner itself makes no network calls" in result["command"]
+    assert "pip-audit, osv-scanner, trivy, npm audit, lychee" in result["command"]
+
+
+def test_invoke_tool_and_report_outcome_handle_a_real_oserror_without_secret_text():
+    # subprocess.run raises OSError (here, PermissionError) when the "command"
+    # is a directory; run_tool/_invoke_tool must fold that into the "error"
+    # kind, and _report_tool_outcome must turn it into a review finding
+    # rather than silently dropping it or counting it as a clean run.
+    outcome = readiness._invoke_tool([str(Path("/")), "unused-arg"], Path("."), (0, 1), 5)
+    assert outcome[0] == "error"
+    findings, problems = [], []
+    data = readiness._report_tool_outcome("probe", outcome, 5, findings, problems)
+    assert data is None
+    assert findings == [{"path": "", "line": 0, "note": f"tool probe: could not run ({outcome[1]})"}]
+    assert problems == ["probe: could not run"]
+
+
 # --------------------------------------------------------------------------- disable / config wiring
 
 
@@ -837,31 +1085,48 @@ def test_markdown_hard_capped_around_150_lines(tmp_path):
     assert len(r.stdout.splitlines()) <= 151
 
 
+def test_markdown_truncates_long_finding_notes_and_skip_reasons_to_160_chars():
+    long_note = "x" * 300
+    report = {
+        "tier": "release",
+        "summary": {"pass": 0, "fail": 1, "review": 0, "skip": 1},
+        "checks": [
+            readiness.make_check("probe-fail", "Probe", "secrets", "release", status="fail",
+                                  findings=[readiness.finding("f.py", 1, long_note)]),
+            readiness.make_check("probe-skip", "Probe skip", "secrets", "release", status="skip",
+                                  reason=long_note),
+        ],
+    }
+    text = readiness.render_markdown(report)
+    for line in text.splitlines():
+        assert len(line) <= 200, line  # 160-char note/reason plus a short "- path:line — " prefix
+    assert "x" * 300 not in text
+
+
 # --------------------------------------------------------------------------- conductor's additions after the worker's delivery
 
 
 def test_marker_less_dos_controls_are_not_applicable_without_a_web_framework(tmp_path):
     (tmp_path / "lib.py").write_text("def add(a, b):\n    return a + b\n")
-    out = subprocess.run([sys.executable, str(SCRIPT), str(tmp_path), "--only", "dos-surface", "--json"], capture_output=True, text=True)
-    check = [c for c in json.loads(out.stdout)["checks"] if c["id"] == "dos-surface"][0]
+    out = subprocess.run([sys.executable, str(SCRIPT), str(tmp_path), "--only", "dos-surface", "--json"], capture_output=True, text=True, check=False)
+    check = next(c for c in json.loads(out.stdout)["checks"] if c["id"] == "dos-surface")
     notes = [f["note"] for f in check["findings"]]
     for label in ("request body size limit", "rate limiting", "concurrency and keep-alive caps"):
         assert any(n.startswith(label) and "not applicable" in n for n in notes), label
     assert check["status"] != "fail"
     # the same tree with a web server present: the three controls are judged absent
     (tmp_path / "app.py").write_text("from fastapi import FastAPI\napp = FastAPI()\n")
-    out = subprocess.run([sys.executable, str(SCRIPT), str(tmp_path), "--only", "dos-surface", "--json"], capture_output=True, text=True)
-    check = [c for c in json.loads(out.stdout)["checks"] if c["id"] == "dos-surface"][0]
+    out = subprocess.run([sys.executable, str(SCRIPT), str(tmp_path), "--only", "dos-surface", "--json"], capture_output=True, text=True, check=False)
+    check = next(c for c in json.loads(out.stdout)["checks"] if c["id"] == "dos-surface")
     notes = " | ".join(f["note"] for f in check["findings"])
     assert "request body size limit absent" in notes and check["status"] == "fail"
 
 
 def test_scanner_does_not_scan_its_own_source(tmp_path):
-    import shutil, subprocess, sys, json
     # a copy of the scanner under its own name is still scanned; the running file itself is not
     (tmp_path / "static").mkdir()
     (tmp_path / "static" / "app.js").write_text("el.textContent = 'safe';\n")
-    out = subprocess.run([sys.executable, str(SCRIPT), str(SCRIPT.parent.parent.parent.parent.parent), "--only", "html-sinks,redaction-at-publish", "--json"], capture_output=True, text=True)
+    out = subprocess.run([sys.executable, str(SCRIPT), str(SCRIPT.parent.parent.parent.parent.parent), "--only", "html-sinks,redaction-at-publish", "--json"], capture_output=True, text=True, check=False)
     checks = {c["id"]: c for c in json.loads(out.stdout)["checks"]}
     own = str(SCRIPT.relative_to(SCRIPT.parents[4]))
     assert all(own not in f["path"] for c in checks.values() for f in c["findings"])
