@@ -104,6 +104,11 @@ DEFAULTS: Dict[str, Any] = {
     # "allow" approves the spawn as a side effect; only for harnesses where
     # the rewrite is otherwise ignored.
     "rewrite_decision": "none",
+    # Headless worker runs (governor.py run-worker): the hard per-run cap and
+    # the tool allowlist print mode may use without a prompt.
+    "worker_budget_usd": 2.0,
+    "worker_allowed_tools": [],
+    "worker_timeout_s": 3600,
 }
 
 # Keys a project-level file may only tighten. A repository can make the
@@ -1182,6 +1187,188 @@ def cmd_statusline_snippet() -> int:
     return 0
 
 
+# --------------------------------------------------------------------------- deterministic helpers for the skills
+
+RESULT_RE = re.compile(r"^#{1,6}\s*Result\b[^\n]*(?:\n\s*(?:\*\*)?)?(DONE|PARTIAL|BLOCKED)\b", re.M | re.I)
+
+
+def cmd_check_report(args: List[str], cfg: Dict[str, Any]) -> int:
+    """Check a worker report against a contract, the same way SubagentStop does.
+    Usage: governor.py check-report [FILE|-] --contract worker|scout|reviewer [--transcript AGENT.jsonl]"""
+    contract = _arg(args, "--contract") or "worker"
+    skip = {_arg(args, "--contract"), _arg(args, "--transcript")}
+    src = next((a for a in args if not a.startswith("--") and a not in skip), "-")
+    text = sys.stdin.read() if src == "-" else Path(src).read_text()
+    tp = _arg(args, "--transcript")
+    problems = report_problems(text, contract, bash_commands_in(Path(tp)) if tp else None)
+    verdict = "OK" if not problems else "NONCOMPLIANT"
+    m = RESULT_RE.search(text)
+    print(f"{verdict} contract={contract} result={(m.group(1).upper() if m else '?')}")
+    for pr in problems:
+        print(f"- {pr}")
+    return 0 if not problems else 1
+
+
+def plan_levels(slices: List[Dict[str, Any]]) -> Tuple[List[List[str]], List[str]]:
+    """Kahn's algorithm over slice dependencies. Returns (levels, errors):
+    errors name duplicate ids, unknown deps, cycles, and two slices in one
+    level that touch the same file (they would collide in parallel worktrees)."""
+    errors: List[str] = []
+    ids = [str(x.get("id", "")) for x in slices]
+    if len(set(ids)) != len(ids) or "" in ids:
+        errors.append("slice ids must be unique and non-empty")
+        return [], errors
+    by_id = {x["id"]: x for x in slices}
+    deps = {i: [str(d) for d in (by_id[i].get("deps") or [])] for i in ids}
+    for i, ds in deps.items():
+        for d in ds:
+            if d not in by_id:
+                errors.append(f"{i}: unknown dependency {d!r}")
+    if errors:
+        return [], errors
+    remaining = set(ids)
+    done: set = set()
+    levels: List[List[str]] = []
+    while remaining:
+        ready = sorted(i for i in remaining if all(d in done for d in deps[i]))
+        if not ready:
+            errors.append("dependency cycle among: " + ", ".join(sorted(remaining)))
+            return levels, errors
+        levels.append(ready)
+        done.update(ready)
+        remaining.difference_update(ready)
+    for lvl in levels:
+        seen: Dict[str, str] = {}
+        for i in lvl:
+            for f in by_id[i].get("files") or []:
+                if f in seen and seen[f] != i:
+                    errors.append(f"{seen[f]} and {i} both change {f} in the same level; merge them or add a dependency")
+                seen[f] = i
+    return levels, errors
+
+
+def render_plan(name: str, slices: List[Dict[str, Any]], levels: List[List[str]]) -> str:
+    by_id = {x["id"]: x for x in slices}
+    lines = [f"# Plan: {name}", "", "Levels run in order; slices within a level run in parallel worktrees.", ""]
+    for n, lvl in enumerate(levels):
+        lines += [f"## Level {n}", "", "| slice | files | command | depends on | definition of done |", "|---|---|---|---|---|"]
+        for i in lvl:
+            x = by_id[i]
+            lines.append(f"| {i} | {', '.join(x.get('files') or [])} | `{x.get('command', '')}` | {', '.join(x.get('deps') or []) or '-'} | {x.get('dod', '')} |")
+        lines.append("")
+    lines.append("Integration check per level: run every command in the level, then the full suite.")
+    return "\n".join(lines) + "\n"
+
+
+def cmd_plan(args: List[str]) -> int:
+    """governor.py plan build SLICES.json [--name N] [--out DIR]  |  governor.py plan check PLAN.json
+    SLICES.json: [{"id", "files": [...], "deps": [...], "command", "dod"}, ...]"""
+    if not args or args[0] not in ("build", "check") or len(args) < 2:
+        print("usage: governor.py plan build SLICES.json [--name NAME] [--out DIR] | plan check PLAN.json")
+        return 2
+    try:
+        data = json.loads(Path(args[1]).read_text())
+    except (OSError, ValueError) as e:
+        print(f"cannot read {args[1]}: {e}")
+        return 2
+    slices = data["slices"] if isinstance(data, dict) and "slices" in data else data
+    if not isinstance(slices, list) or not all(isinstance(x, dict) for x in slices):
+        print("slices must be a list of objects")
+        return 2
+    levels, errors = plan_levels(slices)
+    if errors:
+        print("PLAN INVALID")
+        for e in errors:
+            print(f"- {e}")
+        return 1
+    if args[0] == "check":
+        print(f"PLAN OK: {len(slices)} slices in {len(levels)} levels")
+        return 0
+    name = _arg(args, "--name") or (data.get("name") if isinstance(data, dict) else None) or Path(args[1]).stem
+    out = Path(_arg(args, "--out") or ".governor")
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "plan.md").write_text(render_plan(str(name), slices, levels))
+    (out / "plan.json").write_text(json.dumps({"name": name, "slices": slices, "levels": levels}, indent=2) + "\n")
+    print(f"PLAN OK: {len(slices)} slices in {len(levels)} levels -> {out / 'plan.md'}, {out / 'plan.json'}")
+    for n, lvl in enumerate(levels):
+        print(f"  level {n}: {', '.join(lvl)}")
+    return 0
+
+
+# Tools a headless worker may use without a prompt. Print mode cannot answer a
+# permission prompt, so anything outside this list is denied; widen it per
+# project with worker_allowed_tools in governor.json.
+DEFAULT_WORKER_TOOLS = [
+    "Read", "Edit", "Write", "Grep", "Glob",
+    "Bash(pytest *)", "Bash(python *)", "Bash(python3 *)", "Bash(uv run *)", "Bash(uv sync*)",
+    "Bash(npm test*)", "Bash(npx *)", "Bash(ls *)", "Bash(cat *)", "Bash(git diff*)", "Bash(git status*)", "Bash(git log*)",
+]
+
+
+def cmd_run_worker(args: List[str], cfg: Dict[str, Any], project_dir: Optional[str]) -> int:
+    """Run one slice headlessly under a hard dollar cap and check its report.
+    Usage: governor.py run-worker --spec PATH [--agent governor:implementer] [--budget 2] [--out DIR] [--dry-run]
+    The conductor never sees the worker's tool output: only the verdict line and the report file."""
+    spec_path = _arg(args, "--spec")
+    if not spec_path:
+        print("usage: governor.py run-worker --spec PATH [--agent NAME] [--budget USD] [--out DIR] [--dry-run]")
+        return 2
+    try:
+        spec = Path(spec_path).read_text()
+    except OSError as e:
+        print(f"cannot read spec: {e}")
+        return 2
+    agent = _arg(args, "--agent") or "governor:implementer"
+    budget = _arg(args, "--budget") or str(cfg.get("worker_budget_usd", 2.0))
+    try:
+        if not math.isfinite(float(budget)) or float(budget) <= 0:
+            raise ValueError
+    except ValueError:
+        print("--budget must be a positive number")
+        return 2
+    short = agent.split(":", 1)[-1]
+    contract = cfg["report_contracts"].get(short, "worker")
+    tools = cfg.get("worker_allowed_tools") or DEFAULT_WORKER_TOOLS
+    out_dir = Path(_arg(args, "--out") or (Path(project_dir or ".") / ".governor" / "runs"))
+    slug = clean_label(Path(spec_path).stem)
+    report_path = out_dir / f"{slug}-{time.strftime('%Y%m%d-%H%M%S')}.md"
+    prompt = (
+        f"You are running headlessly as {agent}. The spec is below; it is the boundary. "
+        f"Do the work, run the tests it names, and end with the report format your definition requires "
+        f"(## Result with DONE, PARTIAL or BLOCKED; ## Changed files; ## Evidence with each command on a '$ ' line and its output).\n\n"
+        f"Spec file: {spec_path}\n\n{spec}"
+    )
+    cmd = ["claude", "-p", "--agent", agent, "--max-budget-usd", str(budget), "--permission-mode", "acceptEdits",
+           "--allowedTools", *tools, "--plugin-dir", str(PLUGIN_ROOT), "--output-format", "text"]
+    if "--dry-run" in args:
+        print("DRY-RUN " + " ".join(cmd))
+        print(f"report -> {report_path}")
+        return 0
+    import subprocess  # local import: the hooks never spawn processes
+    try:
+        proc = subprocess.run(cmd, input=prompt, capture_output=True, text=True, timeout=float(cfg.get("worker_timeout_s", 3600)), check=False)
+    except FileNotFoundError:
+        print("ERROR claude is not on PATH")
+        return 2
+    except subprocess.TimeoutExpired:
+        print("ERROR worker timed out")
+        return 1
+    text = proc.stdout
+    out_dir.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(text + (f"\n\n<!-- stderr -->\n{proc.stderr[-4000:]}" if proc.stderr.strip() else ""))
+    if proc.returncode != 0 and not text.strip():
+        print(f"ERROR claude exited {proc.returncode}: {proc.stderr.strip()[:200]}")
+        return 1
+    problems = report_problems(text, contract)
+    m = RESULT_RE.search(text)
+    result = m.group(1).upper() if m else "?"
+    verdict = "NONCOMPLIANT" if problems else result
+    print(f"VERDICT: {verdict} agent={agent} budget=${budget} report={report_path}")
+    for pr in problems:
+        print(f"- {pr}")
+    return 0 if verdict == "DONE" else 1
+
+
 def _arg(args: List[str], flag: str) -> Optional[str]:
     if flag in args:
         i = args.index(flag)
@@ -1267,6 +1454,12 @@ def main(argv: List[str]) -> int:
         return cmd_statusline(cfg)
     if event == "statusline-snippet":
         return cmd_statusline_snippet()
+    if event == "check-report":
+        return cmd_check_report(args, cfg)
+    if event == "plan":
+        return cmd_plan(args)
+    if event == "run-worker":
+        return cmd_run_worker(args, cfg, project_dir)
 
     try:
         hook = json.load(sys.stdin) if not sys.stdin.isatty() else {}

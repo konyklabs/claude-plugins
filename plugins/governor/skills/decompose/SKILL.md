@@ -45,13 +45,24 @@ A slice whose definition of done cannot be written is not a slice, it is a
 decision. Make the decision now (it is the expensive model's job) or route it
 through /governor:consult if this session is on a cheaper model.
 
-## 3. Order and parallelism
+## 3. Order and parallelism, computed
 
-Write the order as levels: level 0 is the shared slice; level 1 is every slice
-that depends only on level 0; and so on. Slices within a level run in parallel
-in worktrees (`isolation: "worktree"` on the spawn); levels run in sequence.
-The conductor integrates each level before starting the next, running the
-full test command once per level, not per slice.
+Write the slices as JSON (`.governor/slices.json`: `id`, `files`, `deps`,
+`command`, `dod` per slice) and let the script order them:
+
+```
+python3 "${CLAUDE_PLUGIN_ROOT}/bin/governor.py" plan build .governor/slices.json --name <plan>
+```
+
+It computes the levels (a slice runs in the first level where all its
+dependencies are done), refuses cycles and unknown dependencies, and refuses
+two slices in one level that change the same file, which is the collision
+that breaks parallel worktrees. It writes `.governor/plan.md` and
+`.governor/plan.json`; `plan check .governor/plan.json` re-validates after an
+edit. Slices within a level run in parallel in worktrees (`isolation:
+"worktree"` on the spawn, or `run-worker` from a shell loop); levels run in
+sequence. The conductor integrates each level before starting the next,
+running the full test command once per level, not per slice.
 
 ## 4. Specs
 
@@ -61,7 +72,8 @@ decomposition's reasoning goes: the worker must not re-open a cut.
 
 ## 5. The plan file
 
-`.governor/plan.md`, and a comment on the driving issue if there is one:
+`.governor/plan.md` is what `plan build` wrote; add the decisions block
+under it, and post it as a comment on the driving issue if there is one:
 
 ```
 # Plan: <name>
