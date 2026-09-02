@@ -514,3 +514,14 @@ def test_cli_state_dir_flag(env):
                        env={k: v for k, v in os.environ.items() if k != "GOVERNOR_STATE_DIR"} | {"HOME": str(env["tmp"] / "home"), "CLAUDE_PROJECT_DIR": str(env["project"])})
     assert r.returncode == 0, r.stderr
     assert (target / "sessions" / "s9.json").exists()
+
+
+def test_subagent_transcript_path_is_mapped_back_to_the_session(env):
+    agents = {"aw": ({"customAgentType": "implementer"}, assistant_lines("s1", "claude-sonnet-5", usage(out=5), blocks=1))}
+    tp = make_session(env["tmp"], main_lines=assistant_lines("m1", "claude-fable-5-1", usage(out=10), blocks=1), agents=agents)
+    sub = tp.with_suffix("") / "subagents" / "agent-aw.jsonl"
+    led = governor.Ledger("sess1", governor.Pricing.load())
+    led.update(str(sub))  # a hook fired inside the worker hands over the worker's file
+    assert led.main_model() == "claude-fable-5-1"
+    assert led.state["agents"]["aw"]["model"] == "claude-sonnet-5"
+    assert governor.Ledger.main_transcript(str(tp)) == tp

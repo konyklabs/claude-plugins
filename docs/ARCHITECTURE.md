@@ -137,7 +137,28 @@ a first cut of slices with one command each).
 the recipes without the conductor explaining them, and it is held to the
 governor's report contract by the same hook.
 
-## What was not verified
+## What was verified in the field, and what was not
+
+Captured with `GOVERNOR_DEBUG=1` (the engine appends every raw hook input to
+`hook-inputs.jsonl` in the state dir) on 2.1.258:
+
+- `transcript_path` is always the session transcript, also on events fired
+  inside a subagent; the subagent's own file arrives only as
+  `agent_transcript_path` on `SubagentStop`. The engine maps either form to
+  the session file regardless.
+- `agent_type` for a plugin agent is namespaced: `governor:scout`. The
+  contract lookup strips the prefix.
+- `SubagentStop` carries `last_assistant_message` and `stop_hook_active`;
+  the engine prefers the message over re-reading the transcript.
+- `effort` and `model` were **absent** from every hook input, although the
+  docs list them. The engine takes both from the transcript instead
+  (`effort` is recorded on each assistant line; `message.model` on each
+  message) and only uses the hook fields when present.
+- A `governor:scout` report in a real session met its contract
+  (`## Findings` with path:line) and passed `SubagentStop` without a block; a
+  `governor:implementer` report met the worker contract the same way.
+
+Not verified:
 
 - `claude plugin eval` is early access and not enabled on the authoring
   account. The eval cases follow the embedded early-access layout and have
@@ -145,10 +166,8 @@ governor's report contract by the same hook.
 - `skills:` preloading in `test-implementer` is documented; whether plugin
   skill names need the `py-testing:` prefix there was not tested. The
   validator accepts the bare names.
-- `agent_type` in hook input for a plugin agent: the engine accepts both
-  `implementer` and `governor:implementer`. Which one Claude Code sends was
-  not captured; the real-session test passed because the report was
-  compliant either way.
+- A `SubagentStop` block in the field: every worker spawned during testing
+  reported compliantly, so the block path is covered by unit tests only.
 - Prices were taken from the Claude API skill's table (cached 2026-06-24)
   and the Fable 5.1 migration notes, not from the live pricing page.
 

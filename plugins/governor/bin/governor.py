@@ -234,10 +234,21 @@ class Ledger:
         os.replace(tmp, self.path)
 
     # -- transcript ingestion
+    @staticmethod
+    def main_transcript(transcript_path: str) -> Path:
+        """The session transcript, even when a hook fired inside a subagent and
+        handed us the subagent's own file (<sid>/subagents/agent-<id>.jsonl).
+        Counting that file as the main thread would make the worker's model
+        look like the session's and lift the budget gate."""
+        p = Path(transcript_path)
+        if p.parent.name == "subagents" and p.name.startswith("agent-"):
+            return p.parent.parent.with_suffix(".jsonl")
+        return p
+
     def update(self, transcript_path: Optional[str]) -> None:
         if not transcript_path:
             return
-        main = Path(transcript_path)
+        main = self.main_transcript(transcript_path)
         self._ingest(main, agent_id=None)
         subdir = main.with_suffix("") / "subagents"
         if subdir.is_dir():
@@ -865,6 +876,13 @@ def main(argv: List[str]) -> int:
     except ValueError:
         hook = {}
     sid = str(hook.get("session_id") or "unknown")
+    if os.environ.get("GOVERNOR_DEBUG"):
+        try:
+            d = state_dir(); d.mkdir(parents=True, exist_ok=True)
+            with (d / "hook-inputs.jsonl").open("a") as f:
+                f.write(json.dumps({"event": event, "hook": hook}) + "\n")
+        except OSError:
+            pass
     ledger = Ledger(sid, Pricing.load())
     handlers = {
         "session-start": lambda: h_session_start(hook, cfg, ledger),
