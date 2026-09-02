@@ -327,7 +327,7 @@ def test_history_secrets_parses_fake_gitleaks_report_without_secret_text(tmp_pat
     monkeypatch.setenv("PATH", str(bin_dir) + os.pathsep + os.environ.get("PATH", ""))
     result = readiness.check_history_secrets(tmp_path, {}, mkctx(is_git=True))
     assert result["status"] == "fail"
-    assert result["findings"] == [{"path": "app.py", "line": 3, "note": "aws-access-key"}]
+    assert result["findings"] == [{"path": "app.py", "line": 3, "note": "gitleaks:aws-access-key"}]
     assert result["counts"] == {"aws-access-key": 1}
     dumped = json.dumps(result)
     assert "AKIASECRETVALUE" not in dumped
@@ -382,7 +382,7 @@ def test_credential_patterns_fails_on_a_hit(tmp_path):
     config = {"credential_patterns": [{"name": "acme-key", "regex": r"ACME-[0-9]{6}"}]}
     result = readiness.check_credential_patterns(tmp_path, config, mkctx())
     assert result["status"] == "fail"
-    assert result["findings"] == [{"path": "app.py", "line": 1, "note": "acme-key"}]
+    assert result["findings"] == [{"path": "app.py", "line": 1, "note": "cfg:acme-key"}]
 
 
 def test_credential_patterns_passes_without_a_hit(tmp_path):
@@ -413,7 +413,7 @@ def test_credential_patterns_invalid_regex_is_a_review_finding_not_silent(tmp_pa
     ]}
     result = readiness.check_credential_patterns(tmp_path, config, mkctx())
     assert result["status"] == "review"
-    assert any(f["note"].startswith("pattern bad: invalid regex") for f in result["findings"])
+    assert any(f["note"].startswith("pattern cfg:bad: invalid regex") for f in result["findings"])
 
 
 @pytest.mark.skipif(GIT is None, reason="git not on PATH")
@@ -441,7 +441,7 @@ def test_credential_patterns_history_git_grep_error_is_a_review_finding(tmp_path
     config = {"credential_patterns": [{"name": "bad-ere", "regex": r"(?:foo)"}]}
     result = readiness.check_credential_patterns(tmp_path, config, mkctx(is_git=True, history=1))
     assert result["status"] == "review"
-    assert any(f["note"].startswith("pattern bad-ere: git grep failed") for f in result["findings"])
+    assert any(f["note"].startswith("pattern cfg:bad-ere: git grep failed") for f in result["findings"])
 
 
 # --------------------------------------------------------------------------- identifier-shapes
@@ -465,7 +465,7 @@ def test_identifier_shapes_flags_hit_under_tests_dir(tmp_path):
     write(tmp_path / "tests" / "fixtures.py", "x = 'ORD-123456'\n")
     result = readiness.check_identifier_shapes(tmp_path, config, mkctx())
     assert result["status"] == "fail"
-    assert result["findings"] == [{"path": "tests/fixtures.py", "line": 1, "note": "order-id"}]
+    assert result["findings"] == [{"path": "tests/fixtures.py", "line": 1, "note": "cfg:order-id"}]
 
 
 def test_identifier_shapes_invalid_regex_is_a_review_finding_not_silent(tmp_path):
@@ -473,7 +473,7 @@ def test_identifier_shapes_invalid_regex_is_a_review_finding_not_silent(tmp_path
     config = {"identifier_patterns": [{"name": "bad", "regex": r"["}]}  # unterminated char class
     result = readiness.check_identifier_shapes(tmp_path, config, mkctx())
     assert result["status"] == "review"
-    assert any(f["note"].startswith("pattern bad: invalid regex") for f in result["findings"])
+    assert any(f["note"].startswith("pattern cfg:bad: invalid regex") for f in result["findings"])
 
 
 # --------------------------------------------------------------------------- config-endpoint-secrets
@@ -556,7 +556,7 @@ def test_debug_endpoint_passes_with_loopback_check_and_flags_token_tripwire(tmp_
     assert result["status"] == "pass"
     notes = [f["note"] for f in result["findings"]]
     assert "per-request loopback check present" in notes
-    assert "token is a tripwire, not auth" in notes
+    assert "token is a tripwire - not auth" in notes
 
 
 def test_debug_endpoint_exposure_scoped_to_handler_not_whole_module(tmp_path):
@@ -584,7 +584,7 @@ def test_html_sinks_fail_on_innerhtml_assignment(tmp_path):
     write(tmp_path / "static" / "app.js", "el.innerHTML = userInput;\n")
     result = readiness.check_html_sinks(tmp_path, {}, mkctx())
     assert result["status"] == "fail"
-    assert result["findings"] == [{"path": "static/app.js", "line": 1, "note": ".innerHTML ="}]
+    assert result["findings"] == [{"path": "static/app.js", "line": 1, "note": ".innerHTML _"}]
     assert result["counts"] == {"sinks": 1}
 
 
@@ -639,7 +639,7 @@ def test_vendor_mode_probes_review_when_both_present(tmp_path):
     write(tmp_path / "app.py", "test_key = 'sk_test_abc'\nlive_key = 'sk_live_xyz'\n")
     result = readiness.check_vendor_mode_probes(tmp_path, {}, mkctx())
     assert result["status"] == "review"
-    assert "probe capabilities, never infer them from a key" in result["findings"][0]["note"]
+    assert "probe capabilities - never infer them from a key" in result["findings"][0]["note"]
 
 
 # --------------------------------------------------------------------------- idempotency-keys
@@ -817,7 +817,7 @@ def test_docs_endpoint_drift_review_flags_undocumented_and_underspecified(tmp_pa
     result = readiness.check_docs_endpoint_drift(tmp_path, {}, mkctx())
     assert result["status"] == "review"
     assert result["counts"]["in_spec_not_documented"] == 1
-    assert any("documented, not in spec" in f["note"] for f in result["findings"])
+    assert any("documented - not in spec" in f["note"] for f in result["findings"])
 
 
 def test_docs_endpoint_drift_pass_when_spec_and_docs_agree(tmp_path):
@@ -1036,7 +1036,10 @@ def test_invoke_tool_and_report_outcome_handle_a_real_oserror_without_secret_tex
     findings, problems = [], []
     data = readiness._report_tool_outcome("probe", outcome, 5, findings, problems)
     assert data is None
-    assert findings == [{"path": "", "line": 0, "note": f"tool probe: could not run ({outcome[1]})"}]
+    # the note passes through the same sanitizer as every other finding, so
+    # compare against that, not the raw (quote-bearing) OSError text
+    expected_note = readiness.sanitize(f"tool probe: could not run ({outcome[1]})")
+    assert findings == [{"path": "", "line": 0, "note": expected_note}]
     assert problems == ["probe: could not run"]
 
 

@@ -11,7 +11,7 @@ scanner=plugins/prod-readiness/skills/readiness-review/scripts/readiness.py
 for p in plugins/*/; do
   name=$(basename "$p")
   out="dist/$name.zip"
-  git archive --format=zip -o "$out" "$ref:plugins/$name"
+  git archive --worktree-attributes --format=zip -o "$out" "$ref:plugins/$name"
   if [ -f "$scanner" ]; then
     status=$(python3 "$scanner" --only archive-hygiene --archive "$out" --json 2>/dev/null \
       | python3 -c 'import json,sys; c=json.load(sys.stdin)["checks"][0]; print(c["status"], "" if c["status"]!="fail" else [f["note"] for f in c["findings"]][:3])')

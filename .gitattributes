@@ -1,0 +1,6 @@
+# Distribution archives (scripts/dist.sh, git archive) ship runtime files only:
+# tests carry fake credentials on purpose and would trip archive-hygiene.
+# Bare names match at any depth, so they apply when a plugin subtree is the archive root.
+tests export-ignore
+__pycache__ export-ignore
+.pytest_cache export-ignore

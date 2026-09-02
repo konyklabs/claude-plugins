@@ -583,7 +583,7 @@ def check_archive_hygiene(root: Path, config: Dict[str, Any], ctx: Dict[str, Any
                 if names:
                     findings.append(finding(
                         ", ".join(names[:3]), 0,
-                        f"{len(names)} ignored files present in the working tree; a zip built from the working tree would ship them",
+                        f"{len(names)} ignored files present in the working tree: a zip built from the working tree would ship them",
                     ))
                     counts["ignored_in_worktree"] = len(names)
                     # This is new information the archive itself didn't have
