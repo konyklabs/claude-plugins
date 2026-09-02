@@ -87,10 +87,17 @@ skills preloaded.
 
 ## 5. Integrate
 
-Per level: merge, run the full command, run the inventory again and diff it
-against the plan. Duplicates should be gone, shadowed fixtures should be
-one, unregistered markers zero. The final inventory is the evidence that
-the untangling did what the plan said.
+Save the inventory before the work starts
+(`inventory.py tests --json > .governor/inventory-before.json`). Per level:
+merge, run the full command, then let the script say what changed:
+
+```
+python3 "${CLAUDE_SKILL_DIR}/scripts/inventory.py" tests --diff .governor/inventory-before.json
+```
+
+Duplicates resolved, shadowed fixtures gone, unregistered markers at zero:
+the diff is the evidence that the untangling did what the plan said, and
+it costs no model tokens to produce.
 
 ## Signs it is going wrong
 

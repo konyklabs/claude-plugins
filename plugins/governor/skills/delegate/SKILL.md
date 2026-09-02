@@ -52,6 +52,23 @@ The prompt to the worker is short: the path of the spec, the spec's goal
 restated in one line, and the sentence "Report in the format your definition
 requires." Do not paste the codebase into the prompt; the worker reads.
 
+## 2b. Or run it headlessly, outside your context
+
+For a slice that needs no back-and-forth, do not spend your own context on
+the worker at all: run it in print mode under a hard dollar cap, and read
+only the verdict line and the report file.
+
+```
+python3 "${CLAUDE_PLUGIN_ROOT}/bin/governor.py" run-worker --spec .governor/specs/<slug>.md --agent governor:implementer --budget 2
+```
+
+The runner passes the spec, caps spend with `--max-budget-usd`, allows
+only the tools a worker needs (`worker_allowed_tools` in `governor.json` to
+widen), writes the report to `.governor/runs/`, checks it against the
+contract, and prints one line: `VERDICT: DONE|PARTIAL|BLOCKED|NONCOMPLIANT
+... report=<path>`. Exit 0 only on DONE. Several slices of one level can
+run this way in parallel from a shell loop.
+
 ## 3. Read the evidence, not the prose
 
 When the worker returns:
@@ -63,6 +80,13 @@ When the worker returns:
    that the evidence is the right evidence. That is this step.
 3. `## Changed files` against the spec's file list. A file outside the list is
    a finding even when the change looks right.
+
+To re-check a report deterministically (a pasted one, or one from
+`.governor/runs/`), the same check the hook runs is a command:
+
+```
+python3 "${CLAUDE_PLUGIN_ROOT}/bin/governor.py" check-report <report.md> --contract worker
+```
 
 PARTIAL or BLOCKED means a question came back. Answer the question here (that
 is the expensive model's job) and re-delegate with the spec amended. Do not
