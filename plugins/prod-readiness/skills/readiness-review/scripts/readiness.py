@@ -371,6 +371,17 @@ def sanitize_path(value: Any) -> str:
     return sanitize(value, limit=200)
 
 
+def inside_root(root: Path, path: Path) -> bool:
+    """True when the path, with every symlink resolved, still lies under
+    root. rglob follows symlinked directories on older Pythons, so every
+    walk that is not iter_files filters through this."""
+    try:
+        r = str(root.resolve()) + os.sep
+        return not path.is_symlink() and (str(path.resolve()) + os.sep).startswith(r)
+    except OSError:
+        return False
+
+
 # --------------------------------------------------------------------------- result shape
 
 
@@ -389,7 +400,7 @@ def make_check(
         "status": status,
         "reason": reason,
         "findings": findings or [],
-        "counts": counts or {},
+        "counts": {sanitize(k, 60): v for k, v in (counts or {}).items()},
         "false_positive_note": fp_note,
         "command": command,
     }
@@ -1224,7 +1235,7 @@ def check_runtime_version_drift(root: Path, config: Dict[str, Any], ctx: Dict[st
     devc_dir = root / ".devcontainer"
     if devc_dir.is_dir():
         for path in sorted(devc_dir.rglob("*.json")):
-            if not path.is_file():
+            if not path.is_file() or not inside_root(root, path):
                 continue
             text = read_text(path) or ""
             for lineno, line in enumerate(text.splitlines(), 1):
@@ -1286,7 +1297,7 @@ def check_docs_endpoint_drift(root: Path, config: Dict[str, Any], ctx: Dict[str,
         if base.is_file():
             candidates = [base]
         elif base.is_dir():
-            candidates = sorted(base.rglob("*.md"))
+            candidates = sorted(q for q in base.rglob("*.md") if inside_root(root, q))
         else:
             candidates = []
         for path in candidates:

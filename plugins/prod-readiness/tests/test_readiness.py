@@ -1474,3 +1474,28 @@ def test_dos_surface_no_cap_note_under_the_default_budget(tmp_path):
     result = readiness.check_dos_surface(tmp_path, {}, mkctx())
     notes = [f["note"] for f in result["findings"]]
     assert not any("tree larger than the scan cap" in n for n in notes)
+
+
+
+def test_docs_and_devcontainer_walks_never_follow_symlinks(tmp_path):
+    outside = tmp_path / "outside"; outside.mkdir()
+    (outside / "leak.md").write_text("see /api/secret-route\n")
+    (outside / "devcontainer.json").write_text('{"image": "python:3.8"}\n')
+    root = tmp_path / "repo"; (root / "docs").mkdir(parents=True); (root / ".devcontainer").mkdir()
+    (root / "openapi.json").write_text(json.dumps({"paths": {"/api/orders": {}}}))
+    (root / "docs" / "index.md").write_text("see /api/orders\n")
+    os.symlink(outside / "leak.md", root / "docs" / "leak.md")
+    os.symlink(outside / "devcontainer.json", root / ".devcontainer" / "devcontainer.json")
+    (root / ".python-version").write_text("3.12\n")
+    (root / "Dockerfile").write_text("FROM python:3.12\n")
+    out = subprocess.run([sys.executable, str(SCRIPT), str(root), "--only", "docs-endpoint-drift,runtime-version-drift", "--json"], capture_output=True, text=True)
+    data = json.loads(out.stdout)
+    blob = json.dumps(data)
+    assert "secret-route" not in blob and "outside" not in blob and "3.8" not in blob
+    drift = [c for c in data["checks"] if c["id"] == "docs-endpoint-drift"][0]
+    assert drift["status"] == "pass"
+
+
+def test_counts_keys_are_sanitized():
+    c = readiness.make_check("x", "X", "tools", "release", status="pass", counts={"rule\n## injected": 1})
+    assert list(c["counts"]) == ["rule_## injected"] or all("\n" not in k for k in c["counts"])
