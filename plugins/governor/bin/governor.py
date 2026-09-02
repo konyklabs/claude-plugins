@@ -72,6 +72,8 @@ DEFAULTS: Dict[str, Any] = {
         "test-implementer": "worker",
         "scout": "scout",
         "reviewer": "reviewer",
+        "scanner": "worker",
+        "auditor": "reviewer",
     },
     "enforce_reports": True,
     # How many times SubagentStop may send a worker back for a missing report
@@ -82,7 +84,7 @@ DEFAULTS: Dict[str, Any] = {
     "enforce_budget": True,
     # Namespaces whose agents are held to report_contracts by bare name. A
     # project agent that happens to be called "reviewer" is not governed.
-    "contract_namespaces": ["governor", "py-testing"],
+    "contract_namespaces": ["governor", "py-testing", "prod-readiness"],
     # "enforce": deny, rewrite and block as documented. "observe": keep the
     # ledger and the readout, never change or refuse anything; for measuring
     # a workflow before governing it, or for a session that must not be

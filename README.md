@@ -7,6 +7,7 @@ token budget. Two plugins, one marketplace:
 |---|---|
 | **governor** | Guardrails in code for Fable-tier sessions: spawns are pinned to cheap workers, forks are denied, an expensive spawn needs a written brief, a priced per-session budget is enforced from the transcript, and workers cannot stop without evidence. Plus the agents (scout, implementer, senior-implementer, reviewer, architect) and the skills (triage, delegate, decompose, consult, budget) that make the cheap path the easy path. |
 | **py-testing** | Python test engineering: pytest project layout, Playwright API and browser tests, SQLAlchemy test fixtures, and the workflow for untangling a large unmerged test suite, with a deterministic inventory script and a Sonnet worker that has the stack skills preloaded. |
+| **prod-readiness** | Production-readiness and security scanning for API sample apps and developer portals: one deterministic scan emits a categorized report (secret and identifier leakage, debug and observability surfaces, HTML-string sinks, denial-of-service surface, correctness traps, CI and supply chain, documentation drift), external scanners are summarized to counts and never installed, and an Opus auditor judges only the rows that need judgment. Twenty-five check classes from a real hardening pass, ordered by observed impact. |
 
 The design and its reasons are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
@@ -16,6 +17,7 @@ The design and its reasons are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 claude plugin marketplace add konyklabs/claude-plugins
 claude plugin install governor@konyklabs-plugins
 claude plugin install py-testing@konyklabs-plugins
+claude plugin install prod-readiness@konyklabs-plugins
 ```
 
 From a checkout, for development: `claude --plugin-dir ./plugins/governor`.
@@ -127,6 +129,24 @@ four stack skills preloaded and the governor's report contract.
 
 Every skill ends with its sources and fetch date, and says where the docs
 were silent.
+
+## prod-readiness in one minute
+
+```
+python3 plugins/prod-readiness/skills/readiness-review/scripts/readiness.py --tier precommit   # archive hygiene, identifiers, HTML sinks
+python3 plugins/prod-readiness/skills/readiness-review/scripts/readiness.py --tier release     # all 19 checks plus installed scanners
+```
+
+Stdout is a bounded table (`pass` / `fail` / `review` / `skip` per check);
+the full report goes to `.readiness/report.json`. Findings are `path:line`
+and a rule name, never the matched text. `/prod-readiness:readiness-review`
+runs the workflow: `prod-readiness:scanner` (Sonnet) runs the scan,
+`prod-readiness:auditor` (Opus) judges the `review` rows with failure
+scenarios, the conductor reads two tables. `security-scanning` and
+`hardening-checks` hold each check's detail, its fix and its false-positive
+note; external tools (gitleaks, pip-audit, bandit, semgrep, osv-scanner,
+trivy, npm audit, lychee) are documented with install-from-maintainer,
+pin-and-checksum guidance and are run only if already on PATH.
 
 ## Development
 
