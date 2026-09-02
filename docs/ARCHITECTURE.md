@@ -236,5 +236,7 @@ Not verified:
 - **One plugin.** Would couple the Python skills to the governor's release
   cadence and make the next domain a fork instead of a sibling.
 - **Enforcing the report contract on every agent.** Foreign agents (org
-  roles, project agents) have their own contracts; the hook applies only to
-  the agent types in `report_contracts`, which a project can extend.
+  roles, project agents) have their own contracts. Plugin agents arrive
+  namespaced (`governor:scout`, verified) and are governed when their
+  namespace is in `contract_namespaces`; a bare agent type is a project or
+  user agent and is governed only if listed in `govern_bare_agents`.

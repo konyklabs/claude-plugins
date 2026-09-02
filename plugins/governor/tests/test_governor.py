@@ -399,7 +399,7 @@ def test_scout_and_reviewer_contracts():
 
 
 def test_subagent_stop_blocks_then_gives_up(env):
-    agents = {"aimpl-1": ({"customAgentType": "implementer"}, assistant_lines("s1", "claude-sonnet-5", usage(out=5), blocks=1, text="I finished, tests pass."))}
+    agents = {"aimpl-1": ({"customAgentType": "governor:implementer"}, assistant_lines("s1", "claude-sonnet-5", usage(out=5), blocks=1, text="I finished, tests pass."))}
     tp = make_session(env["tmp"], main_lines=assistant_lines("m1", "claude-fable-5-1", usage(out=10), blocks=1), agents=agents)
     led = governor.Ledger("sess1", governor.Pricing.load())
     hook = {"session_id": "sess1", "transcript_path": str(tp), "agent_id": "aimpl-1", "hook_event_name": "SubagentStop"}
@@ -427,7 +427,7 @@ def test_subagent_stop_uses_agent_type_and_transcript_from_hook_when_present(env
     at = env["tmp"] / "elsewhere.jsonl"
     at.write_text("\n".join(assistant_lines("s9", "claude-sonnet-5", usage(out=5), blocks=1, text="no report")) + "\n")
     led = governor.Ledger("sess1", governor.Pricing.load())
-    out = governor.h_subagent_stop({"session_id": "sess1", "transcript_path": str(tp), "agent_id": "zzz", "agent_type": "scout", "agent_transcript_path": str(at)}, governor.DEFAULTS, led)
+    out = governor.h_subagent_stop({"session_id": "sess1", "transcript_path": str(tp), "agent_id": "zzz", "agent_type": "governor:scout", "agent_transcript_path": str(at)}, governor.DEFAULTS, led)
     assert out["decision"] == "block" and "Findings" in out["reason"]
 
 
@@ -516,7 +516,7 @@ def test_session_start_model_and_effort_come_from_hook_input(env):
 def test_subagent_stop_prefers_last_assistant_message_from_hook(env):
     tp = make_session(env["tmp"], main_lines=assistant_lines("m1", "claude-fable-5-1", usage(out=10), blocks=1))
     led = governor.Ledger("sess1", governor.Pricing.load())
-    hook = {"session_id": "sess1", "transcript_path": str(tp), "agent_id": "nope", "agent_type": "implementer", "last_assistant_message": GOOD_WORKER}
+    hook = {"session_id": "sess1", "transcript_path": str(tp), "agent_id": "nope", "agent_type": "governor:implementer", "last_assistant_message": GOOD_WORKER}
     assert governor.h_subagent_stop(hook, governor.DEFAULTS, led) == {}
     hook["last_assistant_message"] = "done, trust me"
     assert governor.h_subagent_stop(hook, governor.DEFAULTS, led)["decision"] == "block"
@@ -651,9 +651,16 @@ def test_contract_lookup_respects_namespaces():
     cfg = governor.DEFAULTS
     assert governor.contract_for("governor:implementer", cfg) == "worker"
     assert governor.contract_for("py-testing:test-implementer", cfg) == "worker"
-    assert governor.contract_for("implementer", cfg) == "worker"
+    assert governor.contract_for("prod-readiness:scanner", cfg) == "worker"
+    assert governor.contract_for("prod-readiness:auditor", cfg) == "reviewer"
     assert governor.contract_for("otherplugin:reviewer", cfg) is None
-    assert governor.contract_for("reviewer", cfg) == "reviewer"
+    # bare names are project or user agents: not governed unless the user says so
+    assert governor.contract_for("reviewer", cfg) is None
+    assert governor.contract_for("scanner", cfg) is None
+    cfg2 = dict(cfg, govern_bare_agents=["reviewer"])
+    assert governor.contract_for("reviewer", cfg2) == "reviewer"
+    cfg3 = dict(cfg, report_contracts=dict(cfg["report_contracts"], **{"other:worker": "worker"}))
+    assert governor.contract_for("other:worker", cfg3) == "worker"
 
 
 def test_save_uses_a_process_unique_temp_and_a_lock_is_taken(env):

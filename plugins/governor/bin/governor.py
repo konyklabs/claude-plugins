@@ -83,8 +83,12 @@ DEFAULTS: Dict[str, Any] = {
     # of zero means "closed", never "unlimited".
     "enforce_budget": True,
     # Namespaces whose agents are held to report_contracts by bare name. A
-    # project agent that happens to be called "reviewer" is not governed.
+    # project agent that happens to be called "reviewer" is not governed:
+    # plugin agents always arrive namespaced (verified: governor:scout), so
+    # a bare agent type is a project or user agent, and those are governed
+    # only when listed here by the user.
     "contract_namespaces": ["governor", "py-testing", "prod-readiness"],
+    "govern_bare_agents": [],
     # "enforce": deny, rewrite and block as documented. "observe": keep the
     # ledger and the readout, never change or refuse anything; for measuring
     # a workflow before governing it, or for a session that must not be
@@ -851,16 +855,19 @@ def last_assistant_text(transcript: Path) -> str:
 
 
 def contract_for(agent_type: str, cfg: Dict[str, Any]) -> Optional[str]:
-    """Exact match first; a bare-name match only inside the namespaces the
-    config governs, so a project's own 'reviewer' keeps its own contract."""
+    """A namespaced type is governed when its namespace is listed; a bare
+    type only when the user listed it in govern_bare_agents. A fully
+    qualified key in report_contracts ("other:worker") matches exactly."""
     contracts = cfg["report_contracts"]
-    if agent_type in contracts:
-        return contracts[agent_type]
     if ":" in agent_type:
+        if agent_type in contracts:
+            return contracts[agent_type]
         ns, short = agent_type.split(":", 1)
         if ns in cfg["contract_namespaces"]:
             return contracts.get(short)
         return None
+    if agent_type in cfg.get("govern_bare_agents", []):
+        return contracts.get(agent_type)
     return None
 
 
