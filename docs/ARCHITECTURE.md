@@ -47,17 +47,39 @@ plugin has no install step.
 
 | guardrail | event | mechanism | verified |
 |---|---|---|---|
-| A model-less spawn is pinned to the worker model | `PreToolUse` on `Agent` | `hookSpecificOutput.updatedInput` rewrites `model` | real session: `general-purpose` spawn rewritten, subagent transcript shows `claude-sonnet-5` |
+| A model-less spawn is pinned to the worker model | `PreToolUse` on `Agent` | `hookSpecificOutput.updatedInput` rewrites `model`, with no permission decision so the session's own rules still apply | real session: `general-purpose` spawn rewritten, subagent transcript shows `claude-sonnet-5`, with and without a `permissionDecision` |
 | `fork` is denied | `PreToolUse` on `Agent` | `permissionDecision: deny` | real session: denied with reason |
 | A spawn onto the expensive tier needs a brief | `PreToolUse` on `Agent` | deny unless the prompt has `## Question`, `## Context`, `## Definition of done`, is under 8000 chars, and the session has consults left (3) | unit tests |
-| Budget gate | `PreToolUse` on every tool | ledger from the transcript; deny when expensive-tier spend ≥ budget and the caller's own model is expensive | unit tests; ledger priced a real session |
-| Worker report contract | `SubagentStop` | `decision: block` with the missing sections, at most twice per agent | unit tests; real session: a compliant report passed without a block |
+| Budget gate | `PreToolUse` on every tool | ledger from the transcript; deny when expensive-tier spend ≥ budget and the caller's own model is expensive; a spawn onto a cheap worker stays allowed; a budget of 0 is a closed gate | unit tests; ledger priced a real session |
+| Worker report contract | `SubagentStop` | `decision: block` with the missing sections, at most twice per agent; every `$` command in the evidence must appear as a Bash call in the worker's transcript | unit tests; real session: a compliant report passed without a block |
 | Policy and spend in context | `SessionStart`, `UserPromptSubmit` | `additionalContext` | real session: state written, readout generated |
 | Session history | `SessionEnd` | append to `history.jsonl` | unit tests |
 
 Agent definitions carry `model:` and `effort:`; both fields are documented
 and effort was verified in a real session (`governor:implementer` ran on
 `claude-sonnet-5` at `medium` while the session default was `xhigh`).
+
+### Configuration is tighten-only from a project
+
+Three files: the user's `~/.claude/governor.json` (with per-project entries
+under `projects`), the project's `.claude/governor.json`, and
+`$GOVERNOR_CONFIG`. A project file may only tighten the guardrail keys
+(lower the budget, forbid forks, add expensive models, keep enforcement
+on); a loosening is ignored and reported in the readout and in
+`budget show`. The reason is the obvious attack: a cloned repository ships
+a config that turns the governor off for whoever opens it. Every value is
+type-checked, and a bad value falls back to the previous one rather than
+crashing the hook into silence. `mode: observe` and `readout: off` exist for
+tracking without interference and are user-level decisions for the same
+reason.
+
+### Concurrency
+
+Every tool call from every worker is its own hook process, and they run at
+the same time. The ledger takes an exclusive `flock` on a per-session lock
+file from load to save (bounded wait, then skip the write rather than stall
+the session), and writes through a temp file named by pid, so counters such
+as the consult cap are not lost and the state file cannot be torn.
 
 ### The ledger
 
@@ -113,7 +135,9 @@ policy arrives through the SessionStart hook as context, and it is short.
 
 For unattended runs, Claude Code's own `--max-budget-usd` (print mode only,
 documented) is the hard cap; the governor's gate is the interactive
-equivalent and the ledger works in both.
+equivalent and the ledger works in both. In the consult mode the gate still
+binds: the architect's own spend is expensive-tier spend, and its tool calls
+are gated on its own model, so a runaway consult closes on itself.
 
 ## py-testing: what it is and is not
 
@@ -157,6 +181,12 @@ Captured with `GOVERNOR_DEBUG=1` (the engine appends every raw hook input to
 - A `governor:scout` report in a real session met its contract
   (`## Findings` with path:line) and passed `SubagentStop` without a block; a
   `governor:implementer` report met the worker contract the same way.
+- `agent_id` in hook input equals the suffix of the subagent's transcript
+  filename (`agent-<id>.jsonl`), which the budget gate relies on to look up
+  a worker's own model.
+- `updatedInput` on `PreToolUse` takes effect without a `permissionDecision`
+  (the rewritten spawn ran on Sonnet), so the rewrite does not approve
+  anything.
 
 Not verified:
 

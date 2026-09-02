@@ -81,6 +81,9 @@ def parse_module(path: Path, root: Path) -> Dict[str, Any]:
     except SyntaxError as e:
         info["error"] = f"syntax error line {e.lineno}"
         return info
+    except (ValueError, RecursionError, MemoryError) as e:  # NUL bytes, absurd nesting
+        info["error"] = f"unparseable ({type(e).__name__})"
+        return info
 
     for node in tree.body:
         if isinstance(node, (ast.Import, ast.ImportFrom)):
@@ -106,6 +109,14 @@ def parse_module(path: Path, root: Path) -> Dict[str, Any]:
             return
         if fn.name.startswith("test"):
             marks = [n.split(".", 2)[2] if n.startswith("pytest.mark.") else n[5:] for n in names if n.startswith("pytest.mark.") or n.startswith("mark.")]
+            for n, d in decos:
+                if n.endswith("usefixtures") and isinstance(d, ast.Call):
+                    args += [a.value for a in d.args if isinstance(a, ast.Constant) and isinstance(a.value, str)]
+            for node in ast.walk(fn):
+                if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                        and node.func.attr == "getfixturevalue" and node.args
+                        and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str)):
+                    args.append(node.args[0].value)
             cases = 1
             for n, d in decos:
                 if n.endswith("parametrize"):
@@ -128,9 +139,15 @@ def parse_module(path: Path, root: Path) -> Dict[str, Any]:
             visit_function(node, None)
         elif isinstance(node, ast.ClassDef) and node.name.startswith("Test"):
             info["classes"].append(node.name)
+            class_fixtures: List[str] = []
+            for d in node.decorator_list:
+                if _decorator_name(d).endswith("usefixtures") and isinstance(d, ast.Call):
+                    class_fixtures += [a.value for a in d.args if isinstance(a, ast.Constant) and isinstance(a.value, str)]
             for sub in node.body:
                 if isinstance(sub, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     visit_function(sub, node.name)
+                    if class_fixtures and info["tests"] and info["tests"][-1]["line"] == sub.lineno:
+                        info["tests"][-1]["fixtures"] = list(dict.fromkeys(info["tests"][-1]["fixtures"] + class_fixtures))
     info["markers"] = dict(info["markers"])
     return info
 
@@ -155,7 +172,10 @@ def find_config(start: Path) -> Optional[Path]:
         for name in ("pytest.ini", "pyproject.toml", "tox.ini", "setup.cfg"):
             p = d / name
             if p.exists():
-                if name == "pyproject.toml" and "[tool.pytest" not in p.read_text(errors="replace"):
+                text = p.read_text(errors="replace")
+                if name == "pyproject.toml" and "[tool.pytest" not in text:
+                    continue
+                if name == "tox.ini" and "[pytest]" not in text:
                     continue
                 return p
     return None
@@ -191,8 +211,11 @@ def registered_markers(cfg: Optional[Path]) -> Optional[Set[str]]:
 
 
 def analyse(roots: List[Path], config: Optional[Path]) -> Dict[str, Any]:
-    base = roots[0] if roots[0].is_dir() else roots[0].parent
+    dirs = [r if r.is_dir() else r.parent for r in roots]
+    base = dirs[0] if len(dirs) == 1 else Path(os.path.commonpath([str(d) for d in dirs]))
+    multi = len(dirs) > 1
     modules = [parse_module(p, base) for p in iter_test_files(roots)]
+    cmd_base = os.path.relpath(base, os.getcwd())
 
     fixture_defs: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
     fixture_uses: Dict[str, int] = defaultdict(int)
@@ -222,7 +245,11 @@ def analyse(roots: List[Path], config: Optional[Path]) -> Dict[str, Any]:
     groups: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
     for m in modules:
         parts = Path(m["path"]).parts
-        key = parts[0] if len(parts) > 1 else "."
+        if multi:
+            # <root>/<subdir> when the file is below a subdirectory, else <root>
+            key = "/".join(parts[:2]) if len(parts) > 2 else parts[0]
+        else:
+            key = parts[0] if len(parts) > 1 else "."
         groups[key].append(m)
     slices = []
     group_fixture_use: Dict[str, Set[str]] = {}
@@ -237,7 +264,9 @@ def analyse(roots: List[Path], config: Optional[Path]) -> Dict[str, Any]:
             "files": [m["path"] for m in mods],
             "tests": sum(len(m["tests"]) for m in mods),
             "lines": sum(m["lines"] for m in mods),
-            "command": f"pytest -q {base.name}/{key}" if key != "." else f"pytest -q {base.name} --ignore-glob='{base.name}/*/'",
+            # The base slice is the files directly under the root; '*/*' excludes
+            # every file in a subdirectory (fnmatch '*' crosses '/').
+            "command": f"pytest -q {cmd_base}/{key}" if key != "." else f"pytest -q {cmd_base} --ignore-glob='{cmd_base}/*/*'",
         })
     shared = sorted(
         fx for fx in fixture_defs

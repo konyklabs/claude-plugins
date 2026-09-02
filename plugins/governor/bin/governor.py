@@ -18,7 +18,9 @@ transcript would otherwise be re-read each time.
 """
 from __future__ import annotations
 
+import fcntl
 import json
+import math
 import os
 import re
 import sys
@@ -75,7 +77,46 @@ DEFAULTS: Dict[str, Any] = {
     # How many times SubagentStop may send a worker back for a missing report
     # section before accepting it as-is. Two: one honest miss, one retry.
     "max_report_blocks": 2,
+    # The budget gate itself. Off only by an explicit user decision; a budget
+    # of zero means "closed", never "unlimited".
+    "enforce_budget": True,
+    # Namespaces whose agents are held to report_contracts by bare name. A
+    # project agent that happens to be called "reviewer" is not governed.
+    "contract_namespaces": ["governor", "py-testing"],
+    # "enforce": deny, rewrite and block as documented. "observe": keep the
+    # ledger and the readout, never change or refuse anything; for measuring
+    # a workflow before governing it, or for a session that must not be
+    # interrupted.
+    "mode": "enforce",
+    # "line": one spend line per turn in context. "start": only at
+    # SessionStart. "off": nothing in context; use the status line or
+    # /governor:budget instead.
+    "readout": "line",
+    # Permission decision returned with a model rewrite. "none" sends the
+    # rewritten input without a decision, so the session's own permission
+    # rules still apply (verified on 2.1.258: the rewrite takes effect).
+    # "allow" approves the spawn as a side effect; only for harnesses where
+    # the rewrite is otherwise ignored.
+    "rewrite_decision": "none",
 }
+
+# Keys a project-level file may only tighten. A repository can make the
+# session stricter for whoever opens it, never looser: loosening is the
+# user's decision, made in ~/.claude/governor.json or $GOVERNOR_CONFIG.
+TIGHTEN_ONLY = {
+    "budget_usd": "lower",
+    "warn_at": "lower",
+    "max_expensive_spawns": "lower",
+    "brief_max_chars": "lower",
+    "allow_fork": "false",
+    "enforce_reports": "true",
+    "enforce_budget": "true",
+    "always_pin_workers": "true",
+    "mode": "enforce",
+    "expensive_models": "superset",
+    "brief_headings": "superset",
+}
+NUMERIC_KEYS = {"budget_usd": float, "warn_at": float, "max_expensive_spawns": int, "brief_max_chars": int, "max_report_blocks": int}
 
 CONFIG_FILENAME = "governor.json"
 STATE_DIR_ARG: Optional[str] = None  # set from --state-dir before anything touches the state
@@ -91,18 +132,97 @@ def config_paths(project_dir: Optional[str]) -> List[Path]:
     return paths
 
 
+def _finite_number(v: Any, kind: type) -> Optional[float]:
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    if isinstance(v, float) and not math.isfinite(v):
+        return None
+    return kind(v)
+
+
+def _would_loosen(key: str, new: Any, cur: Any) -> bool:
+    rule = TIGHTEN_ONLY[key]
+    if rule == "lower":
+        return new > cur
+    if rule == "false":
+        return bool(new) and not bool(cur)
+    if rule == "true":
+        return (not bool(new)) and bool(cur)
+    if rule == "superset":
+        return not set(cur) <= set(new)
+    if rule == "enforce":
+        return new != "enforce" and cur == "enforce"
+    return False
+
+
 def load_config(project_dir: Optional[str]) -> Dict[str, Any]:
+    """DEFAULTS, then the user file, then the project file, then $GOVERNOR_CONFIG.
+
+    Every value is type-checked (a bad value falls back to the previous one
+    and is reported), and the project file may only tighten the guardrail
+    keys in TIGHTEN_ONLY. What was ignored is listed under cfg["_ignored"] so
+    the session can say so."""
     cfg = json.loads(json.dumps(DEFAULTS))
-    for p in config_paths(project_dir):
+    ignored: List[str] = []
+    paths = config_paths(project_dir)
+    project_path = Path(project_dir) / ".claude" / CONFIG_FILENAME if project_dir else None
+    user_path = paths[0]
+    for p in paths:
         try:
             data = json.loads(p.read_text())
-        except (OSError, ValueError):
+        except (OSError, ValueError) as e:
+            if p.exists():
+                ignored.append(f"{p}: unreadable ({type(e).__name__})")
             continue
-        for k, v in data.items():
-            if isinstance(v, dict) and isinstance(cfg.get(k), dict):
+        if not isinstance(data, dict):
+            ignored.append(f"{p}: not a JSON object")
+            continue
+        is_project = project_path is not None and p == project_path
+        items = list(data.items())
+        if p == user_path and isinstance(data.get("projects"), dict) and project_dir:
+            # "projects": {"/abs/project/dir": {...}} in the user's own file:
+            # per-project settings with user authority (may raise the budget).
+            per_project = data["projects"].get(str(Path(project_dir).resolve())) or data["projects"].get(str(project_dir)) or {}
+            items = [(k, v) for k, v in items if k != "projects"] + list(per_project.items())
+        elif "projects" in data:
+            items = [(k, v) for k, v in items if k != "projects"]
+            ignored.append(f"{p}: 'projects' is only honoured in the user file")
+        for k, v in items:
+            if k not in DEFAULTS:
+                ignored.append(f"{p}: unknown key {k!r}")
+                continue
+            if k in NUMERIC_KEYS:
+                num = _finite_number(v, NUMERIC_KEYS[k])
+                if num is None:
+                    ignored.append(f"{p}: {k} must be a finite number, got {v!r}")
+                    continue
+                v = num
+            elif isinstance(DEFAULTS[k], bool):
+                if not isinstance(v, bool):
+                    ignored.append(f"{p}: {k} must be true or false, got {v!r}")
+                    continue
+            elif isinstance(DEFAULTS[k], list):
+                if not isinstance(v, list) or not all(isinstance(x, str) for x in v):
+                    ignored.append(f"{p}: {k} must be a list of strings")
+                    continue
+            elif isinstance(DEFAULTS[k], dict):
+                if not isinstance(v, dict):
+                    ignored.append(f"{p}: {k} must be an object")
+                    continue
+            elif isinstance(DEFAULTS[k], str) and not isinstance(v, str):
+                ignored.append(f"{p}: {k} must be a string")
+                continue
+            if is_project and k in TIGHTEN_ONLY and _would_loosen(k, v, cfg[k]):
+                ignored.append(f"{p}: {k}={v!r} would loosen the user's {cfg[k]!r}; project files may only tighten")
+                continue
+            if isinstance(v, dict):
                 cfg[k].update(v)
             else:
                 cfg[k] = v
+    if is_expensive(cfg["worker_model"], cfg):
+        ignored.append(f"worker_model={cfg['worker_model']!r} is an expensive model; using {DEFAULTS['worker_model']!r}")
+        cfg["worker_model"] = DEFAULTS["worker_model"]
+    cfg["_ignored"] = ignored
     return cfg
 
 
@@ -150,16 +270,20 @@ class Pricing:
                 best = key
         return best or None
 
-    def cost_usd(self, model: Optional[str], usage: Dict[str, Any]) -> float:
+    def fallback_key(self) -> str:
+        """The dearest entry: an unknown model is priced as if it were Fable,
+        so a gap in the table can only close the gate early, never leave it
+        open."""
+        return max(self.models, key=lambda k: self.models[k]["output"])
+
+    def priced_key(self, model: Optional[str]) -> Tuple[str, bool]:
         key = self.resolve(model)
-        if not key:
-            return 0.0
+        return (key, True) if key else (self.fallback_key(), False)
+
+    def cost_usd(self, model: Optional[str], usage: Dict[str, Any]) -> float:
+        key, _ = self.priced_key(model)
         p = self.models[key]
-        cc = usage.get("cache_creation") or {}
-        w5 = cc.get("ephemeral_5m_input_tokens")
-        w1h = cc.get("ephemeral_1h_input_tokens", 0)
-        if w5 is None:  # older transcripts carry only the total
-            w5 = usage.get("cache_creation_input_tokens", 0) - w1h
+        w5, w1h = split_cache_writes(usage)
         per_m = (
             usage.get("input_tokens", 0) * p["input"]
             + usage.get("output_tokens", 0) * p["output"]
@@ -168,6 +292,18 @@ class Pricing:
             + usage.get("cache_read_input_tokens", 0) * p["cache_read"]
         )
         return per_m / 1_000_000
+
+
+def split_cache_writes(usage: Dict[str, Any]) -> Tuple[int, int]:
+    """(5-minute, 1-hour) cache-write token counts. The breakdown is the
+    source of truth when present; the flat total minus the 1h tier is the
+    fallback, clamped so a missing total can never turn into a discount."""
+    cc = usage.get("cache_creation") or {}
+    w1h = int(cc.get("ephemeral_1h_input_tokens") or 0)
+    w5 = cc.get("ephemeral_5m_input_tokens")
+    if w5 is None:
+        w5 = max(0, int(usage.get("cache_creation_input_tokens") or 0) - w1h)
+    return int(w5), w1h
 
 
 def is_expensive(model: Optional[str], cfg: Dict[str, Any]) -> bool:
@@ -216,20 +352,28 @@ class Ledger:
             "warned": False,
             "report_blocks": {},
             "pending_tool_uses": {},
+            "unpriced_models": [],
+            "start_model": None,
         }
         try:
             self.state.update(json.loads(self.path.read_text()))
         except (OSError, ValueError):
             pass
-        self._seen = set(self.state["seen"])
+        self._seen: Dict[str, None] = dict.fromkeys(self.state["seen"])
 
     # -- persistence
     def save(self) -> None:
-        # Bound the seen-set: 4000 ids is far more than one session's messages
-        # and keeps the state file small.
+        # Bound the seen-set to the most recent 4000 ids (insertion-ordered):
+        # far more than one session's messages, and it keeps the file small.
         self.state["seen"] = list(self._seen)[-4000:]
+        self.state["spawns"] = self.state["spawns"][-200:]
+        if len(self.state["pending_tool_uses"]) > 500:
+            self.state["pending_tool_uses"] = dict(list(self.state["pending_tool_uses"].items())[-500:])
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.path.with_suffix(".tmp")
+        # A temp name unique to this process: hooks for one session run
+        # concurrently (every worker's tool call is its own process), and a
+        # shared temp path would let two writers interleave into one file.
+        tmp = self.path.with_name(f"{self.path.name}.{os.getpid()}.tmp")
         tmp.write_text(json.dumps(self.state))
         os.replace(tmp, self.path)
 
@@ -242,7 +386,8 @@ class Ledger:
         look like the session's and lift the budget gate."""
         p = Path(transcript_path)
         if p.parent.name == "subagents" and p.name.startswith("agent-"):
-            return p.parent.parent.with_suffix(".jsonl")
+            session_dir = p.parent.parent
+            return session_dir.parent / (session_dir.name + ".jsonl")
         return p
 
     def update(self, transcript_path: Optional[str]) -> None:
@@ -296,16 +441,15 @@ class Ledger:
             mid = msg.get("id")
             if not mid or mid in self._seen:
                 return
-            self._seen.add(mid)
+            self._seen[mid] = None
             model = msg.get("model") or "unknown"
             usage = msg.get("usage") or {}
             cost = self.pricing.cost_usd(model, usage)
+            _, known = self.pricing.priced_key(model)
+            if not known and model not in self.state["unpriced_models"]:
+                self.state["unpriced_models"].append(model)
             t = self.state["models"].setdefault(model, dict(EMPTY_TOTALS))
-            cc = usage.get("cache_creation") or {}
-            w1h = cc.get("ephemeral_1h_input_tokens", 0)
-            w5 = cc.get("ephemeral_5m_input_tokens")
-            if w5 is None:
-                w5 = usage.get("cache_creation_input_tokens", 0) - w1h
+            w5, w1h = split_cache_writes(usage)
             t["messages"] += 1
             t["input"] += usage.get("input_tokens", 0)
             t["output"] += usage.get("output_tokens", 0)
@@ -356,7 +500,7 @@ class Ledger:
             self.state["main_effort"] = eff["level"]
 
     def record_spawn(self, subagent_type: str, model: Optional[str], action: str) -> None:
-        self.state["spawns"].append({"type": subagent_type, "model": model, "action": action, "ts": time.time()})
+        self.state["spawns"].append({"type": clean_label(subagent_type), "model": clean_label(model or ""), "action": action, "ts": time.time()})
 
     def readout(self, cfg: Dict[str, Any]) -> str:
         """One line for the per-turn context injection."""
@@ -372,17 +516,26 @@ class Ledger:
                 by_model[s["model"] or "?"] = by_model.get(s["model"] or "?", 0) + 1
         spawn_txt = ", ".join(f"{m} {n}" for m, n in sorted(by_model.items())) or "none"
         model = self.main_model() or "unknown"
-        return (
+        line = (
             f"[governor] expensive-tier ${exp:.2f} of ${budget:.2f} "
             f"(out {_k(out_tok)} tok, cache-read {_k(cread)}) · total ${self.total_spend():.2f} "
             f"· session model {model} · spawns: {spawn_txt}"
         )
+        if self.state["unpriced_models"]:
+            line += " · unpriced (charged at the top rate): " + ", ".join(self.state["unpriced_models"])
+        if cfg.get("_ignored"):
+            line += f" · {len(cfg['_ignored'])} config value(s) ignored, see /governor:budget"
+        return line
 
     def report(self, cfg: Dict[str, Any]) -> str:
         """Markdown for `governor.py status`."""
         lines = [f"# governor: session {self.session_id}", ""]
         lines.append(f"Budget (expensive tier): ${float(cfg['budget_usd']):.2f}  ·  spent: ${self.expensive_spend(cfg):.2f}  ·  all models: ${self.total_spend():.2f}")
         lines.append(f"Session model: {self.main_model() or 'unknown'}  ·  effort: {self.state.get('main_effort') or 'unknown'}")
+        if self.state["unpriced_models"]:
+            lines.append("Models missing from pricing.json, charged at the top rate: " + ", ".join(self.state["unpriced_models"]))
+        for note in cfg.get("_ignored", []):
+            lines.append(f"Config ignored: {note}")
         lines += ["", "| model | messages | input | output | cache write 5m | cache write 1h | cache read | USD |", "|---|---:|---:|---:|---:|---:|---:|---:|"]
         for m, t in sorted(self.state["models"].items(), key=lambda kv: -kv[1]["cost_usd"]):
             lines.append(f"| {m} | {t['messages']} | {_k(t['input'])} | {_k(t['output'])} | {_k(t['cache_write_5m'])} | {_k(t['cache_write_1h'])} | {_k(t['cache_read'])} | {t['cost_usd']:.2f} |")
@@ -400,6 +553,12 @@ class Ledger:
             for s in self.state["spawns"][-12:]:
                 lines.append(f"- {s['type']} → {s['model'] or '?'} ({s['action']})")
         return "\n".join(lines)
+
+
+def clean_label(s: str) -> str:
+    """One line, bounded, so a model-chosen string cannot impersonate the
+    governor's own output when it is rendered back."""
+    return re.sub(r"[^\w:@.+/-]", "_", str(s))[:80]
 
 
 def _k(n: int) -> str:
@@ -573,8 +732,49 @@ def agent_policy(tool_input: Dict[str, Any], cfg: Dict[str, Any], ledger: Ledger
 FENCE_RE = re.compile(r"```[^\n]*\n(.*?)```", re.S)
 
 
-def report_problems(text: str, contract: str) -> List[str]:
-    """What a worker's final message lacks under its contract. Empty list = accepted."""
+def bash_commands_in(transcript: Optional[Path]) -> Optional[List[str]]:
+    """Every Bash command the agent actually ran, or None when the transcript
+    is not available (then only the shape of the evidence can be checked)."""
+    if not transcript:
+        return None
+    cmds: List[str] = []
+    try:
+        with transcript.open() as f:
+            for raw in f:
+                try:
+                    obj = json.loads(raw)
+                except ValueError:
+                    continue
+                if obj.get("type") != "assistant":
+                    continue
+                for b in (obj.get("message") or {}).get("content") or []:
+                    if isinstance(b, dict) and b.get("type") == "tool_use" and b.get("name") in ("Bash", "PowerShell"):
+                        cmd = (b.get("input") or {}).get("command")
+                        if isinstance(cmd, str):
+                            cmds.append(" ".join(cmd.split()))
+    except OSError:
+        return None
+    return cmds
+
+
+def evidence_commands(text: str) -> List[str]:
+    m = re.search(r"^#{1,6}\s*Evidence\b", text, re.M | re.I)
+    if not m:
+        return []
+    out = []
+    for fence in FENCE_RE.findall(text[m.end():]):
+        for line in fence.splitlines():
+            if line.startswith("$ ") and line[2:].strip():
+                out.append(" ".join(line[2:].split()))
+    return out
+
+
+def report_problems(text: str, contract: str, ran: Optional[List[str]] = None) -> List[str]:
+    """What a worker's final message lacks under its contract. Empty list = accepted.
+
+    ``ran`` is the list of commands the agent's transcript shows it executed;
+    when given, every ``$`` line in the evidence must correspond to one of
+    them, so a report cannot show output for a command that never ran."""
     problems: List[str] = []
 
     def has_heading(h: str) -> bool:
@@ -590,10 +790,16 @@ def report_problems(text: str, contract: str) -> List[str]:
         if not has_heading("Evidence"):
             problems.append("missing '## Evidence'")
         else:
-            tail = text[re.search(r"^#{1,6}\s*Evidence\b", text, re.M | re.I).end():]
-            fences = FENCE_RE.findall(tail)
-            if not any(re.search(r"^\$ \S", f, re.M) for f in fences):
+            cmds = evidence_commands(text)
+            if not cmds:
                 problems.append("'## Evidence' needs a fenced block with the command on a '$ ' line followed by its output")
+            elif ran is not None:
+                def was_run(c: str) -> bool:
+                    head = c.split("|")[0].split("&&")[0].strip()
+                    return any(c in r or (head and head in r) for r in ran)
+                fake = [c for c in cmds if not was_run(c)]
+                if fake:
+                    problems.append("evidence shows commands this session never ran: " + "; ".join(fake[:3]) + ". Run them and paste the real output")
     elif contract == "scout":
         if not has_heading("Findings"):
             problems.append("missing '## Findings' with path:line references")
@@ -642,6 +848,20 @@ def last_assistant_text(transcript: Path) -> str:
     return "\n".join(texts.get(last_id, []))
 
 
+def contract_for(agent_type: str, cfg: Dict[str, Any]) -> Optional[str]:
+    """Exact match first; a bare-name match only inside the namespaces the
+    config governs, so a project's own 'reviewer' keeps its own contract."""
+    contracts = cfg["report_contracts"]
+    if agent_type in contracts:
+        return contracts[agent_type]
+    if ":" in agent_type:
+        ns, short = agent_type.split(":", 1)
+        if ns in cfg["contract_namespaces"]:
+            return contracts.get(short)
+        return None
+    return None
+
+
 def agent_transcript_for(hook: Dict[str, Any]) -> Optional[Path]:
     p = hook.get("agent_transcript_path")
     if p:
@@ -688,6 +908,10 @@ def policy_text(ledger: Ledger, cfg: Dict[str, Any]) -> str:
 def h_session_start(hook: Dict[str, Any], cfg: Dict[str, Any], ledger: Ledger) -> Dict[str, Any]:
     ledger.note_hook_context(hook)
     ledger.update(hook.get("transcript_path"))
+    if cfg.get("readout") == "off":
+        return {}
+    if cfg.get("mode") == "observe":
+        return {"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": "governor is in observe mode: spend is tracked, nothing is enforced.\n" + ledger.readout(cfg)}}
     return {
         "hookSpecificOutput": {
             "hookEventName": "SessionStart",
@@ -699,6 +923,8 @@ def h_session_start(hook: Dict[str, Any], cfg: Dict[str, Any], ledger: Ledger) -
 def h_user_prompt(hook: Dict[str, Any], cfg: Dict[str, Any], ledger: Ledger) -> Dict[str, Any]:
     ledger.note_hook_context(hook)
     ledger.update(hook.get("transcript_path"))
+    if cfg.get("readout") != "line":
+        return {}
     return {
         "hookSpecificOutput": {
             "hookEventName": "UserPromptSubmit",
@@ -721,10 +947,21 @@ def h_pre_tool_use(hook: Dict[str, Any], cfg: Dict[str, Any], ledger: Ledger, pr
     else:
         caller_model = ledger.main_model()
 
-    # Budget gate first: it applies to every tool, Agent included.
+    decision: Optional[Dict[str, Any]] = None
+    if tool == "Agent":
+        decision = agent_policy(tool_input, cfg, ledger, project_dir)
+        ledger.record_spawn(str(tool_input.get("subagent_type") or "general-purpose"), decision.get("model"), decision["action"] if cfg.get("mode") != "observe" else f"observed:{decision['action']}")
+    if cfg.get("mode") == "observe":
+        return {}
+
+    # Budget gate: every tool call from an expensive-tier caller, except a
+    # spawn that hands work to a cheap worker, which is the one action that
+    # reduces spend. A budget of zero or less is a closed gate, not no gate.
     spend = ledger.expensive_spend(cfg)
     budget = float(cfg["budget_usd"])
-    if is_expensive(caller_model, cfg) and budget > 0 and spend >= budget:
+    gated = cfg["enforce_budget"] and is_expensive(caller_model, cfg)
+    cheap_delegation = decision is not None and decision["action"] in ("rewrite", "allow") and not is_expensive(decision.get("model"), cfg)
+    if gated and spend >= budget and not cheap_delegation:
         return {
             "hookSpecificOutput": {
                 "hookEventName": "PreToolUse",
@@ -732,23 +969,23 @@ def h_pre_tool_use(hook: Dict[str, Any], cfg: Dict[str, Any], ledger: Ledger, pr
                 "permissionDecisionReason": (
                     f"governor: expensive-tier spend ${spend:.2f} has reached the session budget ${budget:.2f}."
                     " Context is preserved: switch with /model opus (or sonnet) and continue, or raise the budget"
-                    " with /governor:budget set <usd>. Write down the state first if the next step is a decision."
+                    " with /governor:budget set <usd>. Spawning cheap workers (governor:implementer, governor:scout)"
+                    " is still allowed. Write down the state first if the next step is a decision."
                 ),
             }
         }
     out: Dict[str, Any] = {"hookSpecificOutput": {"hookEventName": "PreToolUse"}}
-    if budget > 0 and spend >= budget * float(cfg["warn_at"]) and not ledger.state["warned"] and is_expensive(caller_model, cfg):
+    if gated and budget > 0 and spend >= budget * float(cfg["warn_at"]) and not ledger.state["warned"]:
         ledger.state["warned"] = True
         out["systemMessage"] = f"governor: ${spend:.2f} of the ${budget:.2f} expensive-tier budget used. Delegate what remains; keep the conductor's turns short."
 
-    if tool == "Agent":
-        decision = agent_policy(tool_input, cfg, ledger, project_dir)
-        ledger.record_spawn(str(tool_input.get("subagent_type") or "general-purpose"), decision.get("model"), decision["action"])
+    if decision is not None:
         if decision["action"] == "deny":
             out["hookSpecificOutput"]["permissionDecision"] = "deny"
             out["hookSpecificOutput"]["permissionDecisionReason"] = decision["reason"]
         elif decision["action"] == "rewrite":
-            out["hookSpecificOutput"]["permissionDecision"] = "allow"
+            if cfg.get("rewrite_decision", "none") == "allow":
+                out["hookSpecificOutput"]["permissionDecision"] = "allow"
             out["hookSpecificOutput"]["updatedInput"] = decision["updated_input"]
             out["systemMessage"] = decision["reason"]
         elif decision.get("reason") == "expensive spawn with a brief":
@@ -760,13 +997,13 @@ def h_pre_tool_use(hook: Dict[str, Any], cfg: Dict[str, Any], ledger: Ledger, pr
 
 def h_subagent_stop(hook: Dict[str, Any], cfg: Dict[str, Any], ledger: Ledger) -> Dict[str, Any]:
     ledger.update(hook.get("transcript_path"))
-    if not cfg["enforce_reports"]:
+    if not cfg["enforce_reports"] or cfg.get("mode") == "observe":
         return {}
     transcript = agent_transcript_for(hook)
     atype = agent_type_for(hook, transcript)
     if not atype:
         return {}
-    contract = cfg["report_contracts"].get(atype) or cfg["report_contracts"].get(atype.split(":", 1)[-1])
+    contract = contract_for(atype, cfg)
     if not contract or not (transcript or hook.get("last_assistant_message")):
         return {}
     aid = str(hook.get("agent_id") or (transcript.stem if transcript else "unknown"))
@@ -776,7 +1013,7 @@ def h_subagent_stop(hook: Dict[str, Any], cfg: Dict[str, Any], ledger: Ledger) -
     text = hook.get("last_assistant_message")
     if not isinstance(text, str) or not text.strip():
         text = last_assistant_text(transcript)
-    problems = report_problems(text, contract)
+    problems = report_problems(text, contract, bash_commands_in(transcript))
     if not problems:
         return {}
     ledger.state["report_blocks"][aid] = blocks + 1
@@ -833,22 +1070,46 @@ def cmd_budget(args: List[str], cfg: Dict[str, Any], project_dir: Optional[str])
     if not args or args[0] == "show":
         print(f"budget_usd: {cfg['budget_usd']}  worker_model: {cfg['worker_model']}  allow_fork: {cfg['allow_fork']}  max_expensive_spawns: {cfg['max_expensive_spawns']}")
         print("config files (low to high precedence): " + ", ".join(str(p) for p in config_paths(project_dir)))
+        print("project files may only tighten: " + ", ".join(sorted(TIGHTEN_ONLY)))
+        for note in cfg.get("_ignored", []):
+            print(f"ignored: {note}")
         return 0
     if args[0] == "set" and len(args) >= 2:
         try:
             value = float(args[1])
         except ValueError:
-            print("usage: governor.py budget set <usd> [--user]")
+            value = float("nan")
+        if not math.isfinite(value) or value < 0:
+            print("usage: governor.py budget set <usd> [--user|--project] — a finite number, 0 or more (0 closes the gate)")
             return 2
-        target = Path.home() / ".claude" / CONFIG_FILENAME if "--user" in args else Path(project_dir or ".") / ".claude" / CONFIG_FILENAME
+        # Default: this project's entry in the user's own file, which is the
+        # only place a raise can come from (a project file may only tighten).
+        if "--project" in args:
+            target = Path(project_dir or ".") / ".claude" / CONFIG_FILENAME
+        else:
+            target = Path.home() / ".claude" / CONFIG_FILENAME
         data: Dict[str, Any] = {}
         try:
             data = json.loads(target.read_text())
         except (OSError, ValueError):
             pass
-        data["budget_usd"] = value
+        if not isinstance(data, dict):
+            data = {}
+        if "--project" in args or "--user" in args:
+            data["budget_usd"] = value
+        else:
+            key = str(Path(project_dir or ".").resolve())
+            data.setdefault("projects", {})
+            if not isinstance(data["projects"], dict):
+                data["projects"] = {}
+            data["projects"].setdefault(key, {})["budget_usd"] = value
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(json.dumps(data, indent=2) + "\n")
+        effective = load_config(project_dir)
+        if float(effective["budget_usd"]) != value:
+            print(f"budget_usd={value} written to {target}, but the effective budget is {effective['budget_usd']}:"
+                  " another config file wins (see 'budget show'). " + "; ".join(effective.get("_ignored", [])[-2:]))
+            return 1
         print(f"budget_usd={value} written to {target}. Applies from the next tool call.")
         return 0
     if args[0] == "history":
@@ -865,8 +1126,51 @@ def cmd_budget(args: List[str], cfg: Dict[str, Any], project_dir: Optional[str])
         for r in rows[-20:]:
             print(f"| {r['ts']} | {r['session_id'][:8]} | {r.get('main_model')} | {r['expensive_usd']:.2f} | {r['total_usd']:.2f} | {r['spawns']} |")
         return 0
-    print("usage: governor.py budget [show|set <usd> [--user]|history]")
+    print("usage: governor.py budget [show|set <usd> [--user|--project]|history]")
     return 2
+
+
+def cmd_statusline(cfg: Dict[str, Any]) -> int:
+    """Status-line command: Claude Code pipes session JSON on stdin, we print
+    one line. Reads the saved ledger only (the hooks keep it current), so it
+    returns in milliseconds and never touches the transcript itself."""
+    try:
+        data = json.load(sys.stdin) if not sys.stdin.isatty() else {}
+    except ValueError:
+        data = {}
+    sid = clean_label(str(data.get("session_id") or "")) or _latest_session_id()
+    model = (data.get("model") or {}).get("display_name") or (data.get("model") or {}).get("id") or "?"
+    claude_cost = (data.get("cost") or {}).get("total_cost_usd")
+    ctx = (data.get("context_window") or {}).get("used_percentage")
+    parts = [f"governor {model}"]
+    if sid:
+        led = Ledger(sid, Pricing.load())
+        exp = led.expensive_spend(cfg)
+        budget = float(cfg["budget_usd"])
+        state = "CLOSED" if cfg["enforce_budget"] and exp >= budget and is_expensive(led.main_model(), cfg) else f"${exp:.2f}/${budget:.0f}"
+        parts.append(f"fable {state}")
+        parts.append(f"total ${led.total_spend():.2f}")
+        n = len([x for x in led.state["spawns"] if not x["action"].startswith("deny")])
+        if n:
+            parts.append(f"spawns {n}")
+    if isinstance(claude_cost, (int, float)):
+        parts.append(f"claude ${claude_cost:.2f}")
+    if isinstance(ctx, (int, float)):
+        parts.append(f"ctx {int(ctx)}%")
+    if cfg.get("mode") == "observe":
+        parts.append("observe")
+    print(" · ".join(parts))
+    return 0
+
+
+def cmd_statusline_snippet() -> int:
+    """The settings.json fragment that installs the status line. Printed, not
+    written: settings are the user's to change."""
+    cmd = f'python3 "{HERE / "governor.py"}" statusline'
+    print(json.dumps({"statusLine": {"type": "command", "command": cmd, "padding": 1}}, indent=2))
+    print("\nMerge into ~/.claude/settings.json (or the project's .claude/settings.json). The path above is this install's;", file=sys.stderr)
+    print("plugin updates move it, so re-run `governor.py statusline-snippet` after an update.", file=sys.stderr)
+    return 0
 
 
 def _arg(args: List[str], flag: str) -> Optional[str]:
@@ -886,6 +1190,54 @@ def _latest_session_id() -> Optional[str]:
     return files[-1].stem if files else None
 
 
+def session_lock(sid: str):
+    """An exclusive lock for the session's ledger, held from load to save so
+    concurrent hook processes (one per tool call, across workers) do not lose
+    each other's increments. Bounded wait: a hook has a 10 s timeout, and a
+    lock held longer than 3 s means something is wrong, so we go on without
+    the lock and skip the write rather than stall the session."""
+    try:
+        d = state_dir() / "sessions"
+        d.mkdir(parents=True, exist_ok=True)
+        f = (d / f"{sid}.lock").open("a+")
+    except OSError:
+        return None
+    deadline = time.monotonic() + 3.0
+    while True:
+        try:
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return f
+        except OSError:
+            if time.monotonic() > deadline:
+                f.close()
+                return None
+            time.sleep(0.02)
+
+
+def debug_dump(event: str, hook: Dict[str, Any]) -> None:
+    """Shape only: field names, and sizes for the payloads. Never the
+    contents of tool inputs, prompts or messages, which can carry secrets."""
+    def shape(v: Any) -> Any:
+        if isinstance(v, dict):
+            return {k: shape(x) for k, x in v.items()}
+        if isinstance(v, list):
+            return f"list[{len(v)}]"
+        if isinstance(v, str):
+            return f"str[{len(v)}]"
+        return v
+    redacted = {k: (shape(v) if k in ("tool_input", "last_assistant_message", "prompt", "tool_response") else v) for k, v in hook.items()}
+    for k in ("last_assistant_message", "prompt"):
+        if isinstance(hook.get(k), str):
+            redacted[k] = f"str[{len(hook[k])}]"
+    try:
+        d = state_dir()
+        d.mkdir(parents=True, exist_ok=True)
+        with (d / "hook-inputs.jsonl").open("a") as f:
+            f.write(json.dumps({"event": event, "hook": redacted}) + "\n")
+    except OSError:
+        pass
+
+
 def main(argv: List[str]) -> int:
     if not argv:
         print(__doc__)
@@ -902,19 +1254,19 @@ def main(argv: List[str]) -> int:
         return cmd_status(args, cfg)
     if event == "budget":
         return cmd_budget(args, cfg, project_dir)
+    if event == "statusline":
+        return cmd_statusline(cfg)
+    if event == "statusline-snippet":
+        return cmd_statusline_snippet()
 
     try:
         hook = json.load(sys.stdin) if not sys.stdin.isatty() else {}
     except ValueError:
         hook = {}
-    sid = str(hook.get("session_id") or "unknown")
+    sid = clean_label(str(hook.get("session_id") or "unknown"))
     if os.environ.get("GOVERNOR_DEBUG"):
-        try:
-            d = state_dir(); d.mkdir(parents=True, exist_ok=True)
-            with (d / "hook-inputs.jsonl").open("a") as f:
-                f.write(json.dumps({"event": event, "hook": hook}) + "\n")
-        except OSError:
-            pass
+        debug_dump(event, hook)
+    lock = session_lock(sid)
     ledger = Ledger(sid, Pricing.load())
     handlers = {
         "session-start": lambda: h_session_start(hook, cfg, ledger),
@@ -927,9 +1279,20 @@ def main(argv: List[str]) -> int:
         print(f"governor: unknown event {event}", file=sys.stderr)
         return 2
     out = handlers[event]()
-    ledger.save()
+    # The decision goes out before the state is written: a full disk must not
+    # turn a computed deny into silence, which Claude Code reads as consent.
     if out:
         emit(out)
+    try:
+        if lock is not None:
+            ledger.save()
+        else:
+            log_error(f"{event}: session lock not acquired; state not written")
+    except OSError as e:
+        log_error(f"{event}: state write failed: {e}")
+    finally:
+        if lock is not None:
+            lock.close()
     return 0
 
 

@@ -87,10 +87,21 @@ Two ways to run it:
   is Fable, called with a brief for the one decision that needs it. Best
   for long implementation runs, where the conductor's context is what costs.
 
-Configuration: `.claude/governor.json` in the project, `~/.claude/governor.json`
-for the user. Keys and defaults are in `plugins/governor/bin/governor.py`
+Configuration: `~/.claude/governor.json` for the user (per-project entries
+under `projects`), `.claude/governor.json` in a project, which may only
+tighten. Keys and defaults are in `plugins/governor/bin/governor.py`
 (`DEFAULTS`), each with the reason for its value. Prices are in
 `plugins/governor/bin/pricing.json` with the date they were checked.
+
+## Tracking cost without interfering
+
+`{"mode": "observe", "readout": "off"}` in `~/.claude/governor.json` keeps
+the ledger and never denies, rewrites, blocks or injects; read it with
+`/governor:budget` or put it on the status line
+(`governor.py statusline-snippet`). The runbook, including what the plugin
+reads and writes and what CI pulls in, is [docs/COST-TRACKING.md](docs/COST-TRACKING.md).
+The plugin code is standard-library Python with no network calls;
+`scripts/audit-deps.sh` proves it in CI.
 
 ## py-testing in one minute
 
@@ -121,6 +132,7 @@ were silent.
 
 ```
 bash scripts/validate.sh                              # strict manifest, skill and agent validation
+bash scripts/audit-deps.sh                            # stdlib-only imports, no network code, what CI pulls
 uv run --with pytest python -m pytest -q plugins      # hook engine and inventory script tests
 claude --plugin-dir ./plugins/governor                # try it without installing
 ```

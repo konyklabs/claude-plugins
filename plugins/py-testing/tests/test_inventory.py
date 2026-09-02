@@ -76,7 +76,8 @@ def test_markers_registered_and_unregistered(suite):
     assert r["markers"]["unregistered"] == ["flaky"]
 
 
-def test_slices_by_directory(suite):
+def test_slices_by_directory(suite, monkeypatch):
+    monkeypatch.chdir(suite)
     r = inventory.analyse([suite / "tests"], suite / "pyproject.toml")
     names = [s["slice"] for s in r["slices"]]
     assert names == [".", "api", "ui"]
@@ -106,3 +107,59 @@ def test_same_tree_same_output(suite):
     a = subprocess.run([sys.executable, str(SCRIPT), "tests", "--json"], cwd=suite, capture_output=True, text=True).stdout
     b = subprocess.run([sys.executable, str(SCRIPT), "tests", "--json"], cwd=suite, capture_output=True, text=True).stdout
     assert a == b
+
+
+def test_unparseable_files_are_listed_not_fatal(tmp_path):
+    t = tmp_path / "tests"; t.mkdir()
+    (t / "test_nul.py").write_bytes(b"def test_a():\n    x = '\x00'\n")
+    (t / "test_ok.py").write_text("def test_b():\n    pass\n")
+    r = inventory.analyse([t], None)
+    assert r["totals"]["tests"] == 1
+    assert r["errors"][0]["path"] == "test_nul.py" and r["errors"][0]["error"]  # SyntaxError on 3.12+, ValueError before
+
+
+def test_usefixtures_and_getfixturevalue_count_as_uses(tmp_path):
+    t = tmp_path / "tests"; t.mkdir()
+    (t / "conftest.py").write_text("import pytest\n@pytest.fixture\ndef seeded():\n    pass\n@pytest.fixture\ndef lazy():\n    pass\n@pytest.fixture\ndef klass():\n    pass\n")
+    (t / "test_u.py").write_text(
+        "import pytest\n"
+        "@pytest.mark.usefixtures('seeded')\ndef test_a():\n    pass\n"
+        "def test_b(request):\n    request.getfixturevalue('lazy')\n"
+        "@pytest.mark.usefixtures('klass')\nclass TestK:\n    def test_c(self):\n        pass\n"
+    )
+    r = inventory.analyse([t], None)
+    assert r["unused_fixtures"] == []
+    assert r["fixtures"]["seeded"]["used_by"] == 1 and r["fixtures"]["lazy"]["used_by"] == 1 and r["fixtures"]["klass"]["used_by"] == 1
+
+
+def test_tox_ini_without_pytest_section_is_skipped(tmp_path):
+    (tmp_path / "tox.ini").write_text("[tox]\nenvlist = py\n")
+    (tmp_path / "setup.cfg").write_text("[tool:pytest]\nmarkers =\n    slow\n")
+    assert inventory.find_config(tmp_path).name == "setup.cfg"
+    (tmp_path / "tox.ini").write_text("[tox]\nenvlist = py\n[pytest]\nmarkers = db\n")
+    assert inventory.find_config(tmp_path).name == "tox.ini"
+
+
+def test_base_slice_command_excludes_subdirectories(suite, monkeypatch):
+    monkeypatch.chdir(suite)
+    r = inventory.analyse([suite / "tests"], suite / "pyproject.toml")
+    base = next(s for s in r["slices"] if s["slice"] == ".")
+    assert base["command"] == "pytest -q tests --ignore-glob='tests/*/*'"
+    import fnmatch
+    assert fnmatch.fnmatch("tests/api/test_orders.py", "tests/*/*")
+    assert fnmatch.fnmatch("tests/api/deep/test_x.py", "tests/*/*")
+    assert not fnmatch.fnmatch("tests/test_top.py", "tests/*/*")
+
+
+def test_multiple_roots_get_relative_paths_and_root_prefixed_slices(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    a = tmp_path / "tests"; (a / "api").mkdir(parents=True)
+    b = tmp_path / "integration"; b.mkdir()
+    (a / "api" / "test_a.py").write_text("def test_a():\n    pass\n")
+    (a / "test_top.py").write_text("def test_t():\n    pass\n")
+    (b / "test_b.py").write_text("def test_b():\n    pass\n")
+    r = inventory.analyse([a, b], None)
+    names = [s["slice"] for s in r["slices"]]
+    assert names == ["integration", "tests", "tests/api"]
+    assert all(not Path(f["path"]).is_absolute() for f in r["files"])
+    assert next(s for s in r["slices"] if s["slice"] == "tests/api")["command"] == "pytest -q ./tests/api"

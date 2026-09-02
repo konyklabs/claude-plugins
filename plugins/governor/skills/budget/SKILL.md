@@ -1,7 +1,6 @@
 ---
 name: budget
-description: Shows this session's priced spend per model and subagent from the governor ledger, the tool results that cost the most to read, and sets or raises the expensive-tier budget. Use when asked how much has been spent, what the budget is, to raise the budget, or when the governor denies a tool call for budget.
-allowed-tools: Bash(python3 *)
+description: Shows this session's priced spend per model and subagent from the governor ledger, the tool results that cost the most to read, and sets or raises the expensive-tier budget; also installs the zero-cost status line and switches between observe and enforce modes. Use when asked how much has been spent, what the budget is, to raise the budget, to track cost without interfering, or when the governor denies a tool call for budget.
 ---
 
 # Budget
@@ -13,32 +12,60 @@ dollars are notional, but the ratios are exact and the budget gate uses them.
 
 ## Commands
 
-Run exactly these; the plugin root is substituted by Claude Code.
+Run exactly these; the plugin root is substituted by Claude Code. They read
+local files only and make no network calls.
 
-Spend this session (per model, per subagent, biggest tool results, spawns):
+Spend this session (per model, per subagent, biggest tool results, spawns,
+and any config values that were ignored):
 
 ```
 python3 "${CLAUDE_PLUGIN_ROOT}/bin/governor.py" status
 ```
 
-Current budget and where it is configured:
+Current budget, mode, and where each setting comes from:
 
 ```
 python3 "${CLAUDE_PLUGIN_ROOT}/bin/governor.py" budget show
 ```
 
-Raise or lower the expensive-tier budget for this project (writes
-`.claude/governor.json`; add `--user` to write `~/.claude/governor.json`):
+Raise or lower the expensive-tier budget for this project. Written to your
+own `~/.claude/governor.json` under `projects`, keyed by this project's
+path; that is the only place a raise can come from. `--user` sets your
+default for every project; `--project` writes `.claude/governor.json` here,
+which can only lower:
 
 ```
 python3 "${CLAUDE_PLUGIN_ROOT}/bin/governor.py" budget set 25
 ```
+
+`budget set 0` closes the gate for the expensive tier; it does not disable it.
 
 Past sessions:
 
 ```
 python3 "${CLAUDE_PLUGIN_ROOT}/bin/governor.py" budget history
 ```
+
+Status line (spend visible under the prompt, no context cost); prints the
+`settings.json` fragment to merge, does not write settings:
+
+```
+python3 "${CLAUDE_PLUGIN_ROOT}/bin/governor.py" statusline-snippet
+```
+
+## Modes
+
+Two keys in `~/.claude/governor.json`:
+
+- `"mode": "observe"` keeps the ledger and readout but never denies,
+  rewrites or blocks. Tracking only. `"enforce"` (default) applies the
+  guardrails.
+- `"readout": "line" | "start" | "off"` controls what goes into the
+  context: a spend line every turn, only at session start, or nothing.
+
+A project's `.claude/governor.json` may only tighten; it cannot switch a
+user to observe or raise the budget. `docs/COST-TRACKING.md` in the
+repository is the runbook.
 
 ## Reading the status
 
@@ -52,11 +79,16 @@ python3 "${CLAUDE_PLUGIN_ROOT}/bin/governor.py" budget history
   the worker model. Harmless, but the caller should name a model.
 - **Spawns marked `deny`**: forks, brief-less expensive spawns, or the
   consult cap. The reason was returned to the caller at the time.
+- **Models "charged at the top rate"**: a model id missing from
+  `pricing.json`, priced as Fable until the table is updated.
+- **Config ignored**: a value a project file tried to loosen, or a value of
+  the wrong type; the previous value stayed in force.
 
 ## When the gate has closed
 
 Tool calls are denied with a reason once expensive-tier spend reaches the
-budget. Two ways on, both preserving the session's context:
+budget. Spawning cheap workers is still allowed. Two ways on, both
+preserving the session's context:
 
 1. `/model opus` (or `sonnet`): the ledger sees the new model on the next
    message and the gate lifts. Cheaper models cannot read the expensive
