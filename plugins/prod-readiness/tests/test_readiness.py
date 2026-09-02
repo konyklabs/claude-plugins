@@ -297,12 +297,16 @@ def test_archive_hygiene_archive_not_found_skips(tmp_path):
 # --------------------------------------------------------------------------- history-secrets (external tool)
 
 
+# Portable sh only: dash (Ubuntu's /bin/sh) aborts on `shift` past the end of
+# the argument list, which bash tolerates, so the report path is found by
+# remembering the previous argument instead of shifting.
 FAKE_GITLEAKS_HIT = """#!/bin/sh
+prev=""
 for a in "$@"; do
-  case "$a" in
-    --report-path) shift; echo '[{"RuleID":"aws-access-key","File":"app.py","StartLine":3,"Secret":"AKIASECRETVALUE","Match":"AKIASECRETVALUE"}]' > "$1" ;;
-  esac
-  shift
+  if [ "$prev" = "--report-path" ]; then
+    echo '[{"RuleID":"aws-access-key","File":"app.py","StartLine":3,"Secret":"AKIASECRETVALUE","Match":"AKIASECRETVALUE"}]' > "$a"
+  fi
+  prev="$a"
 done
 exit 1
 """
