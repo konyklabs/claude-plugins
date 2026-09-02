@@ -30,7 +30,7 @@ PY
 echo "+ network primitives in plugin code (must be none):"
 # Import statements and call forms only: a regex that *searches* for the word
 # httpx in a target repository is not a network call.
-if grep -rnE "^\s*(import|from)\s+(urllib|http\.client|http\b|requests|socket|httpx|aiohttp|ssl|ftplib|smtplib|telnetlib|xmlrpc)\b|urlopen\(|socket\.socket\(|HTTPConnection\(|HTTPSConnection\(" plugins --include='*.py' --include='*.sh' | grep -v "/tests/"; then
+if grep -rnE "^\s*(import|from)\s+(urllib3?|urllib\.|http\.client|http\b|requests|socket|httpx|aiohttp|ssl|ftplib|smtplib|telnetlib|xmlrpc|websocket|pycurl)\b|urlopen\(|socket\.socket\(|HTTPS?Connection\(|\b(requests|httpx|urllib3)\.(get|post|put|patch|delete|head|request|Session|Client|AsyncClient|PoolManager)\(|\bcurl\s|\bwget\s|\bnc\s|/dev/tcp/" plugins --include='*.py' --include='*.sh' | grep -v "/tests/"; then
   echo "network primitive found"; exit 1
 fi
 echo "  none"
