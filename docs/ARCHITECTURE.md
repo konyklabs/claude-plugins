@@ -174,7 +174,7 @@ running code (a create-then-poll flow that fails silently, a vendor key
 mode) are written as tests in the references and delegated as slices.
 
 The catalogue is twenty-five check classes from a real hardening pass of a
-partner-facing API sample app, delivered generalized: no employer,
+partner-facing API sample app, delivered generalized: no company,
 product, vertical, hostname or identifier appears in it or in anything
 built from it, and the two config-driven checks (credential and identifier
 shapes) ship disabled with placeholders because their real patterns belong

@@ -43,7 +43,7 @@ Paste the output in the commit or PR; never say "tests pass" without it.
 - **Agents**: pin `model` and `effort` in frontmatter (subagents otherwise
   inherit the session's effort); state the report contract; keep tools to
   what the job needs.
-- **Cleanroom.** No employer, product, vertical, hostname or account
+- **Cleanroom.** No company, product, vertical, hostname or account
   identifier anywhere, including examples and fixtures. Technology names
   are fine. Placeholders are obvious placeholders.
 
