@@ -5,8 +5,9 @@ description: The production-readiness half of a review — denial-of-service sur
 
 # Hardening checks
 
-Sixteen checks in four groups, ordered by what they cost when they were
-missed. The scanner settles the mechanical ones; the rest name the test or
+Eighteen checks in four groups (one scanner check for the whole DoS
+surface, seven correctness traps, six CI and supply-chain checks, four
+documentation checks), ordered by what they cost when they were missed. The scanner settles the mechanical ones; the rest name the test or
 the question that settles them. Load the reference for the row in hand.
 
 ## Denial-of-service surface — `references/dos-limits.md`
