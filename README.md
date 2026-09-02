@@ -21,6 +21,34 @@ claude plugin install py-testing@konyklabs-plugins
 From a checkout, for development: `claude --plugin-dir ./plugins/governor`.
 Both plugins need `python3` (3.9+) on PATH; nothing else.
 
+## Try it in five minutes
+
+Both plugins installed at user scope, any project, a fresh session:
+
+```
+claude                      # the SessionStart hook prints the policy and a spend line
+/governor:budget            # spend so far, per model and subagent; the budget
+```
+
+Then ask for something that needs a look-up, for example "find every place
+we build a SQLAlchemy session". The conductor is meant to spawn
+`governor:scout`; the readout on the next turn shows the spawn and its
+model. Ask for a fork or for a `general-purpose` agent with no model and
+watch the hook deny the first and pin the second.
+
+To see what a session costs with no governor at all, point the ledger at
+any past transcript:
+
+```
+python3 plugins/governor/bin/governor.py status \
+  --session <id> --transcript ~/.claude/projects/<project>/<id>.jsonl
+```
+
+The session that built this repository, priced that way: 18.66 USD on
+Fable and 25.01 in total, every subagent flagged as having inherited
+`xhigh` effort, and 210 KB of `Bash` output read into the Fable context.
+The default budget would have closed the gate at 15.
+
 ## governor in one minute
 
 Start a session on Fable. The SessionStart hook injects the policy and the
