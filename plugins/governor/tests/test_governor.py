@@ -399,7 +399,7 @@ def test_scout_and_reviewer_contracts():
 
 
 def test_subagent_stop_blocks_then_gives_up(env):
-    agents = {"aimpl-1": ({"customAgentType": "implementer"}, assistant_lines("s1", "claude-sonnet-5", usage(out=5), blocks=1, text="I finished, tests pass."))}
+    agents = {"aimpl-1": ({"customAgentType": "governor:implementer"}, assistant_lines("s1", "claude-sonnet-5", usage(out=5), blocks=1, text="I finished, tests pass."))}
     tp = make_session(env["tmp"], main_lines=assistant_lines("m1", "claude-fable-5-1", usage(out=10), blocks=1), agents=agents)
     led = governor.Ledger("sess1", governor.Pricing.load())
     hook = {"session_id": "sess1", "transcript_path": str(tp), "agent_id": "aimpl-1", "hook_event_name": "SubagentStop"}
@@ -427,7 +427,7 @@ def test_subagent_stop_uses_agent_type_and_transcript_from_hook_when_present(env
     at = env["tmp"] / "elsewhere.jsonl"
     at.write_text("\n".join(assistant_lines("s9", "claude-sonnet-5", usage(out=5), blocks=1, text="no report")) + "\n")
     led = governor.Ledger("sess1", governor.Pricing.load())
-    out = governor.h_subagent_stop({"session_id": "sess1", "transcript_path": str(tp), "agent_id": "zzz", "agent_type": "scout", "agent_transcript_path": str(at)}, governor.DEFAULTS, led)
+    out = governor.h_subagent_stop({"session_id": "sess1", "transcript_path": str(tp), "agent_id": "zzz", "agent_type": "governor:scout", "agent_transcript_path": str(at)}, governor.DEFAULTS, led)
     assert out["decision"] == "block" and "Findings" in out["reason"]
 
 
@@ -516,7 +516,7 @@ def test_session_start_model_and_effort_come_from_hook_input(env):
 def test_subagent_stop_prefers_last_assistant_message_from_hook(env):
     tp = make_session(env["tmp"], main_lines=assistant_lines("m1", "claude-fable-5-1", usage(out=10), blocks=1))
     led = governor.Ledger("sess1", governor.Pricing.load())
-    hook = {"session_id": "sess1", "transcript_path": str(tp), "agent_id": "nope", "agent_type": "implementer", "last_assistant_message": GOOD_WORKER}
+    hook = {"session_id": "sess1", "transcript_path": str(tp), "agent_id": "nope", "agent_type": "governor:implementer", "last_assistant_message": GOOD_WORKER}
     assert governor.h_subagent_stop(hook, governor.DEFAULTS, led) == {}
     hook["last_assistant_message"] = "done, trust me"
     assert governor.h_subagent_stop(hook, governor.DEFAULTS, led)["decision"] == "block"
@@ -651,9 +651,16 @@ def test_contract_lookup_respects_namespaces():
     cfg = governor.DEFAULTS
     assert governor.contract_for("governor:implementer", cfg) == "worker"
     assert governor.contract_for("py-testing:test-implementer", cfg) == "worker"
-    assert governor.contract_for("implementer", cfg) == "worker"
+    assert governor.contract_for("prod-readiness:scanner", cfg) == "worker"
+    assert governor.contract_for("prod-readiness:auditor", cfg) == "reviewer"
     assert governor.contract_for("otherplugin:reviewer", cfg) is None
-    assert governor.contract_for("reviewer", cfg) == "reviewer"
+    # bare names are project or user agents: not governed unless the user says so
+    assert governor.contract_for("reviewer", cfg) is None
+    assert governor.contract_for("scanner", cfg) is None
+    cfg2 = dict(cfg, govern_bare_agents=["reviewer"])
+    assert governor.contract_for("reviewer", cfg2) == "reviewer"
+    cfg3 = dict(cfg, report_contracts=dict(cfg["report_contracts"], **{"other:worker": "worker"}))
+    assert governor.contract_for("other:worker", cfg3) == "worker"
 
 
 def test_save_uses_a_process_unique_temp_and_a_lock_is_taken(env):
@@ -731,3 +738,69 @@ def test_statusline_reads_saved_state_only(env):
     assert r.returncode == 0 and r.stdout.startswith("governor")
     r = run_cli(env, ["statusline-snippet"])
     assert json.loads(r.stdout)["statusLine"]["type"] == "command"
+
+
+
+# --------------------------------------------------------------------------- deterministic helpers
+
+
+def test_check_report_cli(env, tmp_path):
+    good = tmp_path / "good.md"; good.write_text(GOOD_WORKER)
+    r = run_cli(env, ["check-report", str(good), "--contract", "worker"])
+    assert r.returncode == 0 and r.stdout.startswith("OK contract=worker result=DONE"), r.stdout
+    bad = tmp_path / "bad.md"; bad.write_text("## Result\nDONE\n## Changed files\n- a\n## Evidence\ntrust me")
+    r = run_cli(env, ["check-report", str(bad), "--contract", "worker"])
+    assert r.returncode == 1 and "NONCOMPLIANT" in r.stdout and "Evidence" in r.stdout
+    r = run_cli(env, ["check-report", "-", "--contract", "scout"], stdin="## Findings\n- src/x.py:3 thing")
+    assert r.returncode == 0
+
+
+def test_plan_levels_and_errors():
+    slices = [
+        {"id": "shared", "files": ["tests/conftest.py"], "deps": [], "command": "pytest -q tests/_support"},
+        {"id": "api", "files": ["tests/api/test_a.py"], "deps": ["shared"], "command": "pytest -q tests/api"},
+        {"id": "ui", "files": ["tests/ui/test_u.py"], "deps": ["shared"], "command": "pytest -q tests/ui"},
+        {"id": "e2e", "files": ["tests/e2e/test_e.py"], "deps": ["api", "ui"], "command": "pytest -q tests/e2e"},
+    ]
+    levels, errors = governor.plan_levels(slices)
+    assert errors == [] and levels == [["shared"], ["api", "ui"], ["e2e"]]
+    assert "cycle" in governor.plan_levels([{"id": "a", "deps": ["b"]}, {"id": "b", "deps": ["a"]}])[1][0]
+    assert "unknown dependency" in governor.plan_levels([{"id": "a", "deps": ["zzz"]}])[1][0]
+    assert "both change x.py" in governor.plan_levels([{"id": "a", "files": ["x.py"]}, {"id": "b", "files": ["x.py"]}])[1][0]
+    md = governor.render_plan("p", slices, levels)
+    assert "## Level 2" in md and "`pytest -q tests/e2e`" in md
+
+
+def test_plan_cli_writes_files(env, tmp_path):
+    sl = tmp_path / "slices.json"
+    sl.write_text(json.dumps([{"id": "a", "files": ["a.py"], "command": "pytest -q a"}, {"id": "b", "deps": ["a"], "files": ["b.py"], "command": "pytest -q b"}]))
+    r = run_cli(env, ["plan", "build", str(sl), "--out", str(tmp_path / "gov")])
+    assert r.returncode == 0 and "2 slices in 2 levels" in r.stdout
+    plan = json.loads((tmp_path / "gov" / "plan.json").read_text())
+    assert plan["levels"] == [["a"], ["b"]] and (tmp_path / "gov" / "plan.md").exists()
+    r = run_cli(env, ["plan", "check", str(tmp_path / "gov" / "plan.json")])
+    assert r.returncode == 0 and r.stdout.startswith("PLAN OK")
+    bad = tmp_path / "bad.json"; bad.write_text(json.dumps([{"id": "a", "deps": ["a"]}]))
+    r = run_cli(env, ["plan", "build", str(bad), "--out", str(tmp_path / "gov2")])
+    assert r.returncode == 1 and "PLAN INVALID" in r.stdout
+
+
+def test_run_worker_dry_run_and_fake_claude(env, tmp_path):
+    spec = tmp_path / "slice.md"; spec.write_text("# Spec: slice\nGoal.\n")
+    r = run_cli(env, ["run-worker", "--spec", str(spec), "--dry-run", "--out", str(tmp_path / "runs")])
+    assert r.returncode == 0 and "--max-budget-usd 2.0" in r.stdout and "--agent governor:implementer" in r.stdout and "--plugin-dir" in r.stdout
+    fake_bin = tmp_path / "bin"; fake_bin.mkdir()
+    fake = fake_bin / "claude"
+    fake.write_text("#!/bin/sh\ncat > /dev/null\nprintf '%s' \"$FAKE_REPORT\"\n")
+    fake.chmod(0o755)
+    base_env = {**os.environ, "GOVERNOR_STATE_DIR": str(env["state"]), "CLAUDE_PROJECT_DIR": str(env["project"]), "HOME": str(env["tmp"] / "home"), "PATH": str(fake_bin) + ":" + os.environ["PATH"]}
+    r = subprocess.run([sys.executable, str(BIN / "governor.py"), "run-worker", "--spec", str(spec), "--out", str(tmp_path / "runs")],
+                       capture_output=True, text=True, env={**base_env, "FAKE_REPORT": GOOD_WORKER})
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert r.stdout.startswith("VERDICT: DONE")
+    assert list((tmp_path / "runs").glob("slice-*.md"))
+    r = subprocess.run([sys.executable, str(BIN / "governor.py"), "run-worker", "--spec", str(spec), "--out", str(tmp_path / "runs")],
+                       capture_output=True, text=True, env={**base_env, "FAKE_REPORT": "I did it, tests pass."})
+    assert r.returncode == 1 and r.stdout.startswith("VERDICT: NONCOMPLIANT")
+    r = run_cli(env, ["run-worker", "--spec", str(spec), "--budget", "-3", "--dry-run"])
+    assert r.returncode == 2

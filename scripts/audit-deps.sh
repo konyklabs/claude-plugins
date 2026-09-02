@@ -9,7 +9,8 @@ import ast, sys, pathlib
 files = sorted(p for p in pathlib.Path("plugins").rglob("*.py") if "tests" not in p.parts)
 stdlib = getattr(sys, "stdlib_module_names", None)
 if stdlib is None:  # Python < 3.10: a conservative allowlist of what the plugins use
-    stdlib = {"ast", "configparser", "collections", "fcntl", "json", "math", "os", "pathlib", "re", "sys", "time", "typing", "__future__"}
+    stdlib = {"argparse", "ast", "configparser", "collections", "fcntl", "fnmatch", "json", "math", "os", "pathlib", "re",
+              "shutil", "subprocess", "sys", "tarfile", "tempfile", "time", "typing", "zipfile", "__future__"}
 bad = []
 for f in files:
     tree = ast.parse(f.read_text())
@@ -27,7 +28,9 @@ if bad:
     print("\n".join(bad)); sys.exit(1)
 PY
 echo "+ network primitives in plugin code (must be none):"
-if grep -rnE "urllib|http\.client|import requests|import socket|httpx|aiohttp" plugins --include='*.py' --include='*.sh' | grep -v "/tests/"; then
+# Import statements and call forms only: a regex that *searches* for the word
+# httpx in a target repository is not a network call.
+if grep -rnE "^\s*(import|from)\s+(urllib3?|urllib\.|http\.client|http\b|requests|socket|httpx|aiohttp|ssl|ftplib|smtplib|telnetlib|xmlrpc|websocket|pycurl)\b|urlopen\(|socket\.socket\(|HTTPS?Connection\(|\b(requests|httpx|urllib3)\.(get|post|put|patch|delete|head|request|Session|Client|AsyncClient|PoolManager)\(|\bcurl\s|\bwget\s|\bnc\s|/dev/tcp/" plugins --include='*.py' --include='*.sh' | grep -v "/tests/"; then
   echo "network primitive found"; exit 1
 fi
 echo "  none"

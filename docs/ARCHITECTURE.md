@@ -161,6 +161,28 @@ a first cut of slices with one command each).
 the recipes without the conductor explaining them, and it is held to the
 governor's report contract by the same hook.
 
+## prod-readiness: the same shape, applied to security
+
+The third plugin follows the governor's economics. The expensive part of a
+security review is reading code, so `readiness.py` reads it once and emits
+a table: nineteen checks, each `pass`, `fail`, `review` or `skip`, with
+`path:line` and a rule name and never the matched text. A Sonnet `scanner`
+runs it and the installed external tools and returns the bounded summary;
+an Opus `auditor` judges only the `review` rows and answers with failure
+scenarios or clears them; the conductor reads two tables. Checks that need
+running code (a create-then-poll flow that fails silently, a vendor key
+mode) are written as tests in the references and delegated as slices.
+
+The catalogue is twenty-five check classes from a real hardening pass of a
+partner-facing API sample app, delivered generalized: no employer,
+product, vertical, hostname or identifier appears in it or in anything
+built from it, and the two config-driven checks (credential and identifier
+shapes) ship disabled with placeholders because their real patterns belong
+to the organization that owns them. Order is observed impact, so a partial
+run covers what mattered most. External scanners run only if already on
+PATH and are summarized to counts; the plugin installs nothing and the
+dependency audit still passes.
+
 ## What was verified in the field, and what was not
 
 Captured with `GOVERNOR_DEBUG=1` (the engine appends every raw hook input to
@@ -214,5 +236,7 @@ Not verified:
 - **One plugin.** Would couple the Python skills to the governor's release
   cadence and make the next domain a fork instead of a sibling.
 - **Enforcing the report contract on every agent.** Foreign agents (org
-  roles, project agents) have their own contracts; the hook applies only to
-  the agent types in `report_contracts`, which a project can extend.
+  roles, project agents) have their own contracts. Plugin agents arrive
+  namespaced (`governor:scout`, verified) and are governed when their
+  namespace is in `contract_namespaces`; a bare agent type is a project or
+  user agent and is governed only if listed in `govern_bare_agents`.

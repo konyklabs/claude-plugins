@@ -8,7 +8,12 @@ are unregistered, when a pytest config is found), the largest files, and a
 first cut of slices by directory with the fixtures those slices share.
 
 Usage:
-    inventory.py [ROOT ...] [--json] [--config pyproject.toml|pytest.ini|setup.cfg]
+    inventory.py [ROOT ...] [--json] [--config pyproject.toml|pytest.ini|setup.cfg] [--diff BEFORE.json]
+
+``--diff BEFORE.json`` compares the current tree with an inventory saved
+earlier with ``--json`` and prints what changed (the integration evidence for
+an untangling level): totals, duplicates, unregistered markers, unused and
+shared fixtures.
 
 Defaults: ROOT is ``tests`` if it exists, else ``.``; the config is searched
 upward from the first root. Output is markdown unless ``--json``.
@@ -327,9 +332,41 @@ def render_markdown(r: Dict[str, Any]) -> str:
     return "\n".join(out) + "\n"
 
 
+def render_diff(before: Dict[str, Any], after: Dict[str, Any]) -> str:
+    out = ["# Inventory diff", "", "| metric | before | after |", "|---|---:|---:|"]
+    bt, at = before.get("totals", {}), after.get("totals", {})
+    for k in ("files", "tests", "cases", "fixtures", "lines"):
+        out.append(f"| {k} | {bt.get(k, 0)} | {at.get(k, 0)} |")
+
+    def keyset(inv: Dict[str, Any], *path: str) -> set:
+        cur: Any = inv
+        for p in path:
+            cur = cur.get(p, {}) if isinstance(cur, dict) else {}
+        return set(cur.keys()) if isinstance(cur, dict) else set(cur or [])
+
+    for title, path in (("duplicate fixtures", ("duplicates", "fixtures")), ("duplicate tests", ("duplicates", "tests")),
+                        ("unregistered markers", ("markers", "unregistered")), ("unused fixtures", ("unused_fixtures",)),
+                        ("shared fixtures", ("shared_fixtures",))):
+        b, a = keyset(before, *path), keyset(after, *path)
+        gone, new = sorted(b - a), sorted(a - b)
+        out += ["", f"## {title}: {len(b)} -> {len(a)}"]
+        if gone:
+            out.append("- resolved: " + ", ".join(f"`{x}`" for x in gone))
+        if new:
+            out.append("- new: " + ", ".join(f"`{x}`" for x in new))
+        if not gone and not new:
+            out.append("- unchanged")
+    return "\n".join(out) + "\n"
+
+
 def main(argv: List[str]) -> int:
     as_json = "--json" in argv
     args = [a for a in argv if a != "--json"]
+    diff_path: Optional[Path] = None
+    if "--diff" in args:
+        i = args.index("--diff")
+        diff_path = Path(args[i + 1])
+        del args[i:i + 2]
     config: Optional[Path] = None
     if "--config" in args:
         i = args.index("--config")
@@ -343,6 +380,14 @@ def main(argv: List[str]) -> int:
     if config is None:
         config = find_config(roots[0].resolve() if roots[0].is_dir() else roots[0].resolve().parent)
     result = analyse([r.resolve() for r in roots], config)
+    if diff_path is not None:
+        try:
+            before = json.loads(diff_path.read_text())
+        except (OSError, ValueError) as e:
+            print(f"inventory: cannot read {diff_path}: {e}", file=sys.stderr)
+            return 2
+        sys.stdout.write(render_diff(before, result))
+        return 0
     if as_json:
         print(json.dumps(result, indent=2, sort_keys=True))
     else:

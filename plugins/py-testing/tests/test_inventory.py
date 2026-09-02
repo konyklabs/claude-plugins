@@ -163,3 +163,18 @@ def test_multiple_roots_get_relative_paths_and_root_prefixed_slices(tmp_path, mo
     assert names == ["integration", "tests", "tests/api"]
     assert all(not Path(f["path"]).is_absolute() for f in r["files"])
     assert next(s for s in r["slices"] if s["slice"] == "tests/api")["command"] == "pytest -q ./tests/api"
+
+
+
+def test_diff_reports_resolved_and_new(suite, tmp_path):
+    before = json.loads(subprocess.run([sys.executable, str(SCRIPT), "tests", "--json"], cwd=suite, capture_output=True, text=True).stdout)
+    (tmp_path / "before.json").write_text(json.dumps(before))
+    (suite / "tests" / "api" / "conftest.py").unlink()
+    (suite / "pyproject.toml").write_text('[tool.pytest.ini_options]\nmarkers = ["slow: takes long", "db", "flaky"]\n')
+    r = subprocess.run([sys.executable, str(SCRIPT), "tests", "--diff", str(tmp_path / "before.json")], cwd=suite, capture_output=True, text=True)
+    assert r.returncode == 0
+    assert "## duplicate fixtures: 1 -> 0" in r.stdout and "resolved: `db`" in r.stdout
+    assert "## unregistered markers: 1 -> 0" in r.stdout and "resolved: `flaky`" in r.stdout
+    assert "| files | 6 | 5 |" in r.stdout
+    r = subprocess.run([sys.executable, str(SCRIPT), "tests", "--diff", "nope.json"], cwd=suite, capture_output=True, text=True)
+    assert r.returncode == 2
