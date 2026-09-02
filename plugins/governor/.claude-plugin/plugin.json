@@ -1,10 +1,20 @@
 {
   "name": "governor",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Token guardrails for Claude Code sessions on an expensive model: spawns are pinned to cheap workers, forks denied, expensive spawns need a brief, a priced budget gate reads the transcript, and workers must report evidence before they may stop.",
-  "author": {"name": "Oleg Konyk", "url": "https://olegkonyk.com"},
+  "author": {
+    "name": "Oleg Konyk",
+    "url": "https://olegkonyk.com"
+  },
   "homepage": "https://github.com/konyklabs/claude-plugins",
   "repository": "https://github.com/konyklabs/claude-plugins",
   "license": "MIT",
-  "keywords": ["tokens", "budget", "subagents", "fable", "orchestration", "hooks"]
+  "keywords": [
+    "tokens",
+    "budget",
+    "subagents",
+    "fable",
+    "orchestration",
+    "hooks"
+  ]
 }
