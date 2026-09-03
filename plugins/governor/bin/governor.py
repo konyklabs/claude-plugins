@@ -586,6 +586,19 @@ def clean_label(s: str) -> str:
     return re.sub(r"[^\w:@.+/-]", "_", str(s))[:80]
 
 
+# What a slice id or plan name may be: one path component, no leading dot,
+# so path_label is the identity on it and two distinct ids can never share
+# a worktree or a branch.
+ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$")
+
+
+def one_line(s: Any, n: int = 200) -> str:
+    """Untrusted text (a worker's output, a subprocess's stderr) rendered on
+    the governor's own lines: whitespace collapsed to one line, bounded, so
+    it can neither forge a VERDICT line nor break a table row."""
+    return re.sub(r"\s+", " ", str(s)).strip()[:n]
+
+
 def path_label(s: str) -> str:
     """A single path component from a model-chosen id: no separators, no
     leading dot, never empty. clean_label keeps '/' for display; a path must not."""
@@ -1498,10 +1511,11 @@ def plan_levels(slices: List[Dict[str, Any]]) -> Tuple[List[List[str]], List[str
     if len(set(ids)) != len(ids) or "" in ids:
         errors.append("slice ids must be unique and non-empty")
         return [], errors
-    bad = [i for i in ids if re.search(r"[/\\\s]", i)]
+    bad = [i for i in ids if not ID_RE.match(i)]
     if bad:
-        # An id becomes a directory name and a branch name; keep it to one component.
-        errors.append("slice ids must not contain '/', '\\' or whitespace: " + ", ".join(bad))
+        # An id becomes a directory name and a branch name; keep it to one
+        # component of letters, digits, '.', '_' and '-', not starting with '.'.
+        errors.append("slice ids must match [A-Za-z0-9][A-Za-z0-9._-]*: " + ", ".join(clean_label(b) for b in bad))
         return [], errors
     by_id = {x["id"]: x for x in slices}
     deps = {i: [str(d) for d in (by_id[i].get("deps") or [])] for i in ids}
@@ -1573,7 +1587,7 @@ def cmd_plan(args: List[str]) -> int:
     out = Path(_arg(args, "--out") or ".governor")
     out.mkdir(parents=True, exist_ok=True)
     (out / "plan.md").write_text(render_plan(str(name), slices, levels))
-    (out / "plan.json").write_text(json.dumps({"name": name, "slices": slices, "levels": levels}, indent=2) + "\n")
+    (out / "plan.json").write_text(json.dumps({"name": path_label(str(name)), "slices": slices, "levels": levels}, indent=2) + "\n")
     print(f"PLAN OK: {len(slices)} slices in {len(levels)} levels -> {out / 'plan.md'}, {out / 'plan.json'}")
     for n, lvl in enumerate(levels):
         print(f"  level {n}: {', '.join(lvl)}")
@@ -1678,7 +1692,7 @@ def run_worker_once(spec_path: str, agent: str, budget: str, out_dir: Path, cfg:
     out["report"] = str(report_path)
     died = (proc.returncode != 0 and not text.strip()) or bool(meta.get("is_error"))
     if died:
-        tail = (proc.stderr.strip() or text.strip())[-300:]
+        tail = one_line((proc.stderr.strip() or text.strip())[-300:], 200)
         out["error"] = (f"claude reported an error: {tail}" if proc.returncode == 0 else f"claude exited {proc.returncode}: {tail}")
         out["transient"] = bool(TRANSIENT_RE.search(proc.stderr + " " + text))
         return out
@@ -1723,9 +1737,9 @@ def cmd_run_worker(args: List[str], cfg: Dict[str, Any], project_dir: Optional[s
     print(f"VERDICT: {r['verdict']} agent={agent} budget=${budget} cost=${r['cost']:.2f} report={r['report']}"
           + (f" session={r['session_id']}" if r.get("session_id") else ""))
     if r["error"]:
-        print(f"- {r['error']}" + (" (transient)" if r["transient"] else ""))
+        print(f"- {one_line(r['error'], 200)}" + (" (transient)" if r["transient"] else ""))
     for pr in r["problems"]:
-        print(f"- {pr}")
+        print(f"- {one_line(pr, 200)}")
     return 0 if r["verdict"] == "DONE" else 1
 
 
@@ -1819,7 +1833,13 @@ def cmd_run_level(args: List[str], cfg: Dict[str, Any], project_dir: Optional[st
         print(f"cannot read plan level: {type(e).__name__}: {e}")
         return 2
     root = Path(project_dir or ".").resolve()
-    name = clean_label(str(plan.get("name") or Path(plan_path).stem))
+    name = path_label(str(plan.get("name") or Path(plan_path).stem))
+    # Two ids that map to one label would share a worktree; refuse before anything runs.
+    labels: Dict[str, str] = {}
+    for sid in ids:
+        if not ID_RE.match(sid) or labels.setdefault(path_label(sid), sid) != sid:
+            print(f"slice id {clean_label(sid)!r} is not a safe path component or collides with {clean_label(labels.get(path_label(sid), ''))!r}; ids must match [A-Za-z0-9][A-Za-z0-9._-]*")
+            return 2
     specs_dir = Path(_arg(args, "--specs") or (root / ".governor" / "specs"))
     out_dir = root / ".governor" / "runs" / name
     index_path = out_dir / f"level-{level}.json"
@@ -1876,9 +1896,9 @@ def cmd_run_level(args: List[str], cfg: Dict[str, Any], project_dir: Optional[st
             return _run_slice(sid)
         except Exception as e:  # noqa: BLE001
             with lock:
-                index["slices"][sid].update(state="failed", verdict="FAILED", error=f"{type(e).__name__}: {e}"[-300:])
+                index["slices"][sid].update(state="failed", verdict="FAILED", error=one_line(f"{type(e).__name__}: {e}", 300))
                 save()
-                print(f"VERDICT: FAILED slice={sid} attempts={index['slices'][sid].get('attempts') or 0} cost=${float(index['slices'][sid].get('cost') or 0):.2f} error={type(e).__name__}: {str(e)[-120:]}")
+                print(f"VERDICT: FAILED slice={sid} attempts={index['slices'][sid].get('attempts') or 0} cost=${float(index['slices'][sid].get('cost') or 0):.2f} error={one_line(f'{type(e).__name__}: {e}', 120)}")
             log_error(f"run-level {name}/{level} slice {sid}: {type(e).__name__}: {e}")
             return "FAILED"
 
@@ -1898,9 +1918,9 @@ def cmd_run_level(args: List[str], cfg: Dict[str, Any], project_dir: Optional[st
                 wt, branch_or_msg = ensure_worktree(root, name, sid)
             if wt is None:
                 with lock:
-                    entry.update(state="failed", verdict="FAILED", error=f"worktree: {branch_or_msg[-200:]}")
+                    entry.update(state="failed", verdict="FAILED", error=one_line(f"worktree: {branch_or_msg[-200:]}", 300))
                     save()
-                    print(f"VERDICT: FAILED slice={sid} attempts=0 cost=$0.00 error=worktree: {branch_or_msg[-120:]}")
+                    print(f"VERDICT: FAILED slice={sid} attempts=0 cost=$0.00 error={one_line('worktree: ' + branch_or_msg[-120:], 120)}")
                 return "FAILED"
             cwd = str(wt)
             with lock:
@@ -1918,11 +1938,11 @@ def cmd_run_level(args: List[str], cfg: Dict[str, Any], project_dir: Optional[st
             with lock:
                 entry["cost"] = round(float(entry.get("cost") or 0.0) + float(result.get("cost") or 0.0), 4)
                 entry.update(report=result.get("report") or entry.get("report"), session_id=result.get("session_id") or entry.get("session_id"),
-                             error=result.get("error") or "")
+                             error=one_line(result.get("error") or "", 300))
                 save()
             if result["verdict"] == "FAILED" and result.get("transient") and this_run <= retries:
                 with lock:
-                    print(f"RETRY slice={sid} attempt={attempt} in {backoff * (2 ** (this_run - 1)):.0f}s: {result['error'][-120:]}")
+                    print(f"RETRY slice={sid} attempt={attempt} in {backoff * (2 ** (this_run - 1)):.0f}s: {one_line(result['error'], 120)}")
                 time.sleep(backoff * (2 ** (this_run - 1)))
                 continue
             break
@@ -1937,10 +1957,10 @@ def cmd_run_level(args: List[str], cfg: Dict[str, Any], project_dir: Optional[st
             if cwd:
                 line += f" worktree={cwd}"
             if result.get("error"):
-                line += f" error={result['error'][-120:]}"
+                line += f" error={one_line(result['error'], 120)}"
             print(line)
             for pr in result.get("problems") or []:
-                print(f"- {pr}")
+                print(f"- {one_line(pr, 200)}")
         return str(result["verdict"])
 
     for sid in skipped:
@@ -1965,12 +1985,12 @@ def cmd_runs(args: List[str], project_dir: Optional[str]) -> int:
     target = next((a for a in args if not a.startswith("--")), None)
     if target and target.endswith(".json"):
         try:
-            name = clean_label(str(json.loads(Path(target).read_text()).get("name") or Path(target).stem))
+            name = path_label(str(json.loads(Path(target).read_text()).get("name") or Path(target).stem))
         except (OSError, ValueError, AttributeError):
             print(f"cannot read {target}")
             return 2
     else:
-        name = clean_label(target) if target else None
+        name = path_label(target) if target else None
     base = root / ".governor" / "runs"
     dirs = [base / name] if name else sorted(d for d in base.glob("*") if d.is_dir()) if base.exists() else []
     rows = []
@@ -1985,14 +2005,14 @@ def cmd_runs(args: List[str], project_dir: Optional[str]) -> int:
                     cost = f"{float(e.get('cost') or 0):.2f}"
                 except (TypeError, ValueError):
                     cost = "?"
-                rows.append((d.name, str(idx.get("level")), sid, str(e.get("state")), str(e.get("verdict")), str(e.get("attempts")), cost, str(e.get("report") or ""), (e.get("error") or "")[-60:]))
+                rows.append((d.name, str(idx.get("level")), one_line(sid, 80), str(e.get("state")), str(e.get("verdict")), str(e.get("attempts")), cost, one_line(e.get("report") or "", 200), one_line(e.get("error") or "", 60)))
     if not rows:
         print("no runs yet" + (f" for {name}" if name else ""))
         return 0
     print("| plan | level | slice | state | verdict | attempts | USD | report | error |")
     print("|---|---:|---|---|---|---:|---:|---|---|")
     for r in rows:
-        print("| " + " | ".join(r) + " |")
+        print("| " + " | ".join(c.replace("|", "\\|") for c in r) + " |")
     return 0
 
 
