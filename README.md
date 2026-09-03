@@ -50,7 +50,7 @@ until `version` in its `plugin.json` changes, so use `--plugin-dir` while
 developing.
 
 Verify: `claude plugin list` shows the three as enabled; `claude plugin
-details governor` shows 6 skills, 5 agents, 5 hooks and about 1,100
+details governor` shows 6 skills, 5 agents, 5 hooks and about 1,250
 always-on tokens per session.
 
 ## First session
