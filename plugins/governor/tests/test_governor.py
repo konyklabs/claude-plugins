@@ -453,9 +453,15 @@ def test_session_end_appends_history(env):
     assert rows[-1]["expensive_usd"] == pytest.approx(0.05)
 
 
-def run_cli(env, args, stdin=None):
+def run_cli(env, args, stdin=None, extra_env=None):
     return subprocess.run([sys.executable, str(BIN / "governor.py"), *args], input=stdin, capture_output=True, text=True,
-                          env={**os.environ, "GOVERNOR_STATE_DIR": str(env["state"]), "CLAUDE_PROJECT_DIR": str(env["project"]), "HOME": str(env["tmp"] / "home")})
+                          env={**os.environ, "GOVERNOR_STATE_DIR": str(env["state"]), "CLAUDE_PROJECT_DIR": str(env["project"]), "HOME": str(env["tmp"] / "home"), **(extra_env or {})})
+
+
+# Bytes no UTF-8 decoder accepts (a cp1252 e-acute); PYTHONUTF8=1 pins the
+# child's decoder so the test does not depend on the machine's locale.
+NOT_UTF8 = b"## Result\nDONE caf\xe9\n"
+UTF8_ENV = {"PYTHONUTF8": "1"}
 
 
 def test_cli_hook_roundtrip_and_fail_open(env):
@@ -754,6 +760,12 @@ def test_check_report_cli(env, tmp_path):
     assert r.returncode == 1 and "NONCOMPLIANT" in r.stdout and "Evidence" in r.stdout
     r = run_cli(env, ["check-report", "-", "--contract", "scout"], stdin="## Findings\n- src/x.py:3 thing")
     assert r.returncode == 0
+    # An unreadable report is a NONCOMPLIANT verdict, never a silent exit 0.
+    cp = tmp_path / "cp1252.md"; cp.write_bytes(NOT_UTF8)
+    r = run_cli(env, ["check-report", str(cp), "--contract", "worker"], extra_env=UTF8_ENV)
+    assert r.returncode == 1 and r.stdout.startswith("NONCOMPLIANT contract=worker result=?\n- cannot read "), r.stdout + r.stderr
+    r = run_cli(env, ["check-report", str(tmp_path / "missing.md"), "--contract", "worker"])
+    assert r.returncode == 1 and "- cannot read" in r.stdout
 
 
 def test_plan_levels_and_errors():
@@ -946,7 +958,59 @@ def test_brief_cli(env, tmp_path):
         r = run_cli(env, args)
         assert r.returncode == 2 and r.stdout.startswith("usage: governor.py brief check"), r.stdout
     r = run_cli(env, ["brief", "check", str(tmp_path / "missing.md")])
-    assert r.returncode == 2 and "cannot read" in r.stdout
+    assert r.returncode == 1 and r.stdout.startswith(f"NONCOMPLIANT brief={tmp_path / 'missing.md'}\n- cannot read "), r.stdout
+    cp = tmp_path / "cp1252.md"; cp.write_bytes(NOT_UTF8)
+    r = run_cli(env, ["brief", "check", str(cp)], extra_env=UTF8_ENV)
+    assert r.returncode == 1 and r.stdout.startswith(f"NONCOMPLIANT brief={cp}\n- cannot read "), r.stdout + r.stderr
+
+
+def test_brief_template_unreadable_fails_closed(env, tmp_path, monkeypatch):
+    bad = tmp_path / "template.md"; bad.write_bytes(NOT_UTF8)
+    monkeypatch.setattr(governor, "BRIEF_TEMPLATE", bad)
+    monkeypatch.setenv("PYTHONUTF8", "1")
+    import io
+    out = io.StringIO(); monkeypatch.setattr(sys, "stdout", out)
+    assert governor.cmd_brief(["template"], governor.DEFAULTS) == 1
+    assert out.getvalue().startswith(f"cannot read {bad}: ") and out.getvalue().count("\n") == 1
+    monkeypatch.setattr(governor, "BRIEF_TEMPLATE", tmp_path / "absent.md")
+    out.seek(0); out.truncate()
+    assert governor.cmd_brief(["template"], governor.DEFAULTS) == 1 and out.getvalue().count("\n") == 1
+
+
+def test_run_exit_policy_hooks_fail_open_cli_fails_closed(env, monkeypatch, capsys):
+    def boom(argv):
+        raise RuntimeError("boom " + argv[0])
+    monkeypatch.setattr(governor, "main", boom)
+    for ev in sorted(governor.HOOK_EVENTS):
+        assert governor.run([ev]) == 0
+    assert capsys.readouterr().err == ""
+    for argv in (["brief", "check", "x.md"], ["check-report", "r.md"], ["plan", "check", "p.json"], ["status"]):
+        assert governor.run(argv) == 1
+        assert capsys.readouterr().err == f"governor: RuntimeError: boom {argv[0]}\n"
+    logged = (env["state"] / "errors.log").read_text()
+    assert "boom pre-tool-use" in logged and "boom brief" in logged
+
+
+def test_hook_events_match_hooks_json():
+    hooks = json.loads((BIN.parent / "hooks" / "hooks.json").read_text())["hooks"]
+    verbs = {h["command"].split("governor.py\" ")[1].split()[0] for group in hooks.values() for entry in group for h in entry["hooks"]}
+    assert verbs == set(governor.HOOK_EVENTS)
+
+
+def test_section_body_ignores_hashes_inside_fences():
+    fenced = replace_section(GOOD_BRIEF, "Definition of done", "- [ ] `pytest -q tests/api` exits 0\n```\n# undo it\n```\n- [ ] the code is properly refactored and cleaner\n\n")
+    fenced = replace_section(fenced, "Procedure", "- run /governor:triage first\n```\n# a shell comment\n```\n- delegate to general-purpose for everything\n")
+    problems = brief_problems_of(fenced)
+    assert [p for p in problems if "not checkable" in p] == ["definition of done item 2 is not checkable: 'the code is properly refactored and cleaner'"]
+    assert sorted(p for p in problems if p.startswith("vague word")) == [
+        "vague word 'cleaner' in definition of done item 2: say what is observable instead",
+        "vague word 'properly' in definition of done item 2: say what is observable instead",
+    ]
+    assert [p for p in problems if "general-purpose" in p] == ["'## Procedure' names general-purpose: it is pinned to Sonnet but inherits the session's effort; name the plugin agents instead"]
+    assert len(problems) == 4, problems
+    # A bare '#' line, or '#' without a space, is not a heading and does not end the section.
+    assert governor.section_body("## Task\nline\n#\n#tag\n## Next\nno", "Task") == "line\n#\n#tag"
+    assert governor.section_body("## Task\nline\n~~~sh\n## not a heading\n~~~\nafter\n### Sub\nno", "Task") == "line\n~~~sh\n## not a heading\n~~~\nafter"
 
 
 def test_playbook_worked_brief_passes_the_lint():

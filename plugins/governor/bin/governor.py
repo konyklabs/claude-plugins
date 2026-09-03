@@ -4,13 +4,15 @@
 Two callers share this file:
 
 * Claude Code hooks. Each hook event runs ``governor.py <event>`` with the hook's
-  JSON on stdin and reads the JSON this prints on stdout. Exit 0 always: a
-  broken guardrail must never lock a session; errors go to the log file
-  instead (see ``STATE_DIR``).
+  JSON on stdin and reads the JSON this prints on stdout. For these events, exit
+  0 always: a broken guardrail must never lock a session; errors go to the log
+  file instead (see ``STATE_DIR`` and ``HOOK_EVENTS``).
 * The skills, which run subcommands instead of reasoning a step out:
   ``status`` and ``budget`` (the ledger), ``check-report`` (a worker report
   against its contract), ``brief check`` and ``brief template`` (the task
   brief), ``plan`` (slices to levels), ``run-worker`` (a headless slice).
+  These fail closed: an input the verb cannot read is a NONCOMPLIANT verdict,
+  and an unexpected error exits 1 with one line on stderr.
 
 Standard library only, Python 3.9+. Every constant carries the reason for its
 value. Anything that reads the transcript is incremental: the ledger stores a
@@ -755,19 +757,33 @@ def has_heading(text: str, h: str) -> bool:
     return heading_re(h).search(text) is not None
 
 
+# A fence opener or closer: three or more backticks or tildes, optionally
+# indented (a fence inside a list item is indented).
+FENCE_LINE_RE = re.compile(r"^\s*(`{3,}|~{3,})")
+# A heading needs whitespace after the hashes: a bare '#' line, or '#undo' in
+# a shell snippet, is not one.
+SECTION_END_RE = re.compile(r"^#{1,6}\s")
+
+
 def section_body(text: str, h: str) -> str:
-    """The text between the heading line and the next line that starts with
-    '#'; empty when the heading is absent."""
+    """The text between the heading line and the next heading line that is
+    outside a fenced block; empty when the heading is absent. A '#' inside a
+    fence is a comment, not a heading, so the walk tracks fences: otherwise a
+    fenced shell snippet would end the section early and hide the lines after
+    it from every rule that reads this body."""
     m = heading_re(h).search(text)
     if not m:
         return ""
-    rest = text[m.end():]
-    nl = rest.find("\n")
-    if nl < 0:
-        return ""
-    rest = rest[nl + 1:]
-    nxt = re.search(r"^#", rest, re.M)
-    return rest[:nxt.start()] if nxt else rest
+    lines = text[m.end():].split("\n")[1:]  # drop the rest of the heading line
+    out: List[str] = []
+    in_fence = False
+    for line in lines:
+        if FENCE_LINE_RE.match(line):
+            in_fence = not in_fence
+        elif not in_fence and SECTION_END_RE.match(line):
+            break
+        out.append(line)
+    return "\n".join(out)
 
 
 def bash_commands_in(transcript: Optional[Path]) -> Optional[List[str]]:
@@ -1328,7 +1344,12 @@ def cmd_check_report(args: List[str], cfg: Dict[str, Any]) -> int:
     contract = _arg(args, "--contract") or "worker"
     skip = {_arg(args, "--contract"), _arg(args, "--transcript")}
     src = next((a for a in args if not a.startswith("--") and a not in skip), "-")
-    text = sys.stdin.read() if src == "-" else Path(src).read_text()
+    try:
+        text = sys.stdin.read() if src == "-" else Path(src).read_text()
+    except (OSError, ValueError) as e:  # ValueError: a decode error is not a report that passed
+        print(f"NONCOMPLIANT contract={contract} result=?")
+        print(f"- cannot read {src}: {e}")
+        return 1
     tp = _arg(args, "--transcript")
     problems = report_problems(text, contract, bash_commands_in(Path(tp)) if tp else None)
     verdict = "OK" if not problems else "NONCOMPLIANT"
@@ -1348,16 +1369,17 @@ def cmd_brief(args: List[str], cfg: Dict[str, Any]) -> int:
     if args[0] == "template":
         try:
             sys.stdout.write(BRIEF_TEMPLATE.read_text())
-        except OSError as e:
+        except (OSError, ValueError) as e:
             print(f"cannot read {BRIEF_TEMPLATE}: {e}")
             return 1
         return 0
     src = next((a for a in args[1:] if not a.startswith("--")), "-")
     try:
         text = sys.stdin.read() if src == "-" else Path(src).read_text()
-    except OSError as e:
-        print(f"cannot read {src}: {e}")
-        return 2
+    except (OSError, ValueError) as e:  # a brief the tool cannot read is not a brief it can pass
+        print(f"NONCOMPLIANT brief={src}")
+        print(f"- cannot read {src}: {e}")
+        return 1
     problems = brief_check_problems(text, cfg)
     print(f"{'OK' if not problems else 'NONCOMPLIANT'} brief={src}")
     for pr in problems:
@@ -1590,6 +1612,14 @@ def debug_dump(event: str, hook: Dict[str, Any]) -> None:
         pass
 
 
+# The five hook events, and only these, get "exit 0 whatever happens": Claude
+# Code treats a non-zero hook exit as a failure it surfaces, and a broken
+# guardrail must never lock a session. Every other verb is a CLI that a skill
+# or a person is reading, where a silent exit 0 would pass what was not
+# checked; those exit 1 with the error on stderr (see ``run``).
+HOOK_EVENTS = frozenset({"session-start", "user-prompt", "pre-tool-use", "subagent-stop", "session-end"})
+
+
 def main(argv: List[str]) -> int:
     if not argv:
         print(__doc__)
@@ -1618,6 +1648,9 @@ def main(argv: List[str]) -> int:
         return cmd_plan(args)
     if event == "run-worker":
         return cmd_run_worker(args, cfg, project_dir)
+    if event not in HOOK_EVENTS:
+        print(f"governor: unknown event {event}", file=sys.stderr)
+        return 2
 
     try:
         hook = json.load(sys.stdin) if not sys.stdin.isatty() else {}
@@ -1635,9 +1668,6 @@ def main(argv: List[str]) -> int:
         "subagent-stop": lambda: h_subagent_stop(hook, cfg, ledger),
         "session-end": lambda: h_session_end(hook, cfg, ledger),
     }
-    if event not in handlers:
-        print(f"governor: unknown event {event}", file=sys.stderr)
-        return 2
     out = handlers[event]()
     # The decision goes out before the state is written: a full disk must not
     # turn a computed deny into silence, which Claude Code reads as consent.
@@ -1656,11 +1686,18 @@ def main(argv: List[str]) -> int:
     return 0
 
 
-if __name__ == "__main__":
+def run(argv: List[str]) -> int:
+    """``main`` plus the exception policy of ``HOOK_EVENTS``: a hook event
+    never takes the session down with it, a CLI verb never pretends."""
     try:
-        sys.exit(main(sys.argv[1:]))
-    except SystemExit:
-        raise
-    except Exception as e:  # never take the session down with us
-        log_error(f"{sys.argv[1:]}: {type(e).__name__}: {e}")
-        sys.exit(0)
+        return main(argv)
+    except Exception as e:
+        log_error(f"{argv}: {type(e).__name__}: {e}")
+        if argv and argv[0] in HOOK_EVENTS:
+            return 0
+        print(f"governor: {type(e).__name__}: {e}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(run(sys.argv[1:]))
