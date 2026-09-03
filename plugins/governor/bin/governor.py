@@ -1795,7 +1795,7 @@ def run_worker_once(spec_path: str, agent: str, budget: str, out_dir: Path, cfg:
     report path, cost, session_id, transient (the failure was the API, a
     retry may help) and error. The conductor never sees the worker's tool
     output: only the verdict line and the report file."""
-    out: Dict[str, Any] = {"verdict": "FAILED", "problems": [], "report": None, "cost": 0.0, "session_id": None, "transient": False, "error": "", "warnings": []}
+    out: Dict[str, Any] = {"verdict": "FAILED", "problems": [], "report": None, "cost": 0.0, "cost_known": False, "session_id": None, "transient": False, "error": "", "warnings": []}
     try:
         spec = Path(spec_path).read_text()
     except (OSError, ValueError) as e:
@@ -1840,10 +1840,11 @@ def run_worker_once(spec_path: str, agent: str, budget: str, out_dir: Path, cfg:
         return out
     text, meta = parse_worker_output(proc.stdout)
     try:
-        c = float(meta.get("total_cost_usd") or 0.0)
+        c = float(meta["total_cost_usd"])
         out["cost"] = c if math.isfinite(c) and c >= 0 else 0.0  # NaN, inf and negatives would poison every later sum
-    except (TypeError, ValueError):
-        out["cost"] = 0.0  # untrusted subprocess JSON; a bad number is not a reason to lose the verdict
+        out["cost_known"] = math.isfinite(c) and c >= 0
+    except (TypeError, ValueError, KeyError):
+        out["cost"] = 0.0  # untrusted or absent: the caller decides what to charge
     sid = meta.get("session_id")
     out["session_id"] = str(sid) if isinstance(sid, (str, int)) else None
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -1888,8 +1889,9 @@ def cmd_run_worker(args: List[str], cfg: Dict[str, Any], project_dir: Optional[s
     out_dir = Path(_arg(args, "--out") or (Path(project_dir or ".") / ".governor" / "runs"))
     r = run_worker_once(spec_path, agent, budget, out_dir, cfg, resume=_arg(args, "--resume"), dry_run="--dry-run" in args)
     if "--dry-run" not in args and r.get("report"):
-        # One index entry per run, so worker_spend and `runs` see single-slice dispatches too.
-        idx_path = out_dir.parent / "run-worker" / "level-0.json" if out_dir.name != "run-worker" else out_dir / "level-0.json"
+        # One index entry per run, under the project's runs directory whatever
+        # --out was, so worker_spend and `runs` see single-slice dispatches too.
+        idx_path = Path(project_dir or ".").resolve() / ".governor" / "runs" / "run-worker" / "level-0.json"
         idx = load_index(idx_path) or {"plan": "run-worker", "level": 0, "slices": {}}
         key = Path(r["report"]).stem
         idx["slices"][key] = {"state": "done" if r["verdict"] == "DONE" else "failed", "verdict": r["verdict"], "attempts": 1,
@@ -2148,6 +2150,7 @@ def cmd_run_level(args: List[str], cfg: Dict[str, Any], project_dir: Optional[st
                     return "FAILED"
         attempt = int(entry.get("attempts") or 0)  # cumulative, for the record
         this_run = 0  # the retry allowance is per invocation
+        spent_this_run = 0.0  # and so is the cap: a rerun starts with the full cap again
         result: Dict[str, Any] = {"verdict": "FAILED", "error": "not run", "transient": False, "cost": 0.0, "report": None, "session_id": None, "problems": []}
         while True:
             attempt += 1
@@ -2155,18 +2158,31 @@ def cmd_run_level(args: List[str], cfg: Dict[str, Any], project_dir: Optional[st
             with lock:
                 entry.update(state="running", attempts=attempt)
                 save()
-            # The cap is per slice across attempts: a retry runs under what is left, never a fresh cap.
-            remaining = round(float(budget) - float(entry.get("cost") or 0.0), 4)
+            # The cap is per slice across the attempts of one invocation: a retry
+            # runs under what is left, never a fresh cap; a rerun starts over.
+            remaining = round(float(budget) - spent_this_run, 4)
             if remaining < WORKER_MIN_BUDGET_USD:
-                result = {"verdict": "FAILED", "error": f"budget exhausted: ${float(entry.get('cost') or 0.0):.2f} of ${float(budget):.2f} spent over {attempt - 1} attempt(s)",
-                          "transient": False, "cost": 0.0, "report": None, "session_id": None, "problems": [], "warnings": []}
+                result = {"verdict": "FAILED", "error": f"budget exhausted: ${spent_this_run:.2f} of ${float(budget):.2f} spent over {this_run - 1} attempt(s) this run",
+                          "transient": False, "cost": 0.0, "cost_known": True, "report": None, "session_id": None, "problems": [], "warnings": []}
                 with lock:
                     entry["attempts"] = attempt - 1
                 attempt -= 1
                 break
             result = run_worker_once(str(spec), agent, str(remaining), out_dir, cfg, cwd=cwd, timeout=timeout, slug=sid, attempt=attempt)
+            # What the attempt is charged: the CLI's figure when it reported one;
+            # otherwise the whole cap it ran under (a timeout, unreadable output:
+            # money was spent and nobody said how much), except a transient death,
+            # which happens before the work and would otherwise never be retried.
+            if result.get("cost_known"):
+                charged = float(result.get("cost") or 0.0)
+            else:
+                charged = 0.0 if result.get("transient") else float(remaining)
+                result["cost_assumed"] = charged > 0
+            spent_this_run += charged
             with lock:
-                entry["cost"] = round(float(entry.get("cost") or 0.0) + float(result.get("cost") or 0.0), 4)
+                entry["cost"] = round(float(entry.get("cost") or 0.0) + charged, 4)
+                if result.get("cost_assumed"):
+                    entry["cost_assumed"] = True  # part of this figure is a cap charged for an attempt that reported no cost
                 entry.update(report=result.get("report") or entry.get("report"), session_id=result.get("session_id") or entry.get("session_id"),
                              error=one_line(result.get("error") or "", 300))
                 save()

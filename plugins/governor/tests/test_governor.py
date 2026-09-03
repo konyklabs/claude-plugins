@@ -812,9 +812,12 @@ def test_run_worker_dry_run_and_fake_claude(env, tmp_path):
     assert r.returncode == 0, r.stdout + r.stderr
     assert r.stdout.startswith("VERDICT: DONE")
     assert list((tmp_path / "runs").glob("slice-*.md"))
-    # a single dispatch is recorded where worker_spend and `runs` look
-    idx = json.loads((tmp_path / "run-worker" / "level-0.json").read_text())
+    # a single dispatch is recorded where worker_spend and `runs` look, whatever --out was
+    idx = json.loads((env["project"] / ".governor" / "runs" / "run-worker" / "level-0.json").read_text())
     assert list(idx["slices"].values())[0]["verdict"] == "DONE"
+    assert governor.worker_spend(str(env["project"])) == 0.0  # the text fake reports no cost
+    r = subprocess.run([sys.executable, str(BIN / "governor.py"), "runs"], capture_output=True, text=True, env=base_env)
+    assert "| run-worker | 0 |" in r.stdout
     r = subprocess.run([sys.executable, str(BIN / "governor.py"), "run-worker", "--spec", str(spec), "--out", str(tmp_path / "runs")],
                        capture_output=True, text=True, env={**base_env, "FAKE_REPORT": "I did it, tests pass."})
     assert r.returncode == 1 and r.stdout.startswith("VERDICT: NONCOMPLIANT")
@@ -1591,3 +1594,30 @@ def test_run_level_refuses_repeated_ids_and_retries_under_the_remaining_budget(e
     assert "budget exhausted" in r.stdout and "VERDICT: FAILED slice=a attempts=3" in r.stdout
     idx = json.loads((env["project"] / ".governor" / "runs" / "p1" / "level-0.json").read_text())
     assert idx["slices"]["a"]["attempts"] == 3 and idx["slices"]["a"]["cost"] == 1.8
+    # a rerun starts with the full cap again, whatever the record says was spent before
+    caps.unlink()
+    r = _run_level(base_env, str(plan), "--level", "0", "--no-worktree", "--backoff", "0", "--retries", "0", "--budget", "1.5", "--parallel", "1", FAKE_CAPS=str(caps))
+    assert caps.read_text().split() == ["1.5"] and "VERDICT: FAILED slice=a attempts=4" in r.stdout
+    # a DONE slice whose spec changed reruns even when its record says the cap was spent
+    idx = json.loads((env["project"] / ".governor" / "runs" / "p1" / "level-0.json").read_text())
+    idx["slices"]["a"].update(verdict="DONE", spec_sha="stale", cost=99.0)
+    (env["project"] / ".governor" / "runs" / "p1" / "level-0.json").write_text(json.dumps(idx))
+    caps.unlink()
+    r = _run_level(base_env, str(plan), "--level", "0", "--no-worktree", "--backoff", "0", "--retries", "0", "--budget", "1.5", "--parallel", "1", FAKE_CAPS=str(caps))
+    assert "RERUN slice=a" in r.stdout and caps.read_text().split() == ["1.5"]
+    # an attempt that reports no cost is charged the cap it ran under: a timeout
+    fake.write_text("#!/bin/sh\ncat > /dev/null\nsleep 5\n")
+    fake.chmod(0o755)
+    (env["project"] / ".governor" / "runs" / "p1" / "level-0.json").unlink()
+    r = _run_level(base_env, str(plan), "--level", "0", "--no-worktree", "--backoff", "0", "--retries", "2", "--budget", "1.5", "--parallel", "1", "--timeout", "1")
+    assert r.returncode == 1 and "timed out" in r.stdout and "RETRY" not in r.stdout
+    idx = json.loads((env["project"] / ".governor" / "runs" / "p1" / "level-0.json").read_text())
+    assert idx["slices"]["a"]["cost"] == 1.5 and idx["slices"]["a"]["cost_assumed"] is True and idx["slices"]["a"]["attempts"] == 1
+    # an overload death with unreadable output is charged nothing and is retried
+    fake.write_text("#!/bin/sh\ncat > /dev/null\necho 'API Error: 529 Overloaded' >&2\nexit 1\n")
+    fake.chmod(0o755)
+    (env["project"] / ".governor" / "runs" / "p1" / "level-0.json").unlink()
+    r = _run_level(base_env, str(plan), "--level", "0", "--no-worktree", "--backoff", "0", "--retries", "1", "--budget", "1.5", "--parallel", "1")
+    assert "RETRY slice=a attempt=1" in r.stdout and "attempts=2" in r.stdout
+    idx = json.loads((env["project"] / ".governor" / "runs" / "p1" / "level-0.json").read_text())
+    assert idx["slices"]["a"]["cost"] == 0.0 and "cost_assumed" not in idx["slices"]["a"]

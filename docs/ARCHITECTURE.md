@@ -212,8 +212,12 @@ once, up to `LEVEL_RETRIES` outer retries with doubling backoff when the
 process died on something `TRANSIENT_RE` recognises (overload, rate limit,
 5xx, connection reset), and never a retry on anything else, because that
 would spend the budget on the same failure; a retry runs under the budget
-remaining for the slice, never a fresh cap, so a slice can cost at most its
-cap however many attempts it takes; the allowance is per invocation,
+remaining for the slice within that invocation, never a fresh cap, so one
+invocation can cost a slice at most its cap; an attempt whose cost the CLI
+did not report (a timeout, unreadable output) is charged the whole cap it ran
+under and marked `cost_assumed`, except a transient death, which happens
+before the work and is charged nothing so it can be retried; the allowance
+and the cap are per invocation,
 the index keeps the cumulative count. Every attempt updates the index under
 `.governor/runs/<plan>/level-N.json` and writes its own report file; a rerun
 skips a DONE slice only while the digest of its spec is unchanged, and `runs`
