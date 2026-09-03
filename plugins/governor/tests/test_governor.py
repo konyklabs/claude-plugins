@@ -1031,3 +1031,89 @@ def test_playbook_worked_brief_passes_the_lint():
     m = re.search(r"^````\n(.*?)^````$", md[start:], re.S | re.M)
     assert m, "the worked brief must sit in a four-backtick fence so its evidence fence nests"
     assert brief_problems_of(m.group(1)) == []
+
+
+# --------------------------------------------------------------------------- explore mode
+
+
+def test_explore_mode_checkpoint_denies_once_and_contracts_are_off(env):
+    agents = {"aw": ({"customAgentType": "governor:implementer"}, assistant_lines("s1", "claude-sonnet-5", usage(out=5), blocks=1, text="no report"))}
+    tp = make_session(env["tmp"], main_lines=assistant_lines("m1", "claude-fable-5-1", usage(out=400_000), blocks=1), agents=agents)
+    led = governor.Ledger("sess1", governor.Pricing.load())
+    cfg = dict(governor.DEFAULTS, mode="explore")
+    # $20 of $15 spent: the first call is denied with the question, the second is not
+    first = governor.h_pre_tool_use(dict(hook_base(tp), tool_name="Read", tool_input={}), cfg, led, str(env["project"]))
+    assert first["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "explore checkpoint" in first["hookSpecificOutput"]["permissionDecisionReason"]
+    assert "ship" in first["hookSpecificOutput"]["permissionDecisionReason"]
+    assert led.state["explore_checkpoint"] is True
+    second = governor.h_pre_tool_use(dict(hook_base(tp), tool_name="Read", tool_input={}), cfg, led, str(env["project"]))
+    assert "permissionDecision" not in second.get("hookSpecificOutput", {})
+    # the flag survives a save/load
+    led.save()
+    assert governor.Ledger("sess1", governor.Pricing.load()).state["explore_checkpoint"] is True
+    # pinning and fork denial still apply
+    fork = governor.h_pre_tool_use(dict(hook_base(tp), tool_name="Agent", tool_input={"subagent_type": "fork", "prompt": "p"}), cfg, led, str(env["project"]))
+    assert fork["hookSpecificOutput"]["permissionDecision"] == "deny" and "fork" in fork["hookSpecificOutput"]["permissionDecisionReason"]
+    pinned = governor.h_pre_tool_use(dict(hook_base(tp), tool_name="Agent", tool_input={"subagent_type": "general-purpose", "prompt": "p"}), cfg, led, str(env["project"]))
+    assert pinned["hookSpecificOutput"]["updatedInput"]["model"] == "sonnet"
+    # report contracts are off
+    assert governor.h_subagent_stop({"session_id": "sess1", "transcript_path": str(tp), "agent_id": "aw", "agent_type": "governor:implementer"}, cfg, led) == {}
+    # session start says so
+    out = governor.h_session_start({"session_id": "sess1", "transcript_path": str(tp)}, cfg, led)
+    assert "explore mode" in out["hookSpecificOutput"]["additionalContext"]
+    assert "[governor]" in out["hookSpecificOutput"]["additionalContext"]
+    # the history row records the mode
+    governor.h_session_end({"session_id": "sess1", "transcript_path": str(tp), "reason": "other"}, cfg, led)
+    rows = [json.loads(l) for l in (env["state"] / "history.jsonl").read_text().splitlines()]
+    assert rows[-1]["mode"] == "explore"
+
+
+def test_explore_mode_is_the_users_decision_and_validated(env):
+    # a project file cannot switch a user's enforce mode to explore
+    (env["project"] / ".claude" / "governor.json").write_text(json.dumps({"mode": "explore"}))
+    assert governor.load_config(str(env["project"]))["mode"] == "enforce"
+    # an unknown mode is ignored with a note
+    (env["project"] / ".claude" / "governor.json").write_text(json.dumps({"mode": "yolo"}))
+    cfg = governor.load_config(str(env["project"]))
+    assert cfg["mode"] == "enforce" and any("mode must be one of" in n for n in cfg["_ignored"])
+    # an older state file without the flag reads as not yet checkpointed
+    sessions = env["state"] / "sessions"
+    sessions.mkdir(parents=True)
+    (sessions / "old.json").write_text(json.dumps({"files": {}, "seen": [], "models": {}, "agents": {}, "spawns": [], "warned": False}))
+    assert governor.Ledger("old", governor.Pricing.load()).state["explore_checkpoint"] is False
+
+
+def test_mode_cli_writes_the_user_file_per_project(env, capsys):
+    proj = str(env["project"])
+    user_file = env["tmp"] / "home" / ".claude" / "governor.json"
+    assert governor.main(["mode", "explore"]) == 0
+    assert "Applies from the next hook call" in capsys.readouterr().out
+    assert json.loads(user_file.read_text())["projects"][str(Path(proj).resolve())]["mode"] == "explore"
+    assert governor.load_config(proj)["mode"] == "explore"
+    assert governor.main(["mode", "show"]) == 0
+    assert "mode: explore" in capsys.readouterr().out
+    # --user writes the top level; the project entry still wins for this project
+    assert governor.main(["mode", "enforce", "--user"]) == 1
+    assert json.loads(user_file.read_text())["mode"] == "enforce"
+    assert governor.load_config(proj)["mode"] == "explore"
+    # a project file may only set enforce
+    assert governor.main(["mode", "explore", "--project"]) == 2
+    assert "only set mode=enforce" in capsys.readouterr().out
+    assert governor.main(["mode", "enforce", "--project"]) == 0
+    assert json.loads((env["project"] / ".claude" / "governor.json").read_text())["mode"] == "enforce"
+    assert governor.load_config(proj)["mode"] == "enforce"
+    # bad verb
+    assert governor.main(["mode", "yolo"]) == 2
+    assert "usage: governor.py mode" in capsys.readouterr().out
+
+
+def test_budget_set_still_writes_through_the_shared_helper(env, capsys):
+    proj = str(env["project"])
+    assert governor.main(["budget", "set", "25"]) == 0
+    data = json.loads((env["tmp"] / "home" / ".claude" / "governor.json").read_text())
+    assert data["projects"][str(Path(proj).resolve())]["budget_usd"] == 25.0
+    assert governor.load_config(proj)["budget_usd"] == 25.0
+    assert governor.main(["budget", "set", "10", "--project"]) == 0
+    assert json.loads((env["project"] / ".claude" / "governor.json").read_text())["budget_usd"] == 10.0
+    assert governor.load_config(proj)["budget_usd"] == 10.0

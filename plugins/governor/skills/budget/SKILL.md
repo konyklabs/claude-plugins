@@ -1,6 +1,6 @@
 ---
 name: budget
-description: Shows this session's priced spend per model and subagent from the governor ledger, the tool results that cost the most to read, and sets or raises the expensive-tier budget; also installs the zero-cost status line and switches between observe and enforce modes. Use when asked how much has been spent, what the budget is, to raise the budget, to track cost without interfering, or when the governor denies a tool call for budget.
+description: Shows this session's priced spend per model and subagent from the governor ledger, the tool results that cost the most to read, and sets or raises the expensive-tier budget; also installs the zero-cost status line and switches between enforce, observe and explore modes. Use when asked how much has been spent, what the budget is, to raise the budget, to track cost without interfering, or when the governor denies a tool call for budget.
 ---
 
 # Budget
@@ -57,9 +57,15 @@ python3 "${CLAUDE_PLUGIN_ROOT}/bin/governor.py" statusline-snippet
 
 Two keys in `~/.claude/governor.json`:
 
-- `"mode": "observe"` keeps the ledger and readout but never denies,
-  rewrites or blocks. Tracking only. `"enforce"` (default) applies the
-  guardrails.
+- `"mode"`: `"enforce"` (default) applies the guardrails. `"observe"` keeps
+  the ledger and readout but never denies, rewrites or blocks; tracking
+  only. `"explore"` is for a loosely defined question: workers still pinned
+  and forks denied, report contracts off, and the budget a one-time
+  checkpoint (one denied call asking ship, spike or drop) instead of a
+  wall. Set it per project with
+  `python3 "${CLAUDE_PLUGIN_ROOT}/bin/governor.py" mode explore|enforce|observe`
+  (`--user` for every project; `--project` may only set enforce); `mode show`
+  prints the effective value. `/governor:explore` does this for you.
 - `"readout": "line" | "start" | "off"` controls what goes into the
   context: a spend line every turn, only at session start, or nothing.
 

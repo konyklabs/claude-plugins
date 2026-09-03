@@ -164,7 +164,7 @@ evidence, whether the out-of-scope list is complete, or whether an
 assumption is true. It refuses the brief shapes that predictably waste a
 worker; the user reads the printed brief for the rest.
 
-### Two operating modes
+### Three operating modes
 
 - **Fable conducts.** The session is Fable; the hooks stop it from doing the
   cheap work. Right for design sessions where the value is in the thinking
@@ -180,6 +180,20 @@ documented) is the hard cap; the governor's gate is the interactive
 equivalent and the ledger works in both. In the consult mode the gate still
 binds: the architect's own spend is expensive-tier spend, and its tool calls
 are gated on its own model, so a runaway consult closes on itself.
+
+The third mode, `explore`, exists because rigor attaches to the first
+push, not to the start of work. For a loosely defined question the session
+keeps the protections that cost nothing (workers pinned, forks denied, spend
+tracked and read out), drops the report contracts (prose is what exploration
+produces), and turns the budget gate into a checkpoint: at the number the
+hook denies exactly one tool call, with "ship, spike or drop" in the reason,
+sets `explore_checkpoint` in the ledger, and does not deny again. A wall had
+blocked its own escape hatch in the field; a checkpoint hands the decision to
+the human and gets out of the way. `governor.py mode` writes the mode the
+way `budget set` writes a budget: per project in the user's file, or at the
+user's top level; a project file may only set `enforce`. `/governor:explore`
+frames the question and routes the exit; `/governor:brief` switches back to
+`enforce` as its first step, because a brief is the first durable act.
 
 ## py-testing: what it is and is not
 
@@ -270,6 +284,10 @@ Not verified:
 - `AskUserQuestion` behaviour in `-p` mode, which is where an eval would
   run the brief skill.
 - The `brief-writes-file` eval case, like the others, has not been run.
+
+- The explore checkpoint's deny-once behaviour in a real session: unit
+  tests cover the flag and both calls; no session has yet reached its
+  budget in explore mode.
 
 ## Rejected
 

@@ -67,9 +67,13 @@ they could have answered a question.
 ## 6. Write
 
 ```
+python3 "${CLAUDE_PLUGIN_ROOT}/bin/governor.py" mode enforce
 mkdir -p .governor
 python3 "${CLAUDE_PLUGIN_ROOT}/bin/governor.py" brief template
 ```
+
+The first line ends explore mode if it was on: a brief is the first durable
+act, and rigor starts there.
 
 Fill the template it prints (the format has one home,
 `references/brief-template.md`; do not reproduce it from memory) and `Write`

@@ -17,7 +17,7 @@ The rest is skills. They do not fire on their own; you name them in the brief an
 
 ```
 claude plugin list                 # governor, py-testing, prod-readiness: enabled
-claude plugin details governor     # 6 skills, 5 agents, 5 hooks
+claude plugin details governor     # 7 skills, 5 agents, 5 hooks
 ```
 
 Optional, in `~/.claude/governor.json`. Leave it out and the defaults apply: enforce mode, 15 USD budget, a one-line spend readout per turn.
@@ -43,6 +43,18 @@ echo .governor/ >> .git/info/exclude
 ```
 
 A running `claude` process does not pick up a plugin installed after it started, and `/clear` does not reload plugins. Restart the process after installing.
+
+## Not sure what the task is yet?
+
+Rigor attaches to the first push, not to the start of work. For a question
+that is not yet a task, start with `/governor:explore <the question>`: it
+switches the governor to explore mode (workers still pinned, forks denied,
+report contracts off, the budget a one-time checkpoint instead of a wall),
+frames the question in three lines in `.governor/explore.md`, and lets you
+read, try and edit loosely on a throwaway branch. At the checkpoint, or when
+the question is answered, it asks: ship, spike or drop. Ship runs
+`/governor:brief`, which returns to enforce and starts the sequence below;
+spike leaves a five-line note; drop leaves one line saying why.
 
 ## Driving a task
 

@@ -50,7 +50,7 @@ until `version` in its `plugin.json` changes, so use `--plugin-dir` while
 developing.
 
 Verify: `claude plugin list` shows the three as enabled; `claude plugin
-details governor` shows 6 skills, 5 agents, 5 hooks and about 1,250
+details governor` shows 7 skills, 5 agents, 5 hooks and about 1,350
 always-on tokens per session.
 
 ## First session
@@ -61,6 +61,7 @@ policy and a spend line; every turn starts with one line of spend. Then:
 ```
 /governor:budget          spend so far per model and subagent, and the budget
 /governor:triage          sort the task in front of you into tiers
+/governor:explore <q>     a question that is not yet a task: explore mode, then ship, spike or drop
 /prod-readiness:readiness-review   scan a repository before a release
 ```
 
@@ -87,6 +88,7 @@ Everything an agent needs to operate the plugins without reading the code.
 | skill | use it when |
 |---|---|
 | `/governor:brief` | a task is about to start and the prompt is a sentence; five questions at most, then `.governor/brief.md` |
+| `/governor:explore` | a question is not yet a task; switches to explore mode, frames it in three lines, and ends in ship, spike or drop |
 | `/governor:triage` | a non-trivial task starts; it writes the tier table before any work |
 | `/governor:delegate` | implementation, test writing or a look-up is about to happen; spec first, worker second, evidence third |
 | `/governor:decompose` | a change touches more than about five files or a branch is too big to review |
@@ -123,6 +125,7 @@ is sent back (twice at most).
 | `governor.py status` / `budget show|set|history` | the ledger and the budget |
 | `governor.py check-report FILE --contract worker` | the contract check as a command |
 | `governor.py brief check FILE` / `brief template` | the task-brief lint (headings, one-line task, checkable done items, evidence command, procedure) and the format it fills; the brief skill runs both |
+| `governor.py mode [show\|explore\|enforce\|observe] [--user\|--project]` | the mode, per project in the user's file; a project file may only set enforce |
 | `governor.py plan build slices.json` / `plan check plan.json` | slices to levels; refuses cycles and same-level file conflicts |
 | `governor.py run-worker --spec FILE --agent governor:implementer --budget 2` | one slice, headless, under `--max-budget-usd`, report checked; prints one `VERDICT:` line |
 | `governor.py statusline-snippet` | the settings fragment for the status line |
@@ -162,6 +165,11 @@ per-session ledgers, `history.jsonl`, `errors.log`; the scanner writes
   a cheap worker stays allowed. `/model opus` keeps the context and lifts
   the gate; `/governor:budget set 25` raises it. A budget of 0 is a closed
   gate, never an open one.
+- Three modes. `enforce` (default) as above. `observe` prices everything
+  and refuses nothing. `explore`, for a question that is not yet a task:
+  workers still pinned and forks denied, report contracts off, and the
+  budget a one-time checkpoint (ship, spike or drop) instead of a wall;
+  `/governor:explore` switches to it, `/governor:brief` switches back.
 - Two ways to run it. **Fable conducts**: the session is Fable and the hooks
   keep it from doing the cheap work. **Fable consults**: the session is Opus
   or Sonnet and `governor:architect` is Fable, called with a brief for the
