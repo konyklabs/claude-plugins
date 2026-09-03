@@ -1674,13 +1674,14 @@ SETUP_TIMEOUT_S = 600.0
 SPEC_MAX_DONE = 6
 SPEC_MAX_FILES = 5
 # Kinds of work; a spec that mixes three or more ran a worker out of turns
-# in the field. Each pattern names the kind for the message.
+# in the field. Each pattern names the kind for the message. A keyword
+# heuristic: it catches the common wordings, not every phrasing, and says so.
 SPEC_KINDS = (
-    ("investigate", re.compile(r"\b(investigat\w*|explor\w*|survey|review (?:the )?(?:diff|changes?)|look at what changed|understand|audit|assess|analy[sz]e)\b", re.I)),
-    ("upgrade", re.compile(r"\b(upgrad\w*|updat\w* (?:the )?(?:pin|pinned|version|dependency)|bump|re-?pin|migrat\w*)\b", re.I)),
-    ("regression", re.compile(r"\b(regression|(?:old|existing|current) tests? (?:still )?pass|re-?run (?:the )?(?:old|existing|full) (?:tests?|suite)|still pass)\b", re.I)),
-    ("new tests", re.compile(r"\b(write|add|create|build)\b[^\n.]{0,40}\b(tests?|coverage)\b|\btest coverage\b", re.I)),
-    ("quality gates", re.compile(r"\b(lint\w*|quality gates?|type-?check\w*|mypy|pyright|ruff|black|formatter|pre-commit)\b", re.I)),
+    ("investigate", re.compile(r"\b(investigat\w*|explor\w*|survey|review (?:the )?(?:diff|changes?)|(?:see|look at|check|find out) what changed|what changed|understand|audit|assess|analy[sz]e)\b", re.I)),
+    ("upgrade", re.compile(r"\b(upgrad\w*|updat\w* (?:the )?(?:pin|pinned|version|dependency)|bump|re-?pin|migrat\w*|(?:move|switch|bring)\b[^\n.]{0,40}\b(?:new|latest) version|(?:new|latest) version)\b", re.I)),
+    ("regression", re.compile(r"\b(regression|(?:old|existing|current) (?:tests?|suite) (?:still )?pass\w*|re-?run (?:the )?(?:old|existing|full) (?:tests?|suite)|still pass\w*|nothing (?:else )?breaks)\b", re.I)),
+    ("new tests", re.compile(r"\b(write|add|create|build)\b[^\n.]{0,40}\b(tests?|coverage)\b|\btest coverage\b|\bcover\w*\b[^\n.]{0,40}\b(?:with )?tests?\b|\btests? for (?:the )?new\b", re.I)),
+    ("quality gates", re.compile(r"\b(lint\w*|quality gates?|type-?check\w*|types? (?:clean|errors?)|mypy|pyright|ruff|black|formatter|pre-commit)\b", re.I)),
     ("rewrite", re.compile(r"\b(rewrite|rework|refactor\w*|restructure)\b", re.I)),
 )
 # A lookup told NOT to happen is not a lookup.

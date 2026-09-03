@@ -40,7 +40,9 @@ python3 "${CLAUDE_PLUGIN_ROOT}/bin/governor.py" spec check .governor/specs/<slug
 
 It refuses a spec over the size cap and warns when a spec mixes three or
 more kinds of work, has more than six done items or five files, or asks
-the worker to find a value. `run-worker` and `run-level` run the same check
+the worker to find a value. The kinds rule is a keyword heuristic: it
+catches the common wordings, not every phrasing; the split rule still
+applies to a spec it lets through. `run-worker` and `run-level` run the same check
 and print its warnings as `SPEC WARNING` lines.
 
 ## 2. Pick the worker

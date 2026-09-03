@@ -240,8 +240,9 @@ conductor could have resolved in a second; and two headless workers' spend
 never appeared on the budget line. The split rule and the resolve-first rule
 were prose. `spec check` makes them a script: an empty spec or one over the
 size cap stops the dispatch, and a spec that mixes three or more kinds of
-work, has more than six done items or five files, or asks the worker to
-find a value is warned about, by `spec check` itself and by `run-worker` and
+work (a keyword heuristic over the goal, files and definition of done: it
+catches the common wordings, not every phrasing), has more than six done
+items or five files, or asks the worker to find a value is warned about, by `spec check` itself and by `run-worker` and
 `run-level` before they spawn. Headless workers are their own sessions, so
 the ledger never sees them; `worker_spend` sums the run indexes under
 `.governor/runs`; the readout and the status line show it as `workers $`,

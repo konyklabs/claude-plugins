@@ -1414,6 +1414,9 @@ def test_spec_check_rules_and_cli(env, tmp_path):
     bundled = GOOD_SPEC.replace("Port tests/api/test_orders.py to the savepoint fixture.",
                                 "Look at what changed since the last release, update the pinned version, make sure the old tests still pass, add tests for the two new endpoints, and run ruff and mypy before you stop.")
     assert any("mixes" in w for w in governor.spec_check_problems(bundled, cfg)[1])
+    plain = GOOD_SPEC.replace("Port tests/api/test_orders.py to the savepoint fixture.",
+                              "See what changed, move the dependency to the new version, check the existing tests still pass, cover the new behaviour with tests, and make lint and types clean.")
+    assert any("mixes" in w for w in governor.spec_check_problems(plain, cfg)[1])
     refactor = GOOD_SPEC.replace("Port tests/api/test_orders.py to the savepoint fixture.", "Refactor the orders module into two files with no behaviour change.").replace("$ pytest -q tests/api -k orders", "$ pytest -q tests/api -k orders\n$ ruff check .\n$ mypy src")
     assert not any("mixes" in w for w in governor.spec_check_problems(refactor, cfg)[1])
     # a lookup the spec forbids is not a lookup; one under Out of scope is not either
