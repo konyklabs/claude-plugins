@@ -211,7 +211,13 @@ is reused only when it is on that branch), at most `LEVEL_PARALLEL` at
 once, up to `LEVEL_RETRIES` outer retries with doubling backoff when the
 process died on something `TRANSIENT_RE` recognises (overload, rate limit,
 5xx, connection reset), and never a retry on anything else, because that
-would spend the budget on the same failure; the allowance is per invocation,
+would spend the budget on the same failure; a retry runs under the budget
+remaining for the slice within that invocation, never a fresh cap, so one
+invocation can cost a slice at most its cap; an attempt whose cost the CLI
+did not report (a timeout, unreadable output) is charged the whole cap it ran
+under and marked `cost_assumed`, except a transient death, which happens
+before the work and is charged nothing so it can be retried; the allowance
+and the cap are per invocation,
 the index keeps the cumulative count. Every attempt updates the index under
 `.governor/runs/<plan>/level-N.json` and writes its own report file; a rerun
 skips a DONE slice only while the digest of its spec is unchanged, and `runs`
@@ -230,6 +236,25 @@ The docs also recommend dynamic workflows over hand-spawned subagents for
 many-agent work ("dozens to hundreds of agents per run"); the local review
 gate as a Workflow is a separate task. `run-level` is for the implementation
 levels, where each worker needs a checkout, a budget cap and a report file.
+
+### The spec gate, and where worker dollars show
+
+Field feedback from a real run (2026-09-03): one spec bundled investigation,
+an upgrade, a regression check, new tests and quality gates, and the worker
+ran out of turns; another asked the worker to find a cache directory the
+conductor could have resolved in a second; and two headless workers' spend
+never appeared on the budget line. The split rule and the resolve-first rule
+were prose. `spec check` makes them a script: an empty spec or one over the
+size cap stops the dispatch, and a spec that mixes three or more kinds of
+work (a keyword heuristic over the goal, files and definition of done: it
+catches the common wordings, not every phrasing), has more than six done
+items or five files, or asks the worker to find a value is warned about, by `spec check` itself and by `run-worker` and
+`run-level` before they spawn. Headless workers are their own sessions, so
+the ledger never sees them; `worker_spend` sums the run indexes under
+`.governor/runs`; the readout and the status line show it as `workers $`,
+and `status` as a `Headless workers` line. `run-level --setup` runs one command in each new worktree,
+because a worker without the project's environment fights the editor's
+type checker instead of doing the slice.
 
 ## py-testing: what it is and is not
 

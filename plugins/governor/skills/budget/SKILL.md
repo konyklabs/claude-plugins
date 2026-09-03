@@ -78,6 +78,9 @@ repository is the runbook.
 - **Subagent effort flagged `inherited session effort?`**: a cheap worker ran
   at `xhigh` or `max` because its definition pinned no effort. Pin one in the
   agent's frontmatter, or use the governor agents.
+- **Headless workers**: `run-worker` and `run-level` are their own sessions,
+  so their dollars are not in the tables above; the line and the readout's
+  `workers $` figure sum the run indexes under `.governor/runs`.
 - **Tool results by name**: the bytes the conductor read at the expensive
   rate. A large `Read` or `Bash` number is the signal to route look-ups
   through `governor:scout`.

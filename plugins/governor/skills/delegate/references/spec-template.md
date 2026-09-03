@@ -4,6 +4,8 @@
 
 ## Files
 
+Paths and values below are exact; the conductor resolved them.
+
 Change:
 - `path/to/file.py` — what changes, five words
 

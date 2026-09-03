@@ -812,6 +812,12 @@ def test_run_worker_dry_run_and_fake_claude(env, tmp_path):
     assert r.returncode == 0, r.stdout + r.stderr
     assert r.stdout.startswith("VERDICT: DONE")
     assert list((tmp_path / "runs").glob("slice-*.md"))
+    # a single dispatch is recorded where worker_spend and `runs` look, whatever --out was
+    idx = json.loads((env["project"] / ".governor" / "runs" / "run-worker" / "level-0.json").read_text())
+    assert list(idx["slices"].values())[0]["verdict"] == "DONE"
+    assert governor.worker_spend(str(env["project"])) == 0.0  # the text fake reports no cost
+    r = subprocess.run([sys.executable, str(BIN / "governor.py"), "runs"], capture_output=True, text=True, env=base_env)
+    assert "| run-worker | 0 |" in r.stdout
     r = subprocess.run([sys.executable, str(BIN / "governor.py"), "run-worker", "--spec", str(spec), "--out", str(tmp_path / "runs")],
                        capture_output=True, text=True, env={**base_env, "FAKE_REPORT": "I did it, tests pass."})
     assert r.returncode == 1 and r.stdout.startswith("VERDICT: NONCOMPLIANT")
@@ -1212,6 +1218,9 @@ def test_run_level_worktrees_missing_spec_and_dry_run(env, tmp_path):
     # bad arguments
     r = _run_level(base_env, str(plan))
     assert r.returncode == 2 and "usage" in r.stdout
+    # a flag value ending in .json is not mistaken for the plan
+    r = _run_level(base_env, "--setup", "cat config.json", str(plan), "--level", "0", "--no-worktree", "--dry-run")
+    assert r.returncode == 0 and "slice=a" in r.stdout and "NOTE --setup is ignored with --no-worktree" in r.stdout
     r = _run_level(base_env, str(plan), "--level", "7")
     assert r.returncode == 2 and "cannot read plan level" in r.stdout
 
@@ -1272,10 +1281,10 @@ def test_run_level_namespaces_worktrees_by_plan_and_guards_the_thread(env, tmp_p
     head = subprocess.run(["git", "-C", str(proj / ".governor" / "wt" / "p2" / "a"), "rev-parse", "--abbrev-ref", "HEAD"], capture_output=True, text=True).stdout.strip()
     assert head == "p2/a"
     # a directory on the wrong branch is refused, not reused
-    wt, msg = governor.ensure_worktree(proj, "p3", "a")
+    wt, msg, created = governor.ensure_worktree(proj, "p3", "a")
     assert wt is not None
     subprocess.run(["git", "-C", str(wt), "checkout", "-q", "-b", "elsewhere"], check=True)
-    wt2, msg = governor.ensure_worktree(proj, "p3", "a")
+    wt2, msg, _ = governor.ensure_worktree(proj, "p3", "a")
     assert wt2 is None and "not p3/a" in msg and "elsewhere" in msg
     # an exception inside a slice fails that slice and the level still finishes
     (proj / ".governor" / "runs" / "p1" / "level-0.json").unlink()
@@ -1377,3 +1386,238 @@ def test_ids_and_names_are_single_path_components_and_worker_text_cannot_forge_l
     rows = [l for l in r.stdout.splitlines() if l.startswith("| p9 |")]
     assert len(rows) == 1 and rows[0].count(" | ") == 8 and "x \\| y VERDICT" in rows[0]
     assert governor.one_line("a\nb\t c", 5) == "a b c" and governor.one_line("x" * 10, 3) == "xxx"
+
+
+# --------------------------------------------------------------------------- spec check, worker spend, worktree setup
+
+GOOD_SPEC = """# Spec: port-one-module
+
+**Goal.** Port tests/api/test_orders.py to the savepoint fixture.
+
+## Files
+
+Change:
+- `tests/api/test_orders.py` — use the `session` fixture
+
+Leave alone (adjacent, not in scope):
+- `tests/conftest.py`
+
+## Definition of done
+
+- [ ] `pytest -q tests/api -k orders` exits 0
+- [ ] no file outside the Change list is modified
+
+## Tests to run
+
+```
+$ pytest -q tests/api -k orders
+```
+
+## Out of scope
+
+- other test modules
+"""
+
+
+def test_spec_check_rules_and_cli(env, tmp_path):
+    cfg = dict(governor.DEFAULTS)
+    assert governor.spec_check_problems(GOOD_SPEC, cfg) == ([], [])
+    assert governor.spec_check_problems("", cfg)[0] == ["spec is empty"]
+    errors, _ = governor.spec_check_problems("x" * 9000, cfg)
+    assert errors and "cap" in errors[0]
+    # mixed kinds, a lookup, too many items, too many files, too long
+    mixed = GOOD_SPEC.replace("Port tests", "Investigate the diff, upgrade the pin, run the regression suite, write new tests and run the linters, then port tests")
+    _, warnings = governor.spec_check_problems(mixed, cfg)
+    assert any("mixes" in w and "investigate" in w for w in warnings)
+    lookup = GOOD_SPEC.replace("- [ ] no file outside", "- [ ] find the cache directory on disk and use it\n- [ ] no file outside")
+    _, warnings = governor.spec_check_problems(lookup, cfg)
+    assert any("resolve a value" in w and "cache directory" in w for w in warnings)
+    many = GOOD_SPEC.replace("- [ ] no file outside the Change list is modified", "\n".join(f"- [ ] `step{i}` exits 0" for i in range(7)))
+    _, warnings = governor.spec_check_problems(many, cfg)
+    assert any("done items" in w for w in warnings)
+    files = GOOD_SPEC.replace("- `tests/api/test_orders.py` — use the `session` fixture", "\n".join(f"- `f{i}.py` — change" for i in range(6)))
+    _, warnings = governor.spec_check_problems(files, cfg)
+    assert any("files to change" in w for w in warnings)
+    _, warnings = governor.spec_check_problems(GOOD_SPEC + "\n" * 90, cfg)
+    assert any("lines" in w for w in warnings)
+    # kinds named only under Out of scope or Tests to run do not count; a lowercase leave-alone list is not counted as files to change
+    narrowed = GOOD_SPEC.replace("- other test modules", "- investigating the diff, upgrading the pin, regression runs and linting are not this slice")
+    assert not any("mixes" in w for w in governor.spec_check_problems(narrowed, cfg)[1])
+    lower = GOOD_SPEC.replace("Leave alone (adjacent, not in scope):", "leave alone:").replace("- `tests/conftest.py`", "\n".join(f"- `keep{i}.py`" for i in range(8)))
+    assert not any("files to change" in w for w in governor.spec_check_problems(lower, cfg)[1])
+    # the cap is the spec's own, not the consult brief's
+    assert governor.spec_check_problems("x" * 9000, dict(cfg, brief_max_chars=100000))[0]
+    # natural wording: the bundled spec from the field is flagged, a refactor that only names its gates under Tests to run is not
+    bundled = GOOD_SPEC.replace("Port tests/api/test_orders.py to the savepoint fixture.",
+                                "Look at what changed since the last release, update the pinned version, make sure the old tests still pass, add tests for the two new endpoints, and run ruff and mypy before you stop.")
+    assert any("mixes" in w for w in governor.spec_check_problems(bundled, cfg)[1])
+    plain = GOOD_SPEC.replace("Port tests/api/test_orders.py to the savepoint fixture.",
+                              "See what changed, move the dependency to the new version, check the existing tests still pass, cover the new behaviour with tests, and make lint and types clean.")
+    assert any("mixes" in w for w in governor.spec_check_problems(plain, cfg)[1])
+    refactor = GOOD_SPEC.replace("Port tests/api/test_orders.py to the savepoint fixture.", "Refactor the orders module into two files with no behaviour change.").replace("$ pytest -q tests/api -k orders", "$ pytest -q tests/api -k orders\n$ ruff check .\n$ mypy src")
+    assert not any("mixes" in w for w in governor.spec_check_problems(refactor, cfg)[1])
+    # a lookup the spec forbids is not a lookup; one under Out of scope is not either
+    negated = GOOD_SPEC.replace("- [ ] no file outside", "- [ ] do not try to find the cache directory; it is `/var/cache/app`\n- [ ] no file outside")
+    assert not any("resolve a value" in w for w in governor.spec_check_problems(negated, cfg)[1])
+    scoped = GOOD_SPEC.replace("- other test modules", "- finding the config directory for the other service")
+    assert not any("resolve a value" in w for w in governor.spec_check_problems(scoped, cfg)[1])
+    # interactive stdin is refused, not hung
+    r = subprocess.run([sys.executable, str(BIN / "governor.py"), "spec", "check"], capture_output=True, text=True, stdin=None if False else subprocess.DEVNULL,
+                       env={**os.environ, "GOVERNOR_STATE_DIR": str(env["state"]), "HOME": str(env["tmp"] / "home")})
+    assert r.returncode == 1 and "NONCOMPLIANT" in r.stdout  # DEVNULL is not a tty: empty stdin is an empty spec
+    _, warnings = governor.spec_check_problems("# Spec: bare\nGoal.\n", cfg)
+    assert any("missing '## Files'" in w for w in warnings) and any("Goal line" in w for w in warnings)
+    assert not any("Goal line" in w for w in governor.spec_check_problems("# Spec: x\n\n**Goal.** Do it.\n", cfg)[1])
+    # CLI
+    good = tmp_path / "good.md"; good.write_text(GOOD_SPEC)
+    r = run_cli(env, ["spec", "check", str(good)])
+    assert r.returncode == 0 and r.stdout.strip() == f"OK spec={good}"
+    big = tmp_path / "big.md"; big.write_text("x" * 9000)
+    r = run_cli(env, ["spec", "check", str(big)])
+    assert r.returncode == 1 and r.stdout.startswith("NONCOMPLIANT") and "- spec is 9000 chars" in r.stdout
+    r = run_cli(env, ["spec", "check", str(tmp_path / "missing.md")])
+    assert r.returncode == 1 and "cannot read" in r.stdout
+    r = run_cli(env, ["spec"])
+    assert r.returncode == 2
+    # run-worker refuses an oversized spec without spawning; warnings come after the verdict line
+    r = run_cli(env, ["run-worker", "--spec", str(big), "--dry-run"])
+    assert r.returncode == 2 and "spec check" in r.stdout
+    lookup_file = tmp_path / "lookup.md"
+    lookup_file.write_text(lookup)
+    r = run_cli(env, ["run-worker", "--spec", str(lookup_file), "--dry-run"])
+    assert r.returncode == 0 and r.stdout.startswith("DRY-RUN") and "SPEC WARNING" in r.stdout
+
+
+def test_worker_spend_reaches_readout_status_and_statusline(env, tmp_path):
+    proj = env["project"]
+    runs = proj / ".governor" / "runs" / "p1"; runs.mkdir(parents=True)
+    (runs / "level-0.json").write_text(json.dumps({"plan": "p1", "level": 0, "slices": {"a": {"cost": 0.25}, "b": {"cost": 0.5}}}))
+    (runs / "level-1.json").write_text("{not json")
+    (proj / ".governor" / "runs" / "p2").mkdir()
+    (proj / ".governor" / "runs" / "p2" / "level-0.json").write_text(json.dumps({"slices": {"c": {"cost": "bad"}, "d": {"cost": 1.0}}}))
+    assert governor.worker_spend(str(proj)) == 1.75
+    assert governor.worker_spend(str(tmp_path / "nowhere")) == 0.0
+    assert governor.worker_spend(12345) == 0.0
+    # NaN, inf and negative costs never reach the sum; symlinked and oversized indexes are skipped
+    (proj / ".governor" / "runs" / "p3").mkdir()
+    (proj / ".governor" / "runs" / "p3" / "level-0.json").write_text('{"slices": {"a": {"cost": NaN}, "b": {"cost": -5}, "c": {"cost": Infinity}, "d": {"cost": 0.25}}}')
+    assert governor.worker_spend(str(proj)) == 2.0
+    (proj / ".governor" / "runs" / "p4").mkdir()
+    big = tmp_path / "big.json"; big.write_text(json.dumps({"slices": {"z": {"cost": 100.0}}}) + " " * 1_100_000)
+    (proj / ".governor" / "runs" / "p4" / "level-0.json").symlink_to(big)
+    (proj / ".governor" / "runs" / "p4" / "level-1.json").write_text(json.dumps({"slices": {"z": {"cost": 100.0}}}) + " " * 1_100_000)
+    assert governor.worker_spend(str(proj)) == 2.0
+    # a worker reporting a NaN cost is recorded as 0
+    text, meta = governor.parse_worker_output('{"result": "## Result\\nDONE", "total_cost_usd": NaN}')
+    assert meta["total_cost_usd"] != meta["total_cost_usd"]
+    tp = make_session(env["tmp"], main_lines=assistant_lines("m1", "claude-sonnet-5", usage(out=10), blocks=1))
+    led = ledger_for(tp)
+    cfg = dict(governor.DEFAULTS)
+    assert "workers $2.00 (all runs in this project)" in led.readout(cfg, str(proj)) and "workers" not in led.readout(cfg, str(tmp_path / "nowhere"))
+    assert "Headless workers" in led.report(cfg, str(proj))
+    out = governor.h_user_prompt({"session_id": "sess1", "transcript_path": str(tp), "cwd": str(proj)}, cfg, led)
+    assert "workers $2.00" in out["hookSpecificOutput"]["additionalContext"]
+    r = subprocess.run([sys.executable, str(BIN / "governor.py"), "statusline"], input=json.dumps({"session_id": "sess1", "workspace": {"current_dir": str(proj)}}),
+                       capture_output=True, text=True, env={**os.environ, "GOVERNOR_STATE_DIR": str(env["state"]), "HOME": str(env["tmp"] / "home")})
+    assert r.returncode == 0 and "workers $2.00" in r.stdout
+    # sub-cent totals are not shown as $0.00
+    import shutil
+    for d in ("p2", "p3", "p4"):
+        shutil.rmtree(proj / ".governor" / "runs" / d)
+    (runs / "level-0.json").write_text(json.dumps({"slices": {"a": {"cost": 0.001}}}))
+    assert "workers" not in led.readout(cfg, str(proj))
+
+
+def test_run_level_setup_runs_once_per_new_worktree_and_failure_fails_the_slice(env, tmp_path):
+    plan, base_env = _level_fixture(tmp_path, env, git=True)
+    marker = tmp_path / "setup-count"
+    r = _run_level(base_env, str(plan), "--level", "0", "--parallel", "1", "--backoff", "0", "--setup", f"echo x >> {marker}", FAKE_JSON="1")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert marker.read_text().count("x") == 2
+    # a rerun reuses the worktrees: setup does not run again while the index says it succeeded
+    idx_path = env["project"] / ".governor" / "runs" / "p1" / "level-0.json"
+    idx = json.loads(idx_path.read_text())
+    for e in idx["slices"].values():
+        e["verdict"] = "FAILED"
+    idx_path.write_text(json.dumps(idx))
+    r = _run_level(base_env, str(plan), "--level", "0", "--parallel", "1", "--backoff", "0", "--setup", f"echo x >> {marker}", FAKE_JSON="1")
+    assert r.returncode == 0 and marker.read_text().count("x") == 2
+    # a failing setup fails the slice without spawning a worker
+    plan2 = env["project"] / "plan2.json"
+    plan2.write_text(json.dumps({"name": "p2", "slices": [{"id": "a"}], "levels": [["a"]]}))
+    (tmp_path / "count").unlink(missing_ok=True)
+    r = _run_level(base_env, str(plan2), "--level", "0", "--parallel", "1", "--backoff", "0", "--setup", "echo boom >&2; exit 3", FAKE_JSON="1")
+    assert r.returncode == 1 and "VERDICT: FAILED slice=a attempts=0" in r.stdout and "setup failed (3): boom" in r.stdout
+    assert not (tmp_path / "count").exists()
+    # the worktree survived the failed setup; a rerun runs setup again instead of skipping it
+    assert (env["project"] / ".governor" / "wt" / "p2" / "a").is_dir()
+    marker2 = tmp_path / "setup2"
+    r = _run_level(base_env, str(plan2), "--level", "0", "--parallel", "1", "--backoff", "0", "--setup", f"echo y >> {marker2}", FAKE_JSON="1")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert marker2.read_text().count("y") == 1
+    idx = json.loads((env["project"] / ".governor" / "runs" / "p2" / "level-0.json").read_text())
+    assert idx["slices"]["a"]["setup"] == "ok" and idx["slices"]["a"]["verdict"] == "DONE"
+    # an oversized spec is refused before any worktree or setup exists
+    plan3 = env["project"] / "plan3.json"
+    plan3.write_text(json.dumps({"name": "p3", "slices": [{"id": "big"}], "levels": [["big"]]}))
+    (env["project"] / ".governor" / "specs" / "big.md").write_text("x" * 9000)
+    marker3 = tmp_path / "setup3"
+    r = _run_level(base_env, str(plan3), "--level", "0", "--parallel", "1", "--backoff", "0", "--setup", f"echo z >> {marker3}", FAKE_JSON="1")
+    assert r.returncode == 1 and "VERDICT: FAILED slice=big attempts=0" in r.stdout and "spec check" in r.stdout
+    assert not (env["project"] / ".governor" / "wt" / "p3").exists() and not marker3.exists()
+
+
+def test_run_level_refuses_repeated_ids_and_retries_under_the_remaining_budget(env, tmp_path):
+    plan, base_env = _level_fixture(tmp_path, env)
+    plan.write_text(json.dumps({"name": "p1", "slices": [{"id": "a"}, {"id": "b"}], "levels": [["a", "a", "b"]]}))
+    r = _run_level(base_env, str(plan), "--level", "0", "--no-worktree", "--backoff", "0")
+    assert r.returncode == 2 and "repeated in level 0" in r.stdout and "VERDICT" not in r.stdout
+    r = run_cli(env, ["plan", "check", str(plan)])
+    assert r.returncode == 1 and "levels repeat a slice id" in r.stdout
+    plan.write_text(json.dumps({"name": "p1", "slices": [{"id": "a"}, {"id": "b"}], "levels": [["a"]]}))
+    r = run_cli(env, ["plan", "check", str(plan)])
+    assert r.returncode == 1 and "exactly the plan's slices" in r.stdout
+    plan.write_text(json.dumps({"name": "p1", "slices": [{"id": "a"}, {"id": "b", "deps": ["a"]}], "levels": [["a", "b"]]}))
+    r = run_cli(env, ["plan", "check", str(plan)])
+    assert r.returncode == 1 and "differ from the order" in r.stdout
+    plan.write_text(json.dumps({"name": "p1", "slices": [{"id": "a"}, {"id": "b"}], "levels": [["a", "b"]]}))
+    assert run_cli(env, ["plan", "check", str(plan)]).returncode == 0
+    # each attempt runs under what is left of the slice's cap; the fake dies on an overload after spending
+    fake = tmp_path / "bin" / "claude"
+    fake.write_text("#!/bin/sh\ncat > /dev/null\nfor a in \"$@\"; do if [ \"$prev\" = \"--max-budget-usd\" ]; then echo \"$a\" >> \"$FAKE_CAPS\"; fi; prev=\"$a\"; done\npython3 -c 'import json; print(json.dumps({\"type\": \"result\", \"subtype\": \"error_during_execution\", \"is_error\": True, \"errors\": [\"API Error: 529 Overloaded\"], \"total_cost_usd\": 0.6, \"session_id\": \"s\"}))'\nexit 1\n")
+    fake.chmod(0o755)
+    caps = tmp_path / "caps"
+    plan.write_text(json.dumps({"name": "p1", "slices": [{"id": "a"}], "levels": [["a"]]}))
+    r = _run_level(base_env, str(plan), "--level", "0", "--no-worktree", "--backoff", "0", "--retries", "5", "--budget", "1.5", "--parallel", "1", FAKE_CAPS=str(caps))
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert caps.read_text().split() == ["1.5", "0.9", "0.3"]
+    assert "budget exhausted" in r.stdout and "VERDICT: FAILED slice=a attempts=3" in r.stdout
+    idx = json.loads((env["project"] / ".governor" / "runs" / "p1" / "level-0.json").read_text())
+    assert idx["slices"]["a"]["attempts"] == 3 and idx["slices"]["a"]["cost"] == 1.8
+    # a rerun starts with the full cap again, whatever the record says was spent before
+    caps.unlink()
+    r = _run_level(base_env, str(plan), "--level", "0", "--no-worktree", "--backoff", "0", "--retries", "0", "--budget", "1.5", "--parallel", "1", FAKE_CAPS=str(caps))
+    assert caps.read_text().split() == ["1.5"] and "VERDICT: FAILED slice=a attempts=4" in r.stdout
+    # a DONE slice whose spec changed reruns even when its record says the cap was spent
+    idx = json.loads((env["project"] / ".governor" / "runs" / "p1" / "level-0.json").read_text())
+    idx["slices"]["a"].update(verdict="DONE", spec_sha="stale", cost=99.0)
+    (env["project"] / ".governor" / "runs" / "p1" / "level-0.json").write_text(json.dumps(idx))
+    caps.unlink()
+    r = _run_level(base_env, str(plan), "--level", "0", "--no-worktree", "--backoff", "0", "--retries", "0", "--budget", "1.5", "--parallel", "1", FAKE_CAPS=str(caps))
+    assert "RERUN slice=a" in r.stdout and caps.read_text().split() == ["1.5"]
+    # an attempt that reports no cost is charged the cap it ran under: a timeout
+    fake.write_text("#!/bin/sh\ncat > /dev/null\nsleep 5\n")
+    fake.chmod(0o755)
+    (env["project"] / ".governor" / "runs" / "p1" / "level-0.json").unlink()
+    r = _run_level(base_env, str(plan), "--level", "0", "--no-worktree", "--backoff", "0", "--retries", "2", "--budget", "1.5", "--parallel", "1", "--timeout", "1")
+    assert r.returncode == 1 and "timed out" in r.stdout and "RETRY" not in r.stdout
+    idx = json.loads((env["project"] / ".governor" / "runs" / "p1" / "level-0.json").read_text())
+    assert idx["slices"]["a"]["cost"] == 1.5 and idx["slices"]["a"]["cost_assumed"] is True and idx["slices"]["a"]["attempts"] == 1
+    # an overload death with unreadable output is charged nothing and is retried
+    fake.write_text("#!/bin/sh\ncat > /dev/null\necho 'API Error: 529 Overloaded' >&2\nexit 1\n")
+    fake.chmod(0o755)
+    (env["project"] / ".governor" / "runs" / "p1" / "level-0.json").unlink()
+    r = _run_level(base_env, str(plan), "--level", "0", "--no-worktree", "--backoff", "0", "--retries", "1", "--budget", "1.5", "--parallel", "1")
+    assert "RETRY slice=a attempt=1" in r.stdout and "attempts=2" in r.stdout
+    idx = json.loads((env["project"] / ".governor" / "runs" / "p1" / "level-0.json").read_text())
+    assert idx["slices"]["a"]["cost"] == 0.0 and "cost_assumed" not in idx["slices"]["a"]

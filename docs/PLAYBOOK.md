@@ -178,4 +178,6 @@ Start the session on Opus instead. It reads, runs, and delegates the same way, a
 - **Skills are named, not guessed.** They trigger on description match, which is not reliable enough for a run you will not watch. Name them.
 - **An installed plugin is a pinned copy.** It changes only when a new version is installed; a checkout edited in place is not seen.
 - **Headless slices need the install path.** Inside a skill, `${CLAUDE_PLUGIN_ROOT}` resolves; from a shell, the engine lives under `~/.claude/plugins/cache/konyklabs-plugins/governor/<version>/bin/governor.py`.
+- **A worker's worktree has no environment.** An IDE type checker reading the main workspace flags the worker's new files turn after turn. Pass `--setup "uv sync"` to `run-level` and exclude `.governor/` from the editor's diagnostics.
+- **Headless workers' dollars are not in the session ledger.** They are their own sessions; the readout's `workers $` figure and `/governor:budget` sum them from the run indexes.
 - **Dollars on a subscription are notional.** The ratios are exact and the gate uses them; the absolute number is what the same work would cost at list price.
