@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.1.0](https://github.com/konyklabs/claude-plugins/compare/v1.0.0...v1.1.0) (2026-09-03)
+
+
+### Features
+
+* **governor:** add the brief skill and the operator playbook (konyklabs/roadmap[#78](https://github.com/konyklabs/claude-plugins/issues/78), konyklabs/roadmap[#77](https://github.com/konyklabs/claude-plugins/issues/77)) ([#8](https://github.com/konyklabs/claude-plugins/issues/8)) ([eb8f269](https://github.com/konyklabs/claude-plugins/commit/eb8f269d51f5f325aabdeba33360b189d815c39a))
+* **governor:** explore mode and /governor:explore for loosely defined work (konyklabs/roadmap[#82](https://github.com/konyklabs/claude-plugins/issues/82)) ([#10](https://github.com/konyklabs/claude-plugins/issues/10)) ([abbdaba](https://github.com/konyklabs/claude-plugins/commit/abbdaba88f132cfeca0690c37681e527fe314145))
+* **governor:** run-level, supervised headless workers with retry, worktrees and resume (konyklabs/roadmap[#97](https://github.com/konyklabs/claude-plugins/issues/97)) ([#11](https://github.com/konyklabs/claude-plugins/issues/11)) ([1424a05](https://github.com/konyklabs/claude-plugins/commit/1424a05dc2353af25e1b2737a00c167f7e6f75a3))
+* **governor:** spec check before dispatch, worker spend in the readout, worktree setup (konyklabs/roadmap[#100](https://github.com/konyklabs/claude-plugins/issues/100)) ([#12](https://github.com/konyklabs/claude-plugins/issues/12)) ([fa97857](https://github.com/konyklabs/claude-plugins/commit/fa97857d7dad3eec005c057a07bfc3cb6bc778fc))
+
 ## 1.0.0 (2026-09-02)
 
 
