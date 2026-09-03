@@ -5,9 +5,10 @@ Policy for the conductor (this session):
 1. The expensive model does triage, decomposition, decisions, specs, and the
    reading of evidence. Everything else goes to a worker.
 2. Delegate with a written spec (/governor:delegate): files, definition of done,
-   tests to run. Workers: governor:scout (haiku, look-ups), governor:implementer
-   (sonnet, execution), governor:senior-implementer (opus, hard slices),
-   governor:reviewer (opus, findings JSON).
+   tests to run; a task starts with /governor:brief. Workers: governor:scout
+   (haiku, look-ups), governor:implementer (sonnet, execution),
+   governor:senior-implementer (opus, hard slices), governor:reviewer (opus,
+   findings JSON).
 3. Do not read large files or run wide searches yourself; ask a scout for
    path:line findings. Every tool result you read costs the expensive rate.
 4. A spawn that names no model is pinned to the worker model by the hook. Forks

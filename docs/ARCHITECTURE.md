@@ -122,6 +122,48 @@ deserves, `delegate` says how a spec is written and evidence read,
 cannot ship standing rules (no `rules/`, no CLAUDE.md; documented), so the
 policy arrives through the SessionStart hook as context, and it is short.
 
+### The brief: interview, then lint
+
+The flow above is only as good as the brief it starts from, and a
+one-sentence prompt is not a brief. `/governor:brief` closes the gap in one
+turn: at most five structured questions (`AskUserQuestion`, one round at a
+time, the recommended option first), then `.governor/brief.md` in the one
+format the rest of the flow reads (`skills/brief/references/brief-template.md`:
+task, definition of done, evidence command, out of scope, decisions already
+made, assumptions, procedure), then `governor.py brief check` on the file.
+
+Design choices, each with its reason:
+
+- **A skill, not a hook.** `updatedInput` exists only for tool events; a
+  `UserPromptSubmit` hook can add context but cannot rewrite the prompt into
+  a brief, and it cannot ask a question.
+- **In the main session, not a fork.** `AskUserQuestion` is not available
+  inside subagents; the interview has to run where the user is.
+- **`model: sonnet` for the turn.** The rubric is fixed and the user supplies
+  the judgment, so the interview is execution, not decision. The override
+  lasts for the invoking turn; the triage on the next prompt runs on the
+  session model.
+- **Five questions, one round at a time.** spec-kit's `clarify` caps at
+  five; the Ambig-SWE finding is that engagement drops after about three
+  clarification turns. Gaps that were not asked about are written as
+  assumptions, one line each: a brief that hides its guesses is the failure
+  mode, and the user strikes a line faster than they answer a question.
+- **The lint is a script with a reason per rule.** Required headings; a
+  one-line task under 240 characters; at least two done items, each
+  checkable (a backtick, a digit, a path, or a word such as "exits 0",
+  "zero", "listed"); no vague words ("better", "properly", "as needed") in
+  the task or the done items; at least one `$` command under `## Evidence`,
+  the same contract the worker report uses; a procedure that runs
+  `/governor:triage` and never names `general-purpose` (pinned to Sonnet but
+  inheriting the session's effort, observed 2026-09-02); and the same
+  8000-character cap as the consult brief. The template does not pass its
+  own check, so an unfilled brief cannot be handed off.
+
+What the lint cannot do: judge whether the evidence command is the right
+evidence, whether the out-of-scope list is complete, or whether an
+assumption is true. It refuses the brief shapes that predictably waste a
+worker; the user reads the printed brief for the rest.
+
 ### Two operating modes
 
 - **Fable conducts.** The session is Fable; the hooks stop it from doing the
@@ -222,6 +264,12 @@ Not verified:
   reported compliantly, so the block path is covered by unit tests only.
 - Prices were taken from the Claude API skill's table (cached 2026-06-24)
   and the Fable 5.1 migration notes, not from the live pricing page.
+- The brief skill's `model: sonnet` override across the `AskUserQuestion`
+  round-trips within one turn: the docs say the override applies to the
+  invoking turn and are silent on whether a question round-trip ends it.
+- `AskUserQuestion` behaviour in `-p` mode, which is where an eval would
+  run the brief skill.
+- The `brief-writes-file` eval case, like the others, has not been run.
 
 ## Rejected
 

@@ -17,7 +17,7 @@ The rest is skills. They do not fire on their own; you name them in the brief an
 
 ```
 claude plugin list                 # governor, py-testing, prod-readiness: enabled
-claude plugin details governor     # 5 skills, 5 agents, 5 hooks
+claude plugin details governor     # 6 skills, 5 agents, 5 hooks
 ```
 
 Optional, in `~/.claude/governor.json`. Leave it out and the defaults apply: enforce mode, 15 USD budget, a one-line spend readout per turn.
@@ -56,9 +56,9 @@ The first thing in context is the governor's policy text and a spend line, unles
 
 The model reads `unknown` until the first reply has been priced; from then on it names the session model.
 
-### 2. Write the brief **(your turn)**
+### 2. Run `/governor:brief <the task in one sentence>` **(your turn)**
 
-Goal, definition of done as checkable statements, what is out of scope, and the skills by name. This is the one piece of writing the whole run depends on. A worked example for a test-suite restructure is below.
+The skill asks at most five questions, each with a recommended answer first ("whatever you think" takes it), and writes `.governor/brief.md`: the task in one line, a definition of done a script or a glance can confirm, the command whose output proves it, what is out of scope, the decisions already made, and every gap it did not ask about as an assumption you can strike. A script lints the file before you see it; the turn runs on Sonnet, and the next prompt is back on the session model. The brief is the one piece of writing the whole run depends on, and it stays in context for the next step. A worked one is below.
 
 ### 3. Read the triage table **(your turn)**
 
@@ -98,33 +98,45 @@ The test that settles most rows: if you can write the spec, it is not the expens
 
 ## A worked brief: restructure an end-to-end suite
 
-Paste as the first prompt. Replace the path. Nothing in it is specific to any organisation.
+What `/governor:brief` writes for a test-suite restructure after its interview. It passes `governor.py brief check`. Replace the path; nothing in it is specific to any organisation. Paste it into `.governor/brief.md` to skip the interview.
 
+````
+# Brief: restructure-e2e-suite
+
+## Task
+Restructure tests/e2e so every fixture has one home, every marker is registered, every test is named for what it checks, and the suite is green throughout.
+
+## Definition of done
+- [ ] the inventory diff shows zero shadowed fixtures and zero duplicated fixtures
+- [ ] unregistered markers at zero; test names in test_<unit>_<behaviour>_<condition> form
+- [ ] dead and duplicate tests deleted, each listed in .governor/plan.md with the reason
+- [ ] `pytest -q tests/e2e` exits 0 after every level; a test that was failing before is listed, not silently fixed or deleted
+- [ ] the inventory diff (`inventory.py tests --diff .governor/inventory-before.json`) is in the PR description
+
+## Evidence
 ```
-Task: assess the state of tests/e2e and make the structural improvements
-it needs. Work on a branch named refactor/e2e-structure.
-
-Definition of done:
-- shadowed and duplicated fixtures each have one home, the others are gone
-- unregistered markers at zero; test names in test_<unit>_<behaviour>_<condition> form
-- dead and duplicate tests deleted, listed in the plan with the reason
-- `pytest -q tests/e2e` is green before and after every level; a test that
-  was failing before is listed, not silently fixed or deleted
-- the inventory diff (before vs after) is in the PR description as evidence
-
-Procedure:
-- run /governor:triage first and show me the table before any work
-- /py-testing:untangling-test-suites for the inventory and the
-  keep/merge/rewrite/delete table; save the before-inventory to .governor/
-- /governor:decompose for slices and levels; /governor:delegate for each
-  slice with py-testing:test-implementer as the worker and governor:reviewer
-  on every slice; workers in worktrees
-- use the plugin agents by name, never general-purpose
-- do not implement anything inline; if a worker returns BLOCKED, answer the
-  question and re-delegate
-
-Out of scope: the application code under test, CI configuration.
+$ pytest -q tests/e2e
+$ python3 <py-testing root>/skills/untangling-test-suites/scripts/inventory.py tests --diff .governor/inventory-before.json
 ```
+
+## Out of scope
+- the application code under test
+- CI configuration
+
+## Decisions already made
+- branch refactor/e2e-structure — one branch, every level lands on it
+
+## Assumptions
+- tests/e2e collects on main before the work starts; a test failing there is listed first, not fixed
+- worktrees are available for parallel slices
+
+## Procedure
+- run /governor:triage first and show the table before any work
+- /py-testing:untangling-test-suites for the inventory and the keep/merge/rewrite/delete table; save the before-inventory to .governor/inventory-before.json
+- /governor:decompose for slices and levels; /governor:delegate for each slice with py-testing:test-implementer as the worker and governor:reviewer on every slice; workers in worktrees
+- plugin agents by name, nothing implemented inline, no other agent type
+- a BLOCKED or PARTIAL report is answered by the conductor and re-delegated
+````
 
 ## Spend, and the gate
 
@@ -144,7 +156,7 @@ Start the session on Opus instead. It reads, runs, and delegates the same way, a
 
 ## Things that bite
 
-- **A bare `general-purpose` spawn** is pinned to Sonnet but keeps a high effort setting the hook cannot rewrite. The plugin agents pin effort themselves. Say so in the brief.
+- **A bare `general-purpose` spawn** is pinned to Sonnet but keeps a high effort setting the hook cannot rewrite. The plugin agents pin effort themselves. The brief lint refuses a procedure that names it.
 - **Skills are named, not guessed.** They trigger on description match, which is not reliable enough for a run you will not watch. Name them.
 - **An installed plugin is a pinned copy.** It changes only when a new version is installed; a checkout edited in place is not seen.
 - **Headless slices need the install path.** Inside a skill, `${CLAUDE_PLUGIN_ROOT}` resolves; from a shell, the engine lives under `~/.claude/plugins/cache/konyklabs-plugins/governor/<version>/bin/governor.py`.
