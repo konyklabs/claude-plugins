@@ -88,7 +88,8 @@ For a whole level of a plan, do not loop by hand; the supervisor does it:
 python3 "${CLAUDE_PLUGIN_ROOT}/bin/governor.py" run-level .governor/plan.json --level 1
 ```
 
-One worker per slice (spec at `.governor/specs/<id>.md`), each in its own
+One worker per slice (spec at `.governor/specs/<id>.md`; the dollar cap is
+per slice across attempts, a retry runs under what is left), each in its own
 worktree under `.governor/wt/<plan>/<id>` on branch `<plan>/<id>`, a bounded number
 at once, a retry with backoff when a worker dies on an API overload, one
 `VERDICT:` line per slice and a `LEVEL n:` summary. The index under

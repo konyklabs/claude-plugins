@@ -1562,3 +1562,32 @@ def test_run_level_setup_runs_once_per_new_worktree_and_failure_fails_the_slice(
     r = _run_level(base_env, str(plan3), "--level", "0", "--parallel", "1", "--backoff", "0", "--setup", f"echo z >> {marker3}", FAKE_JSON="1")
     assert r.returncode == 1 and "VERDICT: FAILED slice=big attempts=0" in r.stdout and "spec check" in r.stdout
     assert not (env["project"] / ".governor" / "wt" / "p3").exists() and not marker3.exists()
+
+
+def test_run_level_refuses_repeated_ids_and_retries_under_the_remaining_budget(env, tmp_path):
+    plan, base_env = _level_fixture(tmp_path, env)
+    plan.write_text(json.dumps({"name": "p1", "slices": [{"id": "a"}, {"id": "b"}], "levels": [["a", "a", "b"]]}))
+    r = _run_level(base_env, str(plan), "--level", "0", "--no-worktree", "--backoff", "0")
+    assert r.returncode == 2 and "repeated in level 0" in r.stdout and "VERDICT" not in r.stdout
+    r = run_cli(env, ["plan", "check", str(plan)])
+    assert r.returncode == 1 and "levels repeat a slice id" in r.stdout
+    plan.write_text(json.dumps({"name": "p1", "slices": [{"id": "a"}, {"id": "b"}], "levels": [["a"]]}))
+    r = run_cli(env, ["plan", "check", str(plan)])
+    assert r.returncode == 1 and "exactly the plan's slices" in r.stdout
+    plan.write_text(json.dumps({"name": "p1", "slices": [{"id": "a"}, {"id": "b", "deps": ["a"]}], "levels": [["a", "b"]]}))
+    r = run_cli(env, ["plan", "check", str(plan)])
+    assert r.returncode == 1 and "differ from the order" in r.stdout
+    plan.write_text(json.dumps({"name": "p1", "slices": [{"id": "a"}, {"id": "b"}], "levels": [["a", "b"]]}))
+    assert run_cli(env, ["plan", "check", str(plan)]).returncode == 0
+    # each attempt runs under what is left of the slice's cap; the fake dies on an overload after spending
+    fake = tmp_path / "bin" / "claude"
+    fake.write_text("#!/bin/sh\ncat > /dev/null\nfor a in \"$@\"; do if [ \"$prev\" = \"--max-budget-usd\" ]; then echo \"$a\" >> \"$FAKE_CAPS\"; fi; prev=\"$a\"; done\npython3 -c 'import json; print(json.dumps({\"type\": \"result\", \"subtype\": \"error_during_execution\", \"is_error\": True, \"errors\": [\"API Error: 529 Overloaded\"], \"total_cost_usd\": 0.6, \"session_id\": \"s\"}))'\nexit 1\n")
+    fake.chmod(0o755)
+    caps = tmp_path / "caps"
+    plan.write_text(json.dumps({"name": "p1", "slices": [{"id": "a"}], "levels": [["a"]]}))
+    r = _run_level(base_env, str(plan), "--level", "0", "--no-worktree", "--backoff", "0", "--retries", "5", "--budget", "1.5", "--parallel", "1", FAKE_CAPS=str(caps))
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert caps.read_text().split() == ["1.5", "0.9", "0.3"]
+    assert "budget exhausted" in r.stdout and "VERDICT: FAILED slice=a attempts=3" in r.stdout
+    idx = json.loads((env["project"] / ".governor" / "runs" / "p1" / "level-0.json").read_text())
+    assert idx["slices"]["a"]["attempts"] == 3 and idx["slices"]["a"]["cost"] == 1.8

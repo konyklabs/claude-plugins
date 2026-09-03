@@ -211,7 +211,9 @@ is reused only when it is on that branch), at most `LEVEL_PARALLEL` at
 once, up to `LEVEL_RETRIES` outer retries with doubling backoff when the
 process died on something `TRANSIENT_RE` recognises (overload, rate limit,
 5xx, connection reset), and never a retry on anything else, because that
-would spend the budget on the same failure; the allowance is per invocation,
+would spend the budget on the same failure; a retry runs under the budget
+remaining for the slice, never a fresh cap, so a slice can cost at most its
+cap however many attempts it takes; the allowance is per invocation,
 the index keeps the cumulative count. Every attempt updates the index under
 `.governor/runs/<plan>/level-N.json` and writes its own report file; a rerun
 skips a DONE slice only while the digest of its spec is unchanged, and `runs`

@@ -1612,6 +1612,17 @@ def cmd_plan(args: List[str]) -> int:
         print("slices must be a list of objects")
         return 2
     levels, errors = plan_levels(slices)
+    if args[0] == "check" and isinstance(data, dict) and "levels" in data:
+        # run-level trusts the levels key verbatim, so check says whether it still matches the slices.
+        given = data["levels"]
+        flat = [str(i) for lvl in (given if isinstance(given, list) else []) for i in (lvl if isinstance(lvl, list) else [])]
+        if len(set(flat)) != len(flat):
+            errors.append("levels repeat a slice id")
+        known = {str(x.get("id")) for x in slices}
+        if set(flat) != known:
+            errors.append("levels do not name exactly the plan's slices; rebuild with 'plan build'")
+        elif [[str(i) for i in lvl] for lvl in given] != levels:
+            errors.append("levels differ from the order the dependencies require; rebuild with 'plan build'")
     if errors:
         print("PLAN INVALID")
         for e in errors:
@@ -1669,6 +1680,8 @@ SPEC_MAX_CHARS = 8000
 # A worktree setup command (an environment install) that runs longer than
 # this is a problem to look at, not to wait for.
 SETUP_TIMEOUT_S = 600.0
+# Below this much remaining budget a retry cannot do anything but die again.
+WORKER_MIN_BUDGET_USD = 0.05
 # More done items than this, or more files to change, and the slice is
 # doing several jobs (decompose skill: one to five files per slice).
 SPEC_MAX_DONE = 6
@@ -2004,7 +2017,12 @@ def cmd_run_level(args: List[str], cfg: Dict[str, Any], project_dir: Optional[st
     name = path_label(str(plan.get("name") or Path(plan_path).stem))
     # Two ids that map to one label would share a worktree; refuse before anything runs.
     labels: Dict[str, str] = {}
+    seen: set = set()
     for sid in ids:
+        if sid in seen or sid not in slices:
+            print(f"slice id {clean_label(sid)!r} is repeated in level {level} or is not in the plan's slices; run 'plan check'")
+            return 2
+        seen.add(sid)
         if not ID_RE.match(sid) or labels.setdefault(path_label(sid), sid) != sid:
             print(f"slice id {clean_label(sid)!r} is not a safe path component or collides with {clean_label(labels.get(path_label(sid), ''))!r}; ids must match [A-Za-z0-9][A-Za-z0-9._-]*")
             return 2
@@ -2137,7 +2155,16 @@ def cmd_run_level(args: List[str], cfg: Dict[str, Any], project_dir: Optional[st
             with lock:
                 entry.update(state="running", attempts=attempt)
                 save()
-            result = run_worker_once(str(spec), agent, budget, out_dir, cfg, cwd=cwd, timeout=timeout, slug=sid, attempt=attempt)
+            # The cap is per slice across attempts: a retry runs under what is left, never a fresh cap.
+            remaining = round(float(budget) - float(entry.get("cost") or 0.0), 4)
+            if remaining < WORKER_MIN_BUDGET_USD:
+                result = {"verdict": "FAILED", "error": f"budget exhausted: ${float(entry.get('cost') or 0.0):.2f} of ${float(budget):.2f} spent over {attempt - 1} attempt(s)",
+                          "transient": False, "cost": 0.0, "report": None, "session_id": None, "problems": [], "warnings": []}
+                with lock:
+                    entry["attempts"] = attempt - 1
+                attempt -= 1
+                break
+            result = run_worker_once(str(spec), agent, str(remaining), out_dir, cfg, cwd=cwd, timeout=timeout, slug=sid, attempt=attempt)
             with lock:
                 entry["cost"] = round(float(entry.get("cost") or 0.0) + float(result.get("cost") or 0.0), 4)
                 entry.update(report=result.get("report") or entry.get("report"), session_id=result.get("session_id") or entry.get("session_id"),
