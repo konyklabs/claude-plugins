@@ -96,7 +96,11 @@ DEFAULTS: Dict[str, Any] = {
     # "enforce": deny, rewrite and block as documented. "observe": keep the
     # ledger and the readout, never change or refuse anything; for measuring
     # a workflow before governing it, or for a session that must not be
-    # interrupted.
+    # interrupted. "explore": for a loosely defined question; rigor attaches
+    # to the first push, not to the start of work, so before it a session may
+    # work loosely while the protections that cost nothing stay on (workers
+    # pinned, forks denied, spend tracked); report contracts are off and the
+    # budget is a one-time checkpoint instead of a wall.
     "mode": "enforce",
     # "line": one spend line per turn in context. "start": only at
     # SessionStart. "off": nothing in context; use the status line or
@@ -133,6 +137,7 @@ TIGHTEN_ONLY = {
 }
 NUMERIC_KEYS = {"budget_usd": float, "warn_at": float, "max_expensive_spawns": int, "brief_max_chars": int, "max_report_blocks": int}
 
+MODES = ("enforce", "observe", "explore")
 CONFIG_FILENAME = "governor.json"
 STATE_DIR_ARG: Optional[str] = None  # set from --state-dir before anything touches the state
 
@@ -226,6 +231,9 @@ def load_config(project_dir: Optional[str]) -> Dict[str, Any]:
                     continue
             elif isinstance(DEFAULTS[k], str) and not isinstance(v, str):
                 ignored.append(f"{p}: {k} must be a string")
+                continue
+            if k == "mode" and v not in MODES:
+                ignored.append(f"{p}: mode must be one of {', '.join(MODES)}, got {v!r}")
                 continue
             if is_project and k in TIGHTEN_ONLY and _would_loosen(k, v, cfg[k]):
                 ignored.append(f"{p}: {k}={v!r} would loosen the user's {cfg[k]!r}; project files may only tighten")
@@ -365,6 +373,7 @@ class Ledger:
             "spawns": [],
             "expensive_spawns": 0,
             "warned": False,
+            "explore_checkpoint": False,  # the one deny explore mode issues at the budget
             "report_blocks": {},
             "pending_tool_uses": {},
             "unpriced_models": [],
@@ -1080,11 +1089,22 @@ def policy_text(ledger: Ledger, cfg: Dict[str, Any]) -> str:
     return text + "\n\n" + ledger.readout(cfg)
 
 
+EXPLORE_TEXT = (
+    "governor is in explore mode, for a loosely defined question. Workers are pinned to cheap models and\n"
+    "forks are denied; report contracts are off, prose answers are fine; the budget is a checkpoint, not a\n"
+    "wall: at the number, one tool call is denied with the question ship, spike or drop, then work continues\n"
+    "with the user's answer. When something is worth keeping, run /governor:brief, which returns to enforce.\n"
+    "Write what was learned to .governor/explore.md before the session ends."
+)
+
+
 def h_session_start(hook: Dict[str, Any], cfg: Dict[str, Any], ledger: Ledger) -> Dict[str, Any]:
     ledger.note_hook_context(hook)
     ledger.update(hook.get("transcript_path"))
     if cfg.get("readout") == "off":
         return {}
+    if cfg.get("mode") == "explore":
+        return {"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": EXPLORE_TEXT + "\n" + ledger.readout(cfg)}}
     if cfg.get("mode") == "observe":
         return {"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": "governor is in observe mode: spend is tracked, nothing is enforced.\n" + ledger.readout(cfg)}}
     return {
@@ -1136,7 +1156,24 @@ def h_pre_tool_use(hook: Dict[str, Any], cfg: Dict[str, Any], ledger: Ledger, pr
     budget = float(cfg["budget_usd"])
     gated = cfg["enforce_budget"] and is_expensive(caller_model, cfg)
     cheap_delegation = decision is not None and decision["action"] in ("rewrite", "allow") and not is_expensive(decision.get("model"), cfg)
-    if gated and spend >= budget and not cheap_delegation:
+    if cfg.get("mode") == "explore" and gated and spend >= budget and not cheap_delegation:
+        # Explore: the budget is a checkpoint. Deny exactly once, with the
+        # question, then get out of the way; a wall blocked its own escape
+        # hatch in the field, a checkpoint hands the decision to the human.
+        if not ledger.state.get("explore_checkpoint"):
+            ledger.state["explore_checkpoint"] = True
+            return {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": (
+                        f"governor explore checkpoint: expensive-tier ${spend:.2f} of ${budget:.2f} reached."
+                        " Stop and ask the user: ship (run /governor:brief), spike (write .governor/explore.md and stop),"
+                        " or drop. Further tool calls are allowed; continue only with their answer."
+                    ),
+                }
+            }
+    elif gated and spend >= budget and not cheap_delegation:
         return {
             "hookSpecificOutput": {
                 "hookEventName": "PreToolUse",
@@ -1172,7 +1209,7 @@ def h_pre_tool_use(hook: Dict[str, Any], cfg: Dict[str, Any], ledger: Ledger, pr
 
 def h_subagent_stop(hook: Dict[str, Any], cfg: Dict[str, Any], ledger: Ledger) -> Dict[str, Any]:
     ledger.update(hook.get("transcript_path"))
-    if not cfg["enforce_reports"] or cfg.get("mode") == "observe":
+    if not cfg["enforce_reports"] or cfg.get("mode") in ("observe", "explore"):
         return {}
     transcript = agent_transcript_for(hook)
     atype = agent_type_for(hook, transcript)
@@ -1214,6 +1251,7 @@ def h_session_end(hook: Dict[str, Any], cfg: Dict[str, Any], ledger: Ledger) -> 
                 "cwd": hook.get("cwd"),
                 "reason": hook.get("reason"),
                 "main_model": ledger.main_model(),
+                "mode": cfg.get("mode"),
                 "expensive_usd": round(ledger.expensive_spend(cfg), 4),
                 "total_usd": round(ledger.total_spend(), 4),
                 "models": ledger.state["models"],
@@ -1241,6 +1279,68 @@ def cmd_status(args: List[str], cfg: Dict[str, Any]) -> int:
     return 0
 
 
+def _scope(args: List[str]) -> Optional[str]:
+    return "project" if "--project" in args else "user" if "--user" in args else None
+
+
+def write_setting(key: str, value: Any, project_dir: Optional[str], scope: Optional[str]) -> Path:
+    """Write one config key. scope None: this project's entry under
+    'projects' in the user's file (the default, and the only place a raise
+    or a mode change can come from); 'user': the user's file top level;
+    'project': the project's .claude/governor.json, which may only tighten."""
+    if scope == "project":
+        target = Path(project_dir or ".") / ".claude" / CONFIG_FILENAME
+    else:
+        target = Path.home() / ".claude" / CONFIG_FILENAME
+    data: Dict[str, Any] = {}
+    try:
+        data = json.loads(target.read_text())
+    except (OSError, ValueError):
+        pass
+    if not isinstance(data, dict):
+        data = {}
+    if scope in ("project", "user"):
+        data[key] = value
+    else:
+        pkey = str(Path(project_dir or ".").resolve())
+        data.setdefault("projects", {})
+        if not isinstance(data["projects"], dict):
+            data["projects"] = {}
+        data["projects"].setdefault(pkey, {})[key] = value
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(data, indent=2) + "\n")
+    return target
+
+
+def cmd_mode(args: List[str], cfg: Dict[str, Any], project_dir: Optional[str]) -> int:
+    """Show or set the governor mode. Usage: governor.py mode [show|explore|enforce|observe] [--user|--project]"""
+    usage = "usage: governor.py mode [show|explore|enforce|observe] [--user|--project]"
+    verb = next((a for a in args if not a.startswith("--")), "show")
+    if verb == "show":
+        print(f"mode: {cfg['mode']}")
+        print("config files (low to high precedence): " + ", ".join(str(p) for p in config_paths(project_dir)))
+        for note in cfg.get("_ignored", []):
+            print(f"ignored: {note}")
+        return 0
+    if verb not in MODES:
+        print(usage)
+        return 2
+    scope = _scope(args)
+    if scope == "project" and verb != "enforce":
+        # A repository can make the session stricter for whoever opens it,
+        # never looser; explore and observe are the user's own decision.
+        print(f"a project file may only set mode=enforce; {verb} belongs in your own ~/.claude/{CONFIG_FILENAME} (drop --project)")
+        return 2
+    target = write_setting("mode", verb, project_dir, scope)
+    effective = load_config(project_dir)
+    if effective["mode"] != verb:
+        print(f"mode={verb} written to {target}, but the effective mode is {effective['mode']}: a higher-precedence entry wins"
+              " (this project's entry in your user file, or a project file; see 'mode show'). " + "; ".join(effective.get("_ignored", [])[-2:]))
+        return 1
+    print(f"mode={verb} written to {target}. Applies from the next hook call.")
+    return 0
+
+
 def cmd_budget(args: List[str], cfg: Dict[str, Any], project_dir: Optional[str]) -> int:
     if not args or args[0] == "show":
         print(f"budget_usd: {cfg['budget_usd']}  worker_model: {cfg['worker_model']}  allow_fork: {cfg['allow_fork']}  max_expensive_spawns: {cfg['max_expensive_spawns']}")
@@ -1259,27 +1359,7 @@ def cmd_budget(args: List[str], cfg: Dict[str, Any], project_dir: Optional[str])
             return 2
         # Default: this project's entry in the user's own file, which is the
         # only place a raise can come from (a project file may only tighten).
-        if "--project" in args:
-            target = Path(project_dir or ".") / ".claude" / CONFIG_FILENAME
-        else:
-            target = Path.home() / ".claude" / CONFIG_FILENAME
-        data: Dict[str, Any] = {}
-        try:
-            data = json.loads(target.read_text())
-        except (OSError, ValueError):
-            pass
-        if not isinstance(data, dict):
-            data = {}
-        if "--project" in args or "--user" in args:
-            data["budget_usd"] = value
-        else:
-            key = str(Path(project_dir or ".").resolve())
-            data.setdefault("projects", {})
-            if not isinstance(data["projects"], dict):
-                data["projects"] = {}
-            data["projects"].setdefault(key, {})["budget_usd"] = value
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(json.dumps(data, indent=2) + "\n")
+        target = write_setting("budget_usd", value, project_dir, _scope(args))
         effective = load_config(project_dir)
         if float(effective["budget_usd"]) != value:
             print(f"budget_usd={value} written to {target}, but the effective budget is {effective['budget_usd']}:"
@@ -1651,6 +1731,8 @@ def main(argv: List[str]) -> int:
         return cmd_status(args, cfg)
     if event == "budget":
         return cmd_budget(args, cfg, project_dir)
+    if event == "mode":
+        return cmd_mode(args, cfg, project_dir)
     if event == "statusline":
         return cmd_statusline(cfg)
     if event == "statusline-snippet":
