@@ -811,16 +811,23 @@ def bash_commands_in(transcript: Optional[Path]) -> Optional[List[str]]:
     return cmds
 
 
-def evidence_commands(text: str) -> List[str]:
-    m = heading_re("Evidence").search(text)
-    if not m:
-        return []
-    out = []
-    for fence in FENCE_RE.findall(text[m.end():]):
+def fenced_commands(body: str) -> List[str]:
+    """Every '$ ' line inside a fenced block of ``body``, whitespace-normalised."""
+    out: List[str] = []
+    for fence in FENCE_RE.findall(body):
         for line in fence.splitlines():
             if line.startswith("$ ") and line[2:].strip():
                 out.append(" ".join(line[2:].split()))
     return out
+
+
+def evidence_commands(text: str) -> List[str]:
+    """Commands under '## Evidence' to the end of the text: a worker report
+    ends with its evidence, so the whole tail is the section."""
+    m = heading_re("Evidence").search(text)
+    if not m:
+        return []
+    return fenced_commands(text[m.end():])
 
 
 def report_problems(text: str, contract: str, ran: Optional[List[str]] = None) -> List[str]:
@@ -893,19 +900,25 @@ VAGUE_WORDS = ("better", "cleaner", "clean up", "properly", "improve", "robust",
 PATHLIKE_RE = re.compile(r"/|\w\.[A-Za-z]{1,4}\b(?!\.)")
 CHECKABLE_RE = re.compile(r"`|\d|" + "|".join(rf"\b{re.escape(w)}\b" for w in CHECKABLE_WORDS), re.I)
 VAGUE_RE = re.compile("|".join(rf"\b{re.escape(w)}\b" for w in VAGUE_WORDS), re.I)
-DONE_ITEM_RE = re.compile(r"^\s*[-*]\s*(?:\[[ xX]\]\s*)?(.*)$")
+# A list item: '- ', '* ', '1. ' or '1) ', optionally followed by a checkbox.
+# The marker needs whitespace after it, so '---' is a rule, not an item.
+DONE_ITEM_RE = re.compile(r"^\s*(?:[-*]|\d+[.)])\s+(?:\[[ xX]\]\s*)?(.*)$")
+# A line with no word character (a horizontal rule, an empty bullet, a bare
+# fence) is layout, not a check, and is neither an item nor part of one.
+LAYOUT_LINE_RE = re.compile(r"^[\W_]*$")
 
 
 def done_items(body: str) -> List[str]:
-    """Bullet items of a section ('- ' or '- [ ] '), each with its indented
-    continuation lines joined, so a wrapped item is checked whole."""
+    """List items of a section, each with its continuation lines joined, so
+    a wrapped item is checked whole."""
     items: List[str] = []
     for line in body.splitlines():
-        if not line.strip():
+        if LAYOUT_LINE_RE.match(line):
             continue
         m = DONE_ITEM_RE.match(line)
-        if m and line.lstrip().startswith(("-", "*")):
-            items.append(m.group(1).strip())
+        if m:
+            if not LAYOUT_LINE_RE.match(m.group(1)):
+                items.append(m.group(1).strip())
         elif items:
             items[-1] = items[-1] + " " + line.strip()
     return items
@@ -957,8 +970,10 @@ def brief_check_problems(text: str, cfg: Dict[str, Any]) -> List[str]:
     for where, chunk in places:
         for w in vague_words_in(chunk):
             problems.append(f"vague word '{w}' in {where}: say what is observable instead")
-    # 5. The evidence block is the same contract the worker report uses.
-    if has_heading(text, "Evidence") and not evidence_commands(text):
+    # 5. The evidence block is the same contract the worker report uses, read
+    #    from the Evidence section only: four sections follow it in a brief,
+    #    and a '$ ' line under Procedure is not evidence.
+    if has_heading(text, "Evidence") and not fenced_commands(section_body(text, "Evidence")):
         problems.append("'## Evidence' needs a fenced block with the command on a '$ ' line")
     # 6. The procedure starts with triage (the table before any work is the
     #    point of the flow) and never names general-purpose: that spawn is
@@ -969,7 +984,7 @@ def brief_check_problems(text: str, cfg: Dict[str, Any]) -> List[str]:
         if "/governor:triage" not in proc:
             problems.append("'## Procedure' must run /governor:triage: the table comes before any work")
         if "general-purpose" in proc:
-            problems.append("'## Procedure' names general-purpose: it is pinned to Sonnet but inherits the session's effort; name the plugin agents instead")
+            problems.append("'## Procedure' names general-purpose: do not name it at all, even to forbid it; it is pinned to Sonnet but inherits the session's effort, so name the plugin agents instead")
     # 7. Same cap as the consult brief: longer is pasting material the
     #    workers should read themselves.
     if len(text) > int(cfg["brief_max_chars"]):

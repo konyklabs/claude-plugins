@@ -897,6 +897,12 @@ def test_brief_rule_3_done_items_are_two_and_checkable():
     wrapped = replace_section(GOOD_BRIEF, "Definition of done", "- [ ] `pytest -q tests/api` exits 0\n- [ ] a test that was failing before\n  is listed, not fixed\n\n")
     assert brief_problems_of(wrapped) == []
     assert governor.done_items("- [ ] a test that\n  was failing is listed\n- second\n") == ["a test that was failing is listed", "second"]
+    assert governor.done_items("1. `a` exits 0\n2) [ ] b is zero\n3. c is listed\n") == ["`a` exits 0", "b is zero", "c is listed"]
+    assert governor.done_items("---\n- [ ] `a` exits 0\n---\n- \n-\n* ---\n- b is zero\n") == ["`a` exits 0", "b is zero"]
+    numbered = replace_section(GOOD_BRIEF, "Definition of done", "1. `pytest -q tests/api` exits 0\n2. `git status --short` lists only tests/api\n3. tests/api/conftest.py exists\n\n")
+    assert brief_problems_of(numbered) == []
+    ruled = replace_section(GOOD_BRIEF, "Definition of done", "---\n- [ ] `pytest -q tests/api` exits 0\n\n")
+    assert any("at least 2 items, found 1" in p for p in brief_problems_of(ruled))
 
 
 def test_brief_rule_4_vague_words():
@@ -912,6 +918,12 @@ def test_brief_rule_5_evidence_command():
     assert "'## Evidence' needs a fenced block with the command on a '$ ' line" in brief_problems_of(prose)
     no_dollar = replace_section(GOOD_BRIEF, "Evidence", "```\npytest -q tests/api\n```\n\n")
     assert any("'$ '" in p for p in brief_problems_of(no_dollar))
+    # A '$ ' fence under a later section is not evidence: the scan is bounded to the Evidence body.
+    undecided = replace_section(GOOD_BRIEF, "Evidence", "to be decided\n\n")
+    below = replace_section(undecided, "Procedure", "- run /governor:triage first\n```\n$ ls\n```\n")
+    assert any("'## Evidence' needs" in p for p in brief_problems_of(below)), brief_problems_of(below)
+    assert governor.evidence_commands(below) == ["ls"]  # the report contract still reads to the end
+    assert governor.fenced_commands(governor.section_body(below, "Evidence")) == []
 
 
 def test_brief_rule_6_procedure():
@@ -1006,7 +1018,7 @@ def test_section_body_ignores_hashes_inside_fences():
         "vague word 'cleaner' in definition of done item 2: say what is observable instead",
         "vague word 'properly' in definition of done item 2: say what is observable instead",
     ]
-    assert [p for p in problems if "general-purpose" in p] == ["'## Procedure' names general-purpose: it is pinned to Sonnet but inherits the session's effort; name the plugin agents instead"]
+    assert [p for p in problems if "general-purpose" in p] == ["'## Procedure' names general-purpose: do not name it at all, even to forbid it; it is pinned to Sonnet but inherits the session's effort, so name the plugin agents instead"]
     assert len(problems) == 4, problems
     # A bare '#' line, or '#' without a space, is not a heading and does not end the section.
     assert governor.section_body("## Task\nline\n#\n#tag\n## Next\nno", "Task") == "line\n#\n#tag"

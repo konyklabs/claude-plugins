@@ -88,8 +88,10 @@ python3 "${CLAUDE_PLUGIN_ROOT}/bin/governor.py" brief check .governor/brief.md
 `OK` or `NONCOMPLIANT` with one line per problem: a missing heading, a task
 that is not one line, a done item nothing can check, a vague word, no
 evidence command, a procedure without triage or one naming
-`general-purpose`, a brief over the size cap. Fix each problem and re-run,
-at most twice. If it is still NONCOMPLIANT, show the problems and stop; do
+`general-purpose`, a brief over the size cap. The procedure must not name
+`general-purpose` at all, not even to forbid it: the check is a substring
+match, and the plugin agents are the whole list. Fix each problem and
+re-run, at most twice. If it is still NONCOMPLIANT, show the problems and stop; do
 not hand off a brief the flow cannot use. The lint cannot tell whether the
 evidence is the right evidence; that is the user's read of the printed
 brief.
