@@ -4,11 +4,15 @@
 Two callers share this file:
 
 * Claude Code hooks. Each hook event runs ``governor.py <event>`` with the hook's
-  JSON on stdin and reads the JSON this prints on stdout. Exit 0 always: a
-  broken guardrail must never lock a session; errors go to the log file
-  instead (see ``STATE_DIR``).
-* The ``/governor:budget`` skill, which runs ``governor.py status`` and
-  ``governor.py budget ...`` to show or change the session budget.
+  JSON on stdin and reads the JSON this prints on stdout. For these events, exit
+  0 always: a broken guardrail must never lock a session; errors go to the log
+  file instead (see ``STATE_DIR`` and ``HOOK_EVENTS``).
+* The skills, which run subcommands instead of reasoning a step out:
+  ``status`` and ``budget`` (the ledger), ``check-report`` (a worker report
+  against its contract), ``brief check`` and ``brief template`` (the task
+  brief), ``plan`` (slices to levels), ``run-worker`` (a headless slice).
+  These fail closed: an input the verb cannot read is a NONCOMPLIANT verdict,
+  and an unexpected error exits 1 with one line on stderr.
 
 Standard library only, Python 3.9+. Every constant carries the reason for its
 value. Anything that reads the transcript is incremental: the ledger stores a
@@ -660,7 +664,7 @@ def declared_model(subagent_type: str, cfg: Dict[str, Any], project_dir: Optiona
 def brief_problems(prompt: str, cfg: Dict[str, Any]) -> List[str]:
     problems = []
     for h in cfg["brief_headings"]:
-        if not re.search(rf"^#{{1,6}}\s*{re.escape(h)}\b", prompt, re.M | re.I):
+        if not has_heading(prompt, h):
             problems.append(f"missing heading '## {h}'")
     if len(prompt) > int(cfg["brief_max_chars"]):
         problems.append(f"brief is {len(prompt)} chars, limit {cfg['brief_max_chars']}: point at files instead of pasting them")
@@ -743,6 +747,45 @@ def agent_policy(tool_input: Dict[str, Any], cfg: Dict[str, Any], ledger: Ledger
 FENCE_RE = re.compile(r"```[^\n]*\n(.*?)```", re.S)
 
 
+def heading_re(h: str) -> "re.Pattern[str]":
+    """A markdown heading of any level whose text starts with ``h``; the one
+    regex every heading check in this file uses."""
+    return re.compile(rf"^#{{1,6}}\s*{re.escape(h)}\b", re.M | re.I)
+
+
+def has_heading(text: str, h: str) -> bool:
+    return heading_re(h).search(text) is not None
+
+
+# A fence opener or closer: three or more backticks or tildes, optionally
+# indented (a fence inside a list item is indented).
+FENCE_LINE_RE = re.compile(r"^\s*(`{3,}|~{3,})")
+# A heading needs whitespace after the hashes: a bare '#' line, or '#undo' in
+# a shell snippet, is not one.
+SECTION_END_RE = re.compile(r"^#{1,6}\s")
+
+
+def section_body(text: str, h: str) -> str:
+    """The text between the heading line and the next heading line that is
+    outside a fenced block; empty when the heading is absent. A '#' inside a
+    fence is a comment, not a heading, so the walk tracks fences: otherwise a
+    fenced shell snippet would end the section early and hide the lines after
+    it from every rule that reads this body."""
+    m = heading_re(h).search(text)
+    if not m:
+        return ""
+    lines = text[m.end():].split("\n")[1:]  # drop the rest of the heading line
+    out: List[str] = []
+    in_fence = False
+    for line in lines:
+        if FENCE_LINE_RE.match(line):
+            in_fence = not in_fence
+        elif not in_fence and SECTION_END_RE.match(line):
+            break
+        out.append(line)
+    return "\n".join(out)
+
+
 def bash_commands_in(transcript: Optional[Path]) -> Optional[List[str]]:
     """Every Bash command the agent actually ran, or None when the transcript
     is not available (then only the shape of the evidence can be checked)."""
@@ -768,16 +811,23 @@ def bash_commands_in(transcript: Optional[Path]) -> Optional[List[str]]:
     return cmds
 
 
-def evidence_commands(text: str) -> List[str]:
-    m = re.search(r"^#{1,6}\s*Evidence\b", text, re.M | re.I)
-    if not m:
-        return []
-    out = []
-    for fence in FENCE_RE.findall(text[m.end():]):
+def fenced_commands(body: str) -> List[str]:
+    """Every '$ ' line inside a fenced block of ``body``, whitespace-normalised."""
+    out: List[str] = []
+    for fence in FENCE_RE.findall(body):
         for line in fence.splitlines():
             if line.startswith("$ ") and line[2:].strip():
                 out.append(" ".join(line[2:].split()))
     return out
+
+
+def evidence_commands(text: str) -> List[str]:
+    """Commands under '## Evidence' to the end of the text: a worker report
+    ends with its evidence, so the whole tail is the section."""
+    m = heading_re("Evidence").search(text)
+    if not m:
+        return []
+    return fenced_commands(text[m.end():])
 
 
 def report_problems(text: str, contract: str, ran: Optional[List[str]] = None) -> List[str]:
@@ -788,17 +838,14 @@ def report_problems(text: str, contract: str, ran: Optional[List[str]] = None) -
     them, so a report cannot show output for a command that never ran."""
     problems: List[str] = []
 
-    def has_heading(h: str) -> bool:
-        return re.search(rf"^#{{1,6}}\s*{re.escape(h)}\b", text, re.M | re.I) is not None
-
     if contract == "worker":
-        if not has_heading("Result"):
+        if not has_heading(text, "Result"):
             problems.append("missing '## Result' with one of DONE, PARTIAL, BLOCKED")
         elif not re.search(r"^#{1,6}\s*Result\b[^\n]*\n\s*(?:\*\*)?(DONE|PARTIAL|BLOCKED)\b", text, re.M | re.I) and not re.search(r"^#{1,6}\s*Result\b[^\n]*\b(DONE|PARTIAL|BLOCKED)\b", text, re.M | re.I):
             problems.append("'## Result' must state DONE, PARTIAL or BLOCKED on its first line")
-        if not has_heading("Changed files"):
+        if not has_heading(text, "Changed files"):
             problems.append("missing '## Changed files' (a list, or 'none')")
-        if not has_heading("Evidence"):
+        if not has_heading(text, "Evidence"):
             problems.append("missing '## Evidence'")
         else:
             cmds = evidence_commands(text)
@@ -812,7 +859,7 @@ def report_problems(text: str, contract: str, ran: Optional[List[str]] = None) -
                 if fake:
                     problems.append("evidence shows commands this session never ran: " + "; ".join(fake[:3]) + ". Run them and paste the real output")
     elif contract == "scout":
-        if not has_heading("Findings"):
+        if not has_heading(text, "Findings"):
             problems.append("missing '## Findings' with path:line references")
         elif not re.search(r"\S+\.\w+:\d+", text):
             problems.append("'## Findings' must cite at least one path:line")
@@ -828,6 +875,120 @@ def report_problems(text: str, contract: str, ran: Optional[List[str]] = None) -
                 break
         if not ok:
             problems.append("must end with a fenced JSON block {\"findings\": [...]} where every finding has a failure_scenario")
+    return problems
+
+
+# --------------------------------------------------------------------------- task brief (governor.py brief)
+
+# The brief format has one home: the file the brief skill fills in.
+BRIEF_TEMPLATE = PLUGIN_ROOT / "skills" / "brief" / "references" / "brief-template.md"
+# Headings the rest of the flow reads by name. "Decisions already made" is not
+# here because a fresh task can honestly have none.
+BRIEF_REQUIRED_HEADINGS = ("Task", "Definition of done", "Evidence", "Out of scope", "Assumptions", "Procedure")
+# A goal that needs two sentences is two tasks; 240 chars is a long sentence.
+BRIEF_TASK_MAX_CHARS = 240
+# One done item is the task restated; the second is the first real check.
+BRIEF_MIN_DONE_ITEMS = 2
+# States a script or a glance can confirm. A done item with none of these, no
+# backtick, no digit and no path is an opinion, and the worker will hold a
+# different one.
+CHECKABLE_WORDS = ("exits 0", "green", "passes", "zero", "none", "exists", "listed", "deleted", "unchanged", "identical")
+# Each of these is a judgment the worker will make differently from the author.
+VAGUE_WORDS = ("better", "cleaner", "clean up", "properly", "improve", "robust", "nice", "good", "as needed", "etc", "and so on", "works well", "correctly")
+# A path: a slash, or a dot followed by a short extension inside a word
+# ("conftest.py", "plan.md"); "e.g." and "i.e." are excluded by the trailing dot.
+PATHLIKE_RE = re.compile(r"/|\w\.[A-Za-z]{1,4}\b(?!\.)")
+CHECKABLE_RE = re.compile(r"`|\d|" + "|".join(rf"\b{re.escape(w)}\b" for w in CHECKABLE_WORDS), re.I)
+VAGUE_RE = re.compile("|".join(rf"\b{re.escape(w)}\b" for w in VAGUE_WORDS), re.I)
+# A list item: '- ', '* ', '1. ' or '1) ', optionally followed by a checkbox.
+# The marker needs whitespace after it, so '---' is a rule, not an item.
+DONE_ITEM_RE = re.compile(r"^\s*(?:[-*]|\d+[.)])\s+(?:\[[ xX]\]\s*)?(.*)$")
+# A line with no word character (a horizontal rule, an empty bullet, a bare
+# fence) is layout, not a check, and is neither an item nor part of one.
+LAYOUT_LINE_RE = re.compile(r"^[\W_]*$")
+
+
+def done_items(body: str) -> List[str]:
+    """List items of a section, each with its continuation lines joined, so
+    a wrapped item is checked whole."""
+    items: List[str] = []
+    for line in body.splitlines():
+        if LAYOUT_LINE_RE.match(line):
+            continue
+        m = DONE_ITEM_RE.match(line)
+        if m:
+            if not LAYOUT_LINE_RE.match(m.group(1)):
+                items.append(m.group(1).strip())
+        elif items:
+            items[-1] = items[-1] + " " + line.strip()
+    return items
+
+
+def is_checkable(item: str) -> bool:
+    return bool(CHECKABLE_RE.search(item) or PATHLIKE_RE.search(item))
+
+
+def vague_words_in(text: str) -> List[str]:
+    seen: List[str] = []
+    for m in VAGUE_RE.finditer(text):
+        w = m.group(0).lower()
+        if w not in seen:
+            seen.append(w)
+    return seen
+
+
+def brief_check_problems(text: str, cfg: Dict[str, Any]) -> List[str]:
+    """What a task brief (.governor/brief.md) lacks. Empty list = it passes.
+
+    Every rule is a state a script can confirm, so the verdict is the same
+    for every reader. The lint cannot judge whether the evidence command is
+    the right evidence, whether the out-of-scope list is complete, or whether
+    an assumption is true; the conductor reads for that."""
+    problems: List[str] = []
+    # 1. The headings the rest of the flow reads by name.
+    for h in BRIEF_REQUIRED_HEADINGS:
+        if not has_heading(text, h):
+            problems.append(f"missing '## {h}'")
+    # 2. One line, one sentence: a goal that needs two is two tasks.
+    task_lines = [ln.strip() for ln in section_body(text, "Task").splitlines() if ln.strip()]
+    if has_heading(text, "Task"):
+        if len(task_lines) != 1:
+            problems.append(f"'## Task' must be one non-empty line, found {len(task_lines)}")
+        elif len(task_lines[0]) > BRIEF_TASK_MAX_CHARS:
+            problems.append(f"'## Task' is {len(task_lines[0])} chars, limit {BRIEF_TASK_MAX_CHARS}: one sentence, or it is two tasks")
+    # 3. At least two done items (one is the task restated), each checkable.
+    items = done_items(section_body(text, "Definition of done"))
+    if has_heading(text, "Definition of done"):
+        if len(items) < BRIEF_MIN_DONE_ITEMS:
+            problems.append(f"'## Definition of done' needs at least {BRIEF_MIN_DONE_ITEMS} items, found {len(items)}: one item is the task restated")
+        for n, item in enumerate(items, 1):
+            if not is_checkable(item):
+                problems.append(f"definition of done item {n} is not checkable: '{item[:60]}'")
+    # 4. Vague words in the task or a done item: each is a judgment the worker
+    #    will make differently from the author.
+    places = [("'## Task'", " ".join(task_lines))] + [(f"definition of done item {n}", it) for n, it in enumerate(items, 1)]
+    for where, chunk in places:
+        for w in vague_words_in(chunk):
+            problems.append(f"vague word '{w}' in {where}: say what is observable instead")
+    # 5. The evidence block is the same contract the worker report uses, read
+    #    from the Evidence section only: four sections follow it in a brief,
+    #    and a '$ ' line under Procedure is not evidence.
+    if has_heading(text, "Evidence") and not fenced_commands(section_body(text, "Evidence")):
+        problems.append("'## Evidence' needs a fenced block with the command on a '$ ' line")
+    # 6. The procedure starts with triage (the table before any work is the
+    #    point of the flow) and never names general-purpose: that spawn is
+    #    pinned to Sonnet but inherits the session's effort; plugin agents
+    #    pin their own.
+    proc = section_body(text, "Procedure")
+    if has_heading(text, "Procedure"):
+        if "/governor:triage" not in proc:
+            problems.append("'## Procedure' must run /governor:triage: the table comes before any work")
+        if "general-purpose" in proc:
+            problems.append("'## Procedure' names general-purpose: do not name it at all, even to forbid it; it is pinned to Sonnet but inherits the session's effort, so name the plugin agents instead")
+    # 7. Same cap as the consult brief: longer is pasting material the
+    #    workers should read themselves.
+    if len(text) > int(cfg["brief_max_chars"]):
+        problems.append(f"brief is {len(text)} chars, limit {cfg['brief_max_chars']}: point at files instead of pasting them")
     return problems
 
 
@@ -1198,12 +1359,44 @@ def cmd_check_report(args: List[str], cfg: Dict[str, Any]) -> int:
     contract = _arg(args, "--contract") or "worker"
     skip = {_arg(args, "--contract"), _arg(args, "--transcript")}
     src = next((a for a in args if not a.startswith("--") and a not in skip), "-")
-    text = sys.stdin.read() if src == "-" else Path(src).read_text()
+    try:
+        text = sys.stdin.read() if src == "-" else Path(src).read_text()
+    except (OSError, ValueError) as e:  # ValueError: a decode error is not a report that passed
+        print(f"NONCOMPLIANT contract={contract} result=?")
+        print(f"- cannot read {src}: {e}")
+        return 1
     tp = _arg(args, "--transcript")
     problems = report_problems(text, contract, bash_commands_in(Path(tp)) if tp else None)
     verdict = "OK" if not problems else "NONCOMPLIANT"
     m = RESULT_RE.search(text)
     print(f"{verdict} contract={contract} result={(m.group(1).upper() if m else '?')}")
+    for pr in problems:
+        print(f"- {pr}")
+    return 0 if not problems else 1
+
+
+def cmd_brief(args: List[str], cfg: Dict[str, Any]) -> int:
+    """governor.py brief check [FILE|-]  |  governor.py brief template
+    The lint the brief skill runs on .governor/brief.md, and the format it fills in."""
+    if not args or args[0] not in ("check", "template"):
+        print("usage: governor.py brief check [FILE|-] | brief template")
+        return 2
+    if args[0] == "template":
+        try:
+            sys.stdout.write(BRIEF_TEMPLATE.read_text())
+        except (OSError, ValueError) as e:
+            print(f"cannot read {BRIEF_TEMPLATE}: {e}")
+            return 1
+        return 0
+    src = next((a for a in args[1:] if not a.startswith("--")), "-")
+    try:
+        text = sys.stdin.read() if src == "-" else Path(src).read_text()
+    except (OSError, ValueError) as e:  # a brief the tool cannot read is not a brief it can pass
+        print(f"NONCOMPLIANT brief={src}")
+        print(f"- cannot read {src}: {e}")
+        return 1
+    problems = brief_check_problems(text, cfg)
+    print(f"{'OK' if not problems else 'NONCOMPLIANT'} brief={src}")
     for pr in problems:
         print(f"- {pr}")
     return 0 if not problems else 1
@@ -1434,6 +1627,14 @@ def debug_dump(event: str, hook: Dict[str, Any]) -> None:
         pass
 
 
+# The five hook events, and only these, get "exit 0 whatever happens": Claude
+# Code treats a non-zero hook exit as a failure it surfaces, and a broken
+# guardrail must never lock a session. Every other verb is a CLI that a skill
+# or a person is reading, where a silent exit 0 would pass what was not
+# checked; those exit 1 with the error on stderr (see ``run``).
+HOOK_EVENTS = frozenset({"session-start", "user-prompt", "pre-tool-use", "subagent-stop", "session-end"})
+
+
 def main(argv: List[str]) -> int:
     if not argv:
         print(__doc__)
@@ -1456,10 +1657,15 @@ def main(argv: List[str]) -> int:
         return cmd_statusline_snippet()
     if event == "check-report":
         return cmd_check_report(args, cfg)
+    if event == "brief":
+        return cmd_brief(args, cfg)
     if event == "plan":
         return cmd_plan(args)
     if event == "run-worker":
         return cmd_run_worker(args, cfg, project_dir)
+    if event not in HOOK_EVENTS:
+        print(f"governor: unknown event {event}", file=sys.stderr)
+        return 2
 
     try:
         hook = json.load(sys.stdin) if not sys.stdin.isatty() else {}
@@ -1477,9 +1683,6 @@ def main(argv: List[str]) -> int:
         "subagent-stop": lambda: h_subagent_stop(hook, cfg, ledger),
         "session-end": lambda: h_session_end(hook, cfg, ledger),
     }
-    if event not in handlers:
-        print(f"governor: unknown event {event}", file=sys.stderr)
-        return 2
     out = handlers[event]()
     # The decision goes out before the state is written: a full disk must not
     # turn a computed deny into silence, which Claude Code reads as consent.
@@ -1498,11 +1701,18 @@ def main(argv: List[str]) -> int:
     return 0
 
 
-if __name__ == "__main__":
+def run(argv: List[str]) -> int:
+    """``main`` plus the exception policy of ``HOOK_EVENTS``: a hook event
+    never takes the session down with it, a CLI verb never pretends."""
     try:
-        sys.exit(main(sys.argv[1:]))
-    except SystemExit:
-        raise
-    except Exception as e:  # never take the session down with us
-        log_error(f"{sys.argv[1:]}: {type(e).__name__}: {e}")
-        sys.exit(0)
+        return main(argv)
+    except Exception as e:
+        log_error(f"{argv}: {type(e).__name__}: {e}")
+        if argv and argv[0] in HOOK_EVENTS:
+            return 0
+        print(f"governor: {type(e).__name__}: {e}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(run(sys.argv[1:]))

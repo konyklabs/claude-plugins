@@ -50,7 +50,7 @@ until `version` in its `plugin.json` changes, so use `--plugin-dir` while
 developing.
 
 Verify: `claude plugin list` shows the three as enabled; `claude plugin
-details governor` shows 5 skills, 5 agents, 5 hooks and about 1,100
+details governor` shows 6 skills, 5 agents, 5 hooks and about 1,250
 always-on tokens per session.
 
 ## First session
@@ -75,15 +75,18 @@ and add the status line printed by
 `python3 <plugin root>/bin/governor.py statusline-snippet` to
 `~/.claude/settings.json`. Nothing is denied or injected in observe mode;
 the ledger still prices every turn. `docs/COST-TRACKING.md` is the runbook.
+For the full run, from the brief to the budget gate, see `docs/PLAYBOOK.md`.
 
 ## For an agent picking this up
 
+The human-facing sequence is `docs/PLAYBOOK.md`; this section is the reference.
 Everything an agent needs to operate the plugins without reading the code.
 
 **Skills** (slash commands, namespaced by plugin):
 
 | skill | use it when |
 |---|---|
+| `/governor:brief` | a task is about to start and the prompt is a sentence; five questions at most, then `.governor/brief.md` |
 | `/governor:triage` | a non-trivial task starts; it writes the tier table before any work |
 | `/governor:delegate` | implementation, test writing or a look-up is about to happen; spec first, worker second, evidence third |
 | `/governor:decompose` | a change touches more than about five files or a branch is too big to review |
@@ -119,6 +122,7 @@ is sent back (twice at most).
 |---|---|
 | `governor.py status` / `budget show|set|history` | the ledger and the budget |
 | `governor.py check-report FILE --contract worker` | the contract check as a command |
+| `governor.py brief check FILE` / `brief template` | the task-brief lint (headings, one-line task, checkable done items, evidence command, procedure) and the format it fills; the brief skill runs both |
 | `governor.py plan build slices.json` / `plan check plan.json` | slices to levels; refuses cycles and same-level file conflicts |
 | `governor.py run-worker --spec FILE --agent governor:implementer --budget 2` | one slice, headless, under `--max-budget-usd`, report checked; prints one `VERDICT:` line |
 | `governor.py statusline-snippet` | the settings fragment for the status line |
@@ -145,6 +149,9 @@ per-session ledgers, `history.jsonl`, `errors.log`; the scanner writes
 
 ## governor in one minute
 
+- A task starts with `/governor:brief`: at most five questions, then
+  `.governor/brief.md` in one fixed format, linted by a script before it is
+  handed off; the triage that follows works from it.
 - A spawn that names no model is pinned to `sonnet` (configurable) instead
   of inheriting Fable; the session's own permission rules still apply. A
   `fork` is denied. A spawn *onto* Fable is allowed only with a brief
@@ -219,7 +226,7 @@ plugins/governor/                      bin/governor.py, hooks/hooks.json, agents
 plugins/py-testing/                    skills/ (5, with references and scripts/inventory.py), agents/, tests/, evals/
 plugins/prod-readiness/                skills/ (3, with references and scripts/readiness.py), agents/, tests/, evals/
 scripts/                               validate.sh, audit-deps.sh, dist.sh
-docs/                                  ARCHITECTURE.md, COST-TRACKING.md
+docs/                                  ARCHITECTURE.md, COST-TRACKING.md, PLAYBOOK.md
 .github/workflows/                     validate (manifests, audit, hooks on 3.9 and 3.13) plus the org callers
 ```
 

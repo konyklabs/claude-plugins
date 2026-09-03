@@ -8,6 +8,7 @@ message's usage repeated on each line, subagent transcripts under
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -452,9 +453,15 @@ def test_session_end_appends_history(env):
     assert rows[-1]["expensive_usd"] == pytest.approx(0.05)
 
 
-def run_cli(env, args, stdin=None):
+def run_cli(env, args, stdin=None, extra_env=None):
     return subprocess.run([sys.executable, str(BIN / "governor.py"), *args], input=stdin, capture_output=True, text=True,
-                          env={**os.environ, "GOVERNOR_STATE_DIR": str(env["state"]), "CLAUDE_PROJECT_DIR": str(env["project"]), "HOME": str(env["tmp"] / "home")})
+                          env={**os.environ, "GOVERNOR_STATE_DIR": str(env["state"]), "CLAUDE_PROJECT_DIR": str(env["project"]), "HOME": str(env["tmp"] / "home"), **(extra_env or {})})
+
+
+# Bytes no UTF-8 decoder accepts (a cp1252 e-acute); PYTHONUTF8=1 pins the
+# child's decoder so the test does not depend on the machine's locale.
+NOT_UTF8 = b"## Result\nDONE caf\xe9\n"
+UTF8_ENV = {"PYTHONUTF8": "1"}
 
 
 def test_cli_hook_roundtrip_and_fail_open(env):
@@ -753,6 +760,12 @@ def test_check_report_cli(env, tmp_path):
     assert r.returncode == 1 and "NONCOMPLIANT" in r.stdout and "Evidence" in r.stdout
     r = run_cli(env, ["check-report", "-", "--contract", "scout"], stdin="## Findings\n- src/x.py:3 thing")
     assert r.returncode == 0
+    # An unreadable report is a NONCOMPLIANT verdict, never a silent exit 0.
+    cp = tmp_path / "cp1252.md"; cp.write_bytes(NOT_UTF8)
+    r = run_cli(env, ["check-report", str(cp), "--contract", "worker"], extra_env=UTF8_ENV)
+    assert r.returncode == 1 and r.stdout.startswith("NONCOMPLIANT contract=worker result=?\n- cannot read "), r.stdout + r.stderr
+    r = run_cli(env, ["check-report", str(tmp_path / "missing.md"), "--contract", "worker"])
+    assert r.returncode == 1 and "- cannot read" in r.stdout
 
 
 def test_plan_levels_and_errors():
@@ -804,3 +817,217 @@ def test_run_worker_dry_run_and_fake_claude(env, tmp_path):
     assert r.returncode == 1 and r.stdout.startswith("VERDICT: NONCOMPLIANT")
     r = run_cli(env, ["run-worker", "--spec", str(spec), "--budget", "-3", "--dry-run"])
     assert r.returncode == 2
+
+
+# --------------------------------------------------------------------------- task brief (governor.py brief)
+
+REPO = Path(__file__).resolve().parents[3]
+
+GOOD_BRIEF = """# Brief: port-api-tests
+
+## Task
+Port the tests under tests/api to the savepoint fixture and keep the suite green.
+
+## Definition of done
+- [ ] `grep -rl db_session tests/api` prints nothing
+- [ ] `pytest -q tests/api` exits 0
+- [ ] no file outside tests/api and tests/conftest.py is modified (`git status --short`)
+
+## Evidence
+```
+$ pytest -q tests/api
+$ git status --short
+```
+
+## Out of scope
+- the application code under test
+- tests outside tests/api
+
+## Decisions already made
+- the fixture lives in tests/conftest.py — one home, no plugin import magic
+
+## Assumptions
+- the savepoint fixture already exists and is named db_savepoint
+
+## Procedure
+- run /governor:triage first and show the table before any work
+- /governor:delegate per slice; workers: governor:implementer; governor:reviewer on every slice that changes behaviour
+- plugin agents by name, nothing implemented inline
+- a BLOCKED or PARTIAL report is answered by the conductor and re-delegated
+"""
+
+
+def replace_section(text, heading, body):
+    """GOOD_BRIEF with one section's body swapped; body ends with a blank line."""
+    start = text.index(f"## {heading}\n") + len(f"## {heading}\n")
+    end = text.find("\n## ", start)
+    end = len(text) if end < 0 else end + 1
+    return text[:start] + body + text[end:]
+
+
+def brief_problems_of(text, **cfg):
+    return governor.brief_check_problems(text, {**governor.DEFAULTS, **cfg})
+
+
+def test_brief_good_brief_passes_and_template_does_not():
+    assert brief_problems_of(GOOD_BRIEF) == []
+    problems = brief_problems_of(governor.BRIEF_TEMPLATE.read_text())
+    assert problems and any("not checkable" in p for p in problems), problems
+
+
+def test_brief_rule_1_headings():
+    assert "missing '## Assumptions'" in brief_problems_of(GOOD_BRIEF.replace("## Assumptions", "## Guesses"))
+    assert "missing '## Task'" in brief_problems_of(GOOD_BRIEF.replace("## Task", "## Tasks"))
+    assert "missing '## Decisions already made'" not in brief_problems_of(GOOD_BRIEF.replace("## Decisions already made", "## Choices"))
+
+
+def test_brief_rule_2_task_is_one_short_line():
+    two = replace_section(GOOD_BRIEF, "Task", "Port the tests.\nAnd keep it green.\n\n")
+    assert any("'## Task' must be one non-empty line, found 2" in p for p in brief_problems_of(two))
+    assert any("limit 240" in p for p in brief_problems_of(replace_section(GOOD_BRIEF, "Task", "port " * 60 + "\n\n")))
+    assert governor.section_body(GOOD_BRIEF, "Task").strip() == "Port the tests under tests/api to the savepoint fixture and keep the suite green."
+    assert governor.section_body(GOOD_BRIEF, "Nowhere") == ""
+
+
+def test_brief_rule_3_done_items_are_two_and_checkable():
+    one = replace_section(GOOD_BRIEF, "Definition of done", "- [ ] `pytest -q tests/api` exits 0\n\n")
+    assert any("at least 2 items, found 1" in p for p in brief_problems_of(one))
+    bad = replace_section(GOOD_BRIEF, "Definition of done", "- [ ] `pytest -q tests/api` exits 0\n- [ ] the fixture is used everywhere\n\n")
+    assert "definition of done item 2 is not checkable: 'the fixture is used everywhere'" in brief_problems_of(bad)
+    wrapped = replace_section(GOOD_BRIEF, "Definition of done", "- [ ] `pytest -q tests/api` exits 0\n- [ ] a test that was failing before\n  is listed, not fixed\n\n")
+    assert brief_problems_of(wrapped) == []
+    assert governor.done_items("- [ ] a test that\n  was failing is listed\n- second\n") == ["a test that was failing is listed", "second"]
+    assert governor.done_items("1. `a` exits 0\n2) [ ] b is zero\n3. c is listed\n") == ["`a` exits 0", "b is zero", "c is listed"]
+    assert governor.done_items("---\n- [ ] `a` exits 0\n---\n- \n-\n* ---\n- b is zero\n") == ["`a` exits 0", "b is zero"]
+    numbered = replace_section(GOOD_BRIEF, "Definition of done", "1. `pytest -q tests/api` exits 0\n2. `git status --short` lists only tests/api\n3. tests/api/conftest.py exists\n\n")
+    assert brief_problems_of(numbered) == []
+    ruled = replace_section(GOOD_BRIEF, "Definition of done", "---\n- [ ] `pytest -q tests/api` exits 0\n\n")
+    assert any("at least 2 items, found 1" in p for p in brief_problems_of(ruled))
+
+
+def test_brief_rule_4_vague_words():
+    task = replace_section(GOOD_BRIEF, "Task", "Improve the api tests under tests/api.\n\n")
+    assert "vague word 'improve' in '## Task': say what is observable instead" in brief_problems_of(task)
+    item = replace_section(GOOD_BRIEF, "Definition of done", "- [ ] `pytest -q tests/api` exits 0, fixtures updated as needed\n- [ ] `git status --short` lists only tests/api\n\n")
+    assert any(p.startswith("vague word 'as needed' in definition of done item 1") for p in brief_problems_of(item))
+    assert governor.vague_words_in("improvements to the goods") == []  # whole words only
+
+
+def test_brief_rule_5_evidence_command():
+    prose = replace_section(GOOD_BRIEF, "Evidence", "pytest, green\n\n")
+    assert "'## Evidence' needs a fenced block with the command on a '$ ' line" in brief_problems_of(prose)
+    no_dollar = replace_section(GOOD_BRIEF, "Evidence", "```\npytest -q tests/api\n```\n\n")
+    assert any("'$ '" in p for p in brief_problems_of(no_dollar))
+    # A '$ ' fence under a later section is not evidence: the scan is bounded to the Evidence body.
+    undecided = replace_section(GOOD_BRIEF, "Evidence", "to be decided\n\n")
+    below = replace_section(undecided, "Procedure", "- run /governor:triage first\n```\n$ ls\n```\n")
+    assert any("'## Evidence' needs" in p for p in brief_problems_of(below)), brief_problems_of(below)
+    assert governor.evidence_commands(below) == ["ls"]  # the report contract still reads to the end
+    assert governor.fenced_commands(governor.section_body(below, "Evidence")) == []
+
+
+def test_brief_rule_6_procedure():
+    assert any("must run /governor:triage" in p for p in brief_problems_of(GOOD_BRIEF.replace("/governor:triage", "/governor:delegate")))
+    gp = GOOD_BRIEF.replace("plugin agents by name", "general-purpose for the porting")
+    assert any("names general-purpose" in p for p in brief_problems_of(gp))
+    assert brief_problems_of(GOOD_BRIEF.replace("## Out of scope\n", "## Out of scope\n- general-purpose refactors\n")) == []
+
+
+def test_brief_rule_7_length():
+    assert any(f"brief is {len(GOOD_BRIEF)} chars, limit 300" in p for p in brief_problems_of(GOOD_BRIEF, brief_max_chars=300))
+
+
+def test_brief_checkable_words():
+    two = replace_section(GOOD_BRIEF, "Definition of done", "- [ ] `pytest -q tests/api` exits 0\n- [ ] tests pass properly\n\n")
+    probs = [p for p in brief_problems_of(two) if "item 2" in p]
+    assert len(probs) == 2 and any("not checkable" in p for p in probs) and any("vague word 'properly'" in p for p in probs), probs
+    ok = replace_section(GOOD_BRIEF, "Definition of done", "- [ ] `pytest -q tests/e2e` exits 0\n- [ ] `pytest -q tests/api` exits 0\n\n")
+    assert brief_problems_of(ok) == []
+    assert governor.is_checkable("the dead tests are listed in the plan")
+    assert governor.is_checkable("tests/conftest.py has one fixture")
+    assert governor.is_checkable("conftest.py has one fixture")
+    assert governor.is_checkable("3 duplicate tests are gone")
+    assert not governor.is_checkable("the suite is in a happier state")
+    assert not governor.is_checkable("e.g. the fixture is shared")
+
+
+def test_brief_cli(env, tmp_path):
+    good = tmp_path / "brief.md"; good.write_text(GOOD_BRIEF)
+    r = run_cli(env, ["brief", "check", str(good)])
+    assert r.returncode == 0 and r.stdout == f"OK brief={good}\n", r.stdout
+    bad = tmp_path / "bad.md"; bad.write_text(GOOD_BRIEF.replace("## Procedure", "## Steps"))
+    r = run_cli(env, ["brief", "check", str(bad)])
+    assert r.returncode == 1 and r.stdout.startswith("NONCOMPLIANT brief=") and "- missing '## Procedure'" in r.stdout
+    r = run_cli(env, ["brief", "template"])
+    assert r.returncode == 0 and r.stdout == governor.BRIEF_TEMPLATE.read_text()
+    r = run_cli(env, ["brief", "check", "-"], stdin=r.stdout)
+    assert r.returncode == 1 and r.stdout.startswith("NONCOMPLIANT brief=-") and "not checkable" in r.stdout
+    r = run_cli(env, ["brief", "check", "-"], stdin=GOOD_BRIEF)
+    assert r.returncode == 0 and r.stdout.startswith("OK brief=-")
+    r = run_cli(env, ["brief", "check"], stdin=GOOD_BRIEF)
+    assert r.returncode == 0
+    for args in (["brief", "lint"], ["brief"]):
+        r = run_cli(env, args)
+        assert r.returncode == 2 and r.stdout.startswith("usage: governor.py brief check"), r.stdout
+    r = run_cli(env, ["brief", "check", str(tmp_path / "missing.md")])
+    assert r.returncode == 1 and r.stdout.startswith(f"NONCOMPLIANT brief={tmp_path / 'missing.md'}\n- cannot read "), r.stdout
+    cp = tmp_path / "cp1252.md"; cp.write_bytes(NOT_UTF8)
+    r = run_cli(env, ["brief", "check", str(cp)], extra_env=UTF8_ENV)
+    assert r.returncode == 1 and r.stdout.startswith(f"NONCOMPLIANT brief={cp}\n- cannot read "), r.stdout + r.stderr
+
+
+def test_brief_template_unreadable_fails_closed(env, tmp_path, monkeypatch):
+    bad = tmp_path / "template.md"; bad.write_bytes(NOT_UTF8)
+    monkeypatch.setattr(governor, "BRIEF_TEMPLATE", bad)
+    monkeypatch.setenv("PYTHONUTF8", "1")
+    import io
+    out = io.StringIO(); monkeypatch.setattr(sys, "stdout", out)
+    assert governor.cmd_brief(["template"], governor.DEFAULTS) == 1
+    assert out.getvalue().startswith(f"cannot read {bad}: ") and out.getvalue().count("\n") == 1
+    monkeypatch.setattr(governor, "BRIEF_TEMPLATE", tmp_path / "absent.md")
+    out.seek(0); out.truncate()
+    assert governor.cmd_brief(["template"], governor.DEFAULTS) == 1 and out.getvalue().count("\n") == 1
+
+
+def test_run_exit_policy_hooks_fail_open_cli_fails_closed(env, monkeypatch, capsys):
+    def boom(argv):
+        raise RuntimeError("boom " + argv[0])
+    monkeypatch.setattr(governor, "main", boom)
+    for ev in sorted(governor.HOOK_EVENTS):
+        assert governor.run([ev]) == 0
+    assert capsys.readouterr().err == ""
+    for argv in (["brief", "check", "x.md"], ["check-report", "r.md"], ["plan", "check", "p.json"], ["status"]):
+        assert governor.run(argv) == 1
+        assert capsys.readouterr().err == f"governor: RuntimeError: boom {argv[0]}\n"
+    logged = (env["state"] / "errors.log").read_text()
+    assert "boom pre-tool-use" in logged and "boom brief" in logged
+
+
+def test_hook_events_match_hooks_json():
+    hooks = json.loads((BIN.parent / "hooks" / "hooks.json").read_text())["hooks"]
+    verbs = {h["command"].split("governor.py\" ")[1].split()[0] for group in hooks.values() for entry in group for h in entry["hooks"]}
+    assert verbs == set(governor.HOOK_EVENTS)
+
+
+def test_section_body_ignores_hashes_inside_fences():
+    fenced = replace_section(GOOD_BRIEF, "Definition of done", "- [ ] `pytest -q tests/api` exits 0\n```\n# undo it\n```\n- [ ] the code is properly refactored and cleaner\n\n")
+    fenced = replace_section(fenced, "Procedure", "- run /governor:triage first\n```\n# a shell comment\n```\n- delegate to general-purpose for everything\n")
+    problems = brief_problems_of(fenced)
+    assert [p for p in problems if "not checkable" in p] == ["definition of done item 2 is not checkable: 'the code is properly refactored and cleaner'"]
+    assert sorted(p for p in problems if p.startswith("vague word")) == [
+        "vague word 'cleaner' in definition of done item 2: say what is observable instead",
+        "vague word 'properly' in definition of done item 2: say what is observable instead",
+    ]
+    assert [p for p in problems if "general-purpose" in p] == ["'## Procedure' names general-purpose: do not name it at all, even to forbid it; it is pinned to Sonnet but inherits the session's effort, so name the plugin agents instead"]
+    assert len(problems) == 4, problems
+    # A bare '#' line, or '#' without a space, is not a heading and does not end the section.
+    assert governor.section_body("## Task\nline\n#\n#tag\n## Next\nno", "Task") == "line\n#\n#tag"
+    assert governor.section_body("## Task\nline\n~~~sh\n## not a heading\n~~~\nafter\n### Sub\nno", "Task") == "line\n~~~sh\n## not a heading\n~~~\nafter"
+
+
+def test_playbook_worked_brief_passes_the_lint():
+    md = (REPO / "docs" / "PLAYBOOK.md").read_text()
+    start = md.index("## A worked brief")
+    m = re.search(r"^````\n(.*?)^````$", md[start:], re.S | re.M)
+    assert m, "the worked brief must sit in a four-backtick fence so its evidence fence nests"
+    assert brief_problems_of(m.group(1)) == []

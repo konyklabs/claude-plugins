@@ -66,6 +66,7 @@ Paste the output in the commit or PR; never say "tests pass" without it.
 
 - Design and verification record: `docs/ARCHITECTURE.md`.
 - Cost runbook and supply-chain statement: `docs/COST-TRACKING.md`.
+- Operator playbook: `docs/PLAYBOOK.md`.
 - Hook engine: `plugins/governor/bin/governor.py` (one file); prices in
   `pricing.json` beside it, with the date checked.
 - Scanner: `plugins/prod-readiness/skills/readiness-review/scripts/readiness.py`.
