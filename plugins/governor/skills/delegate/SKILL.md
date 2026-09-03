@@ -75,11 +75,11 @@ python3 "${CLAUDE_PLUGIN_ROOT}/bin/governor.py" run-level .governor/plan.json --
 ```
 
 One worker per slice (spec at `.governor/specs/<id>.md`), each in its own
-worktree under `.governor/wt/<id>` on branch `<plan>/<id>`, a bounded number
+worktree under `.governor/wt/<plan>/<id>` on branch `<plan>/<id>`, a bounded number
 at once, a retry with backoff when a worker dies on an API overload, one
 `VERDICT:` line per slice and a `LEVEL n:` summary. The index under
-`.governor/runs/<plan>/` makes a rerun skip the slices already DONE, and
-`governor.py runs <plan>` prints it. A process ends with a verdict or a
+`.governor/runs/<plan>/` makes a rerun skip the slices already DONE (unless
+their spec changed since), and `governor.py runs <plan>` prints it. A process ends with a verdict or a
 timeout; there is no idle worker to lose track of. Read the report files it
 names, never the workers' output.
 

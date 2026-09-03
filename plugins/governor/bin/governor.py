@@ -23,6 +23,7 @@ transcript would otherwise be re-read each time.
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import math
 import os
@@ -583,6 +584,12 @@ def clean_label(s: str) -> str:
     """One line, bounded, so a model-chosen string cannot impersonate the
     governor's own output when it is rendered back."""
     return re.sub(r"[^\w:@.+/-]", "_", str(s))[:80]
+
+
+def path_label(s: str) -> str:
+    """A single path component from a model-chosen id: no separators, no
+    leading dot, never empty. clean_label keeps '/' for display; a path must not."""
+    return (re.sub(r"[^\w.-]", "_", str(s)).lstrip(".")[:80]) or "x"
 
 
 def _k(n: int) -> str:
@@ -1491,6 +1498,11 @@ def plan_levels(slices: List[Dict[str, Any]]) -> Tuple[List[List[str]], List[str
     if len(set(ids)) != len(ids) or "" in ids:
         errors.append("slice ids must be unique and non-empty")
         return [], errors
+    bad = [i for i in ids if re.search(r"[/\\\s]", i)]
+    if bad:
+        # An id becomes a directory name and a branch name; keep it to one component.
+        errors.append("slice ids must not contain '/', '\\' or whitespace: " + ", ".join(bad))
+        return [], errors
     by_id = {x["id"]: x for x in slices}
     deps = {i: [str(d) for d in (by_id[i].get("deps") or [])] for i in ids}
     for i, ds in deps.items():
@@ -1578,9 +1590,11 @@ DEFAULT_WORKER_TOOLS = [
 ]
 
 
-# Attempts per slice before it is FAILED. The CLI already retries retryable
-# API errors inside one run; this is the outer retry for a process that
-# still died on overload, which happened four times in one afternoon.
+# Extra attempts after the first, per slice and per run-level invocation,
+# before it is FAILED. The CLI already retries retryable API errors inside
+# one run; this is the outer retry for a process that still died on
+# overload, which happened four times in one afternoon. A rerun gets the
+# same allowance again: the index keeps the cumulative count for the record.
 LEVEL_RETRIES = 2
 # Workers per level at once. Each is a whole Claude Code process; more than
 # a few saturate the API and the machine.
@@ -1609,7 +1623,7 @@ def parse_worker_output(stdout: str) -> Tuple[str, Dict[str, Any]]:
 
 def run_worker_once(spec_path: str, agent: str, budget: str, out_dir: Path, cfg: Dict[str, Any],
                     cwd: Optional[str] = None, timeout: Optional[float] = None, resume: Optional[str] = None,
-                    slug: Optional[str] = None) -> Dict[str, Any]:
+                    slug: Optional[str] = None, attempt: int = 1, dry_run: bool = False) -> Dict[str, Any]:
     """One headless worker run. Returns verdict (one of VERDICTS), problems,
     report path, cost, session_id, transient (the failure was the API, a
     retry may help) and error. The conductor never sees the worker's tool
@@ -1623,8 +1637,9 @@ def run_worker_once(spec_path: str, agent: str, budget: str, out_dir: Path, cfg:
     short = agent.split(":", 1)[-1]
     contract = cfg["report_contracts"].get(short, "worker")
     tools = cfg.get("worker_allowed_tools") or DEFAULT_WORKER_TOOLS
-    slug = clean_label(slug or Path(spec_path).stem)
-    report_path = out_dir / f"{slug}-{time.strftime('%Y%m%d-%H%M%S')}.md"
+    slug = path_label(slug or Path(spec_path).stem)
+    # The attempt is in the name so a retry never overwrites the evidence of why the first one died.
+    report_path = out_dir / f"{slug}-{time.strftime('%Y%m%d-%H%M%S')}-a{int(attempt)}.md"
     prompt = (
         f"You are running headlessly as {agent}. The spec is below; it is the boundary. "
         f"Do the work, run the tests it names, and end with the report format your definition requires "
@@ -1638,6 +1653,9 @@ def run_worker_once(spec_path: str, agent: str, budget: str, out_dir: Path, cfg:
     if resume:
         cmd += ["--resume", resume]
     out["cmd"] = cmd
+    out["report_path"] = str(report_path)
+    if dry_run:
+        return out
     import subprocess  # local import: the hooks never spawn processes
     try:
         proc = subprocess.run(cmd, input=prompt, capture_output=True, text=True, cwd=cwd,
@@ -1649,15 +1667,19 @@ def run_worker_once(spec_path: str, agent: str, budget: str, out_dir: Path, cfg:
         out["error"] = "worker timed out"
         return out
     text, meta = parse_worker_output(proc.stdout)
-    out["cost"] = float(meta.get("total_cost_usd") or 0.0)
-    out["session_id"] = meta.get("session_id")
+    try:
+        out["cost"] = float(meta.get("total_cost_usd") or 0.0)
+    except (TypeError, ValueError):
+        out["cost"] = 0.0  # untrusted subprocess JSON; a bad number is not a reason to lose the verdict
+    sid = meta.get("session_id")
+    out["session_id"] = str(sid) if isinstance(sid, (str, int)) else None
     out_dir.mkdir(parents=True, exist_ok=True)
     report_path.write_text(text + (f"\n\n<!-- stderr -->\n{proc.stderr[-4000:]}" if proc.stderr.strip() else ""))
     out["report"] = str(report_path)
     died = (proc.returncode != 0 and not text.strip()) or bool(meta.get("is_error"))
     if died:
         tail = (proc.stderr.strip() or text.strip())[-300:]
-        out["error"] = f"claude exited {proc.returncode}: {tail}"
+        out["error"] = (f"claude reported an error: {tail}" if proc.returncode == 0 else f"claude exited {proc.returncode}: {tail}")
         out["transient"] = bool(TRANSIENT_RE.search(proc.stderr + " " + text))
         return out
     problems = report_problems(text, contract)
@@ -1687,14 +1709,14 @@ def cmd_run_worker(args: List[str], cfg: Dict[str, Any], project_dir: Optional[s
         print("--budget must be a positive number")
         return 2
     out_dir = Path(_arg(args, "--out") or (Path(project_dir or ".") / ".governor" / "runs"))
+    r = run_worker_once(spec_path, agent, budget, out_dir, cfg, resume=_arg(args, "--resume"), dry_run="--dry-run" in args)
     if "--dry-run" in args:
-        tools = cfg.get("worker_allowed_tools") or DEFAULT_WORKER_TOOLS
-        cmd = ["claude", "-p", "--agent", agent, "--max-budget-usd", str(budget), "--permission-mode", "acceptEdits",
-               "--allowedTools", *tools, "--plugin-dir", str(PLUGIN_ROOT), "--output-format", "json"]
-        print("DRY-RUN " + " ".join(cmd))
-        print(f"report -> {out_dir / (clean_label(Path(spec_path).stem) + '-<timestamp>.md')}")
+        if not r.get("cmd"):
+            print(f"ERROR {r['error']}")
+            return 2
+        print("DRY-RUN " + " ".join(r["cmd"]))
+        print(f"report -> {r['report_path']}")
         return 0
-    r = run_worker_once(spec_path, agent, budget, out_dir, cfg, resume=_arg(args, "--resume"))
     if r["verdict"] == "FAILED" and not r["report"]:
         print(f"ERROR {r['error']}")
         return 2 if "spec" in r["error"] or "PATH" in r["error"] else 1
@@ -1716,13 +1738,38 @@ def _git(root: Path, *args: str) -> Tuple[int, str]:
     return p.returncode, (p.stdout + p.stderr).strip()
 
 
+def ensure_exclude(root: Path) -> None:
+    """Keep .governor/ (worktrees, runs, specs) out of the parent repository's
+    index without touching a tracked file: .git/info/exclude, once. Skipped
+    when .git is not a directory (the root is itself a worktree)."""
+    info = root / ".git" / "info"
+    if not (root / ".git").is_dir():
+        return
+    try:
+        info.mkdir(parents=True, exist_ok=True)
+        ex = info / "exclude"
+        lines = ex.read_text().splitlines() if ex.exists() else []
+        if ".governor/" not in [l.strip() for l in lines]:
+            with ex.open("a") as f:
+                f.write(("" if not lines or lines[-1] == "" else "\n") + ".governor/\n")
+    except OSError as e:
+        log_error(f"exclude not written: {e}")
+
+
 def ensure_worktree(root: Path, plan: str, slice_id: str) -> Tuple[Optional[Path], str]:
-    """A worktree per slice under .governor/wt/<slice> on branch <plan>/<slice>,
-    reused when it already exists. Parallel workers must not share a checkout."""
-    path = root / ".governor" / "wt" / clean_label(slice_id)
-    branch = f"{clean_label(plan)}/{clean_label(slice_id)}"
+    """A worktree per slice under .governor/wt/<plan>/<slice> on branch
+    <plan>/<slice>. Namespaced by plan, as the run index is: two plans may
+    reuse a slice id and must never share a checkout. An existing directory
+    is reused only when it is on that branch."""
+    path = root / ".governor" / "wt" / path_label(plan) / path_label(slice_id)
+    branch = f"{path_label(plan)}/{path_label(slice_id)}"
     if path.exists():
+        rc, head = _git(path, "rev-parse", "--abbrev-ref", "HEAD")
+        if rc != 0 or head.strip() != branch:
+            return None, f"{path} exists but is on {head.strip() or '?'}, not {branch}"
         return path, branch
+    ensure_exclude(root)
+    _git(root, "worktree", "prune")  # a registration whose directory is gone would refuse the add
     rc, _ = _git(root, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}")
     if rc == 0:
         rc, msg = _git(root, "worktree", "add", str(path), branch)
@@ -1731,6 +1778,13 @@ def ensure_worktree(root: Path, plan: str, slice_id: str) -> Tuple[Optional[Path
     if rc != 0:
         return None, msg
     return path, branch
+
+
+def spec_digest(path: Path) -> str:
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()[:16]
+    except OSError:
+        return ""
 
 
 def load_index(path: Path) -> Dict[str, Any]:
@@ -1786,14 +1840,22 @@ def cmd_run_level(args: List[str], cfg: Dict[str, Any], project_dir: Optional[st
     index = load_index(index_path) or {"plan": name, "level": level, "slices": {}}
     for sid in ids:
         index["slices"].setdefault(sid, {"state": "pending", "attempts": 0, "verdict": None, "cost": 0.0, "report": None, "session_id": None, "worktree": None, "branch": None, "error": ""})
-    todo = [sid for sid in ids if index["slices"][sid].get("verdict") != "DONE"]
-    skipped = [sid for sid in ids if sid not in todo]
+    # A DONE slice is skipped only if the spec it was earned against is unchanged.
+    todo, skipped, changed = [], [], []
+    for sid in ids:
+        e = index["slices"][sid]
+        if e.get("verdict") == "DONE":
+            if e.get("spec_sha") == spec_digest(specs_dir / f"{sid}.md"):
+                skipped.append(sid)
+                continue
+            changed.append(sid)
+        todo.append(sid)
 
     if "--dry-run" in args:
         for sid in ids:
             spec = specs_dir / f"{sid}.md"
             print(f"{'SKIP' if sid in skipped else 'RUN '} slice={sid} spec={spec}{'' if spec.exists() else ' (missing)'} agent={slices[sid].get('agent') or agent_default}"
-                  + (f" worktree={root / '.governor' / 'wt' / clean_label(sid)}" if use_worktree else ""))
+                  + (f" worktree={root / '.governor' / 'wt' / path_label(name) / path_label(sid)}" if use_worktree else ""))
         print(f"parallel={parallel} retries={retries} budget=${budget} index={index_path}")
         return 0
 
@@ -1808,6 +1870,19 @@ def cmd_run_level(args: List[str], cfg: Dict[str, Any], project_dir: Optional[st
         os.replace(tmp, index_path)
 
     def run_slice(sid: str) -> str:
+        # Fail closed per slice: an exception here must not take the level
+        # down or leave the index saying "running" forever.
+        try:
+            return _run_slice(sid)
+        except Exception as e:  # noqa: BLE001
+            with lock:
+                index["slices"][sid].update(state="failed", verdict="FAILED", error=f"{type(e).__name__}: {e}"[-300:])
+                save()
+                print(f"VERDICT: FAILED slice={sid} attempts={index['slices'][sid].get('attempts') or 0} cost=${float(index['slices'][sid].get('cost') or 0):.2f} error={type(e).__name__}: {str(e)[-120:]}")
+            log_error(f"run-level {name}/{level} slice {sid}: {type(e).__name__}: {e}")
+            return "FAILED"
+
+    def _run_slice(sid: str) -> str:
         entry = index["slices"][sid]
         spec = specs_dir / f"{sid}.md"
         agent = str(slices[sid].get("agent") or agent_default)
@@ -1830,27 +1905,31 @@ def cmd_run_level(args: List[str], cfg: Dict[str, Any], project_dir: Optional[st
             cwd = str(wt)
             with lock:
                 entry.update(worktree=str(wt), branch=branch_or_msg)
-        attempt = int(entry.get("attempts") or 0)
+        attempt = int(entry.get("attempts") or 0)  # cumulative, for the record
+        this_run = 0  # the retry allowance is per invocation
         result: Dict[str, Any] = {"verdict": "FAILED", "error": "not run", "transient": False, "cost": 0.0, "report": None, "session_id": None, "problems": []}
         while True:
             attempt += 1
+            this_run += 1
             with lock:
                 entry.update(state="running", attempts=attempt)
                 save()
-            result = run_worker_once(str(spec), agent, budget, out_dir, cfg, cwd=cwd, timeout=timeout, slug=sid)
+            result = run_worker_once(str(spec), agent, budget, out_dir, cfg, cwd=cwd, timeout=timeout, slug=sid, attempt=attempt)
             with lock:
                 entry["cost"] = round(float(entry.get("cost") or 0.0) + float(result.get("cost") or 0.0), 4)
                 entry.update(report=result.get("report") or entry.get("report"), session_id=result.get("session_id") or entry.get("session_id"),
                              error=result.get("error") or "")
                 save()
-            if result["verdict"] == "FAILED" and result.get("transient") and attempt <= retries:
+            if result["verdict"] == "FAILED" and result.get("transient") and this_run <= retries:
                 with lock:
-                    print(f"RETRY slice={sid} attempt={attempt} in {backoff * (2 ** (attempt - 1)):.0f}s: {result['error'][-120:]}")
-                time.sleep(backoff * (2 ** (attempt - 1)))
+                    print(f"RETRY slice={sid} attempt={attempt} in {backoff * (2 ** (this_run - 1)):.0f}s: {result['error'][-120:]}")
+                time.sleep(backoff * (2 ** (this_run - 1)))
                 continue
             break
         with lock:
             entry.update(state="done" if result["verdict"] == "DONE" else "failed", verdict=result["verdict"])
+            if result["verdict"] == "DONE":
+                entry["spec_sha"] = spec_digest(spec)
             save()
             line = f"VERDICT: {result['verdict']} slice={sid} attempts={attempt} cost=${entry['cost']:.2f}"
             if result.get("report"):
@@ -1866,6 +1945,8 @@ def cmd_run_level(args: List[str], cfg: Dict[str, Any], project_dir: Optional[st
 
     for sid in skipped:
         print(f"SKIP slice={sid} already DONE (index {index_path})")
+    for sid in changed:
+        print(f"RERUN slice={sid} was DONE but its spec changed since")
     save()
     verdicts: Dict[str, str] = {}
     with ThreadPoolExecutor(max_workers=parallel) as pool:
@@ -1896,8 +1977,15 @@ def cmd_runs(args: List[str], project_dir: Optional[str]) -> int:
     for d in dirs:
         for f in sorted(d.glob("level-*.json")):
             idx = load_index(f)
+            if not idx:
+                rows.append((d.name, f.stem.replace("level-", ""), "-", "unreadable", "-", "-", "-", str(f), "index file unreadable or malformed"))
+                continue
             for sid, e in (idx.get("slices") or {}).items():
-                rows.append((d.name, str(idx.get("level")), sid, str(e.get("state")), str(e.get("verdict")), str(e.get("attempts")), f"{float(e.get('cost') or 0):.2f}", str(e.get("report") or ""), (e.get("error") or "")[-60:]))
+                try:
+                    cost = f"{float(e.get('cost') or 0):.2f}"
+                except (TypeError, ValueError):
+                    cost = "?"
+                rows.append((d.name, str(idx.get("level")), sid, str(e.get("state")), str(e.get("verdict")), str(e.get("attempts")), cost, str(e.get("report") or ""), (e.get("error") or "")[-60:]))
     if not rows:
         print("no runs yet" + (f" for {name}" if name else ""))
         return 0

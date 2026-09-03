@@ -1184,7 +1184,8 @@ def test_run_level_retries_transient_failures_and_resumes(env, tmp_path):
     idx = json.loads(idx_path.read_text())
     assert all(s["attempts"] == 1 for s in idx["slices"].values())
     # resume: mark a DONE by hand, rerun with the good fake; only b runs
-    idx["slices"]["a"]["verdict"] = "DONE"; idx_path.write_text(json.dumps(idx))
+    idx["slices"]["a"]["verdict"] = "DONE"; idx["slices"]["a"]["spec_sha"] = governor.spec_digest(env["project"] / ".governor" / "specs" / "a.md")
+    idx_path.write_text(json.dumps(idx))
     fake.write_text(FAKE_CLAUDE); fake.chmod(0o755)
     r = _run_level(base_env, str(plan), "--level", "0", "--no-worktree", "--parallel", "1", "--backoff", "0")
     assert r.returncode == 0, r.stdout + r.stderr
@@ -1197,8 +1198,9 @@ def test_run_level_worktrees_missing_spec_and_dry_run(env, tmp_path):
     assert r.returncode == 0 and "RUN  slice=a" in r.stdout and "worktree=" in r.stdout and "parallel=" in r.stdout
     r = _run_level(base_env, str(plan), "--level", "0", "--parallel", "2", "--backoff", "0")
     assert r.returncode == 0, r.stdout + r.stderr
+    assert ".governor/" in (env["project"] / ".git" / "info" / "exclude").read_text()
     for sid in ("a", "b"):
-        wt = env["project"] / ".governor" / "wt" / sid
+        wt = env["project"] / ".governor" / "wt" / "p1" / sid
         assert wt.is_dir() and (wt / ".git").exists()
         branches = subprocess.run(["git", "-C", str(env["project"]), "branch", "--list", f"p1/{sid}"], capture_output=True, text=True).stdout
         assert f"p1/{sid}" in branches
@@ -1220,3 +1222,79 @@ def test_parse_worker_output_and_transient_classification():
     assert governor.parse_worker_output("plain text") == ("plain text", {})
     assert governor.TRANSIENT_RE.search("API Error: 529 Overloaded") and governor.TRANSIENT_RE.search("rate limit exceeded")
     assert not governor.TRANSIENT_RE.search("permission denied") and not governor.TRANSIENT_RE.search("invalid_request")
+
+
+def test_run_level_namespaces_worktrees_by_plan_and_guards_the_thread(env, tmp_path, monkeypatch, capsys):
+    plan, base_env = _level_fixture(tmp_path, env, git=True)
+    proj = env["project"]
+    r = _run_level(base_env, str(plan), "--level", "0", "--parallel", "1", "--backoff", "0")
+    assert r.returncode == 0, r.stdout + r.stderr
+    # a second plan with the same slice ids gets its own worktrees and branches
+    plan2 = proj / "plan2.json"
+    plan2.write_text(json.dumps({"name": "p2", "slices": [{"id": "a", "files": ["a.py"]}, {"id": "b", "files": ["b.py"]}], "levels": [["a", "b"]]}))
+    r = _run_level(base_env, str(plan2), "--level", "0", "--parallel", "1", "--backoff", "0")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert (proj / ".governor" / "wt" / "p2" / "a").is_dir() and (proj / ".governor" / "wt" / "p1" / "a").is_dir()
+    head = subprocess.run(["git", "-C", str(proj / ".governor" / "wt" / "p2" / "a"), "rev-parse", "--abbrev-ref", "HEAD"], capture_output=True, text=True).stdout.strip()
+    assert head == "p2/a"
+    # a directory on the wrong branch is refused, not reused
+    wt, msg = governor.ensure_worktree(proj, "p3", "a")
+    assert wt is not None
+    subprocess.run(["git", "-C", str(wt), "checkout", "-q", "-b", "elsewhere"], check=True)
+    wt2, msg = governor.ensure_worktree(proj, "p3", "a")
+    assert wt2 is None and "not p3/a" in msg and "elsewhere" in msg
+    # an exception inside a slice fails that slice and the level still finishes
+    (proj / ".governor" / "runs" / "p1" / "level-0.json").unlink()
+    def boom(*a, **k):
+        raise RuntimeError("boom")
+    monkeypatch.setattr(governor, "run_worker_once", boom)
+    rc = governor.cmd_run_level([str(plan), "--level", "0", "--no-worktree", "--parallel", "2", "--backoff", "0"], dict(governor.DEFAULTS), str(proj))
+    out = capsys.readouterr().out
+    assert rc == 1 and out.count("VERDICT: FAILED") == 2 and "RuntimeError: boom" in out and "LEVEL 0: 2 FAILED (of 2)" in out
+    idx = json.loads((proj / ".governor" / "runs" / "p1" / "level-0.json").read_text())
+    assert all(e["state"] == "failed" and e["verdict"] == "FAILED" for e in idx["slices"].values())
+
+
+def test_run_level_retry_allowance_is_per_run_and_spec_change_reruns(env, tmp_path):
+    plan, base_env = _level_fixture(tmp_path, env)
+    r = _run_level(base_env, str(plan), "--level", "0", "--no-worktree", "--parallel", "1", "--backoff", "0", FAKE_JSON="1")
+    assert r.returncode == 0, r.stdout + r.stderr
+    idx_path = env["project"] / ".governor" / "runs" / "p1" / "level-0.json"
+    idx = json.loads(idx_path.read_text())
+    assert all(e["spec_sha"] for e in idx["slices"].values())
+    # reports carry the attempt number
+    assert all(Path(e["report"]).name.endswith("-a1.md") for e in idx["slices"].values())
+    # the spec of a changes: a reruns, b is skipped
+    (env["project"] / ".governor" / "specs" / "a.md").write_text("# Spec: a\nGoal changed.\n")
+    (tmp_path / "count").unlink()
+    r = _run_level(base_env, str(plan), "--level", "0", "--no-worktree", "--parallel", "1", "--backoff", "0", FAKE_JSON="1")
+    assert r.returncode == 0 and "RERUN slice=a was DONE but its spec changed" in r.stdout and "SKIP slice=b" in r.stdout
+    idx = json.loads(idx_path.read_text())
+    assert idx["slices"]["a"]["attempts"] == 2 and idx["slices"]["b"]["attempts"] == 1
+    # the retry allowance is per invocation: a slice with many past attempts still gets its retry
+    idx["slices"]["a"]["verdict"] = "FAILED"; idx["slices"]["a"]["attempts"] = 9
+    idx_path.write_text(json.dumps(idx))
+    (tmp_path / "count").unlink()
+    r = _run_level(base_env, str(plan), "--level", "0", "--no-worktree", "--parallel", "1", "--backoff", "0", "--retries", "1", FAKE_FAIL_FIRST="1")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "RETRY slice=a attempt=10" in r.stdout and "VERDICT: DONE slice=a attempts=11" in r.stdout
+    # a bad cost in the worker JSON does not lose the verdict; runs prints an unreadable index as such
+    (tmp_path / "count").unlink()
+    fake = tmp_path / "bin" / "claude"
+    fake.write_text('#!/bin/sh\ncat > /dev/null\nprintf \'%s\' "$FAKE_REPORT" | python3 -c \'import json,sys; print(json.dumps({"result": sys.stdin.read(), "total_cost_usd": "BROKEN", "session_id": 7}))\'\n')
+    fake.chmod(0o755)
+    idx_path.unlink()
+    r = _run_level(base_env, str(plan), "--level", "0", "--no-worktree", "--parallel", "1", "--backoff", "0")
+    assert r.returncode == 0 and r.stdout.count("VERDICT: DONE") == 2, r.stdout + r.stderr
+    idx_path.write_text("{not json")
+    r = subprocess.run([sys.executable, str(BIN / "governor.py"), "runs", "p1"], capture_output=True, text=True, env=base_env)
+    assert r.returncode == 0 and "unreadable" in r.stdout
+
+
+def test_plan_rejects_ids_with_separators_and_dry_run_shows_resume(env, tmp_path):
+    levels, errors = governor.plan_levels([{"id": "a/b", "files": ["x.py"]}])
+    assert levels == [] and "must not contain" in errors[0]
+    assert governor.path_label("a/b c") == "a_b_c" and governor.path_label("..") == "x"
+    spec = tmp_path / "s.md"; spec.write_text("# Spec\n")
+    r = run_cli(env, ["run-worker", "--spec", str(spec), "--resume", "sess-1", "--dry-run"])
+    assert r.returncode == 0 and "--resume sess-1" in r.stdout and "-a1.md" in r.stdout
