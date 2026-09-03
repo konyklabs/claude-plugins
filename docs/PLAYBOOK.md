@@ -6,7 +6,7 @@
 
 You run the session on the expensive model and it conducts. Five hooks make that cheap enough to be a habit:
 
-- **Spawns are pinned.** An agent spawned without a model runs on Sonnet, never on the session's model. A `fork` is denied outright.
+- **Spawns are pinned.** An agent whose definition pins no model, such as a bare `general-purpose` spawn, runs on Sonnet instead of inheriting the session's model. The plugin agents pin their own, listed in the tier table below. A `fork` is denied outright.
 - **Expensive spawns need a brief.** Sending a question to `governor:architect` (Fable) works only with `## Question`, `## Context` and `## Definition of done` in the prompt, and at most three times per session.
 - **Spend is priced and gated.** Every turn, from the transcript, at API list price. At 15 USD of expensive-tier spend, tool calls are denied until you switch model or raise the budget. Cheap spawns stay allowed.
 - **Workers cannot stop without evidence.** A report missing its result, changed files or pasted command output is sent back, twice at most.
@@ -22,10 +22,19 @@ claude plugin details governor     # 5 skills, 5 agents, 5 hooks
 
 Optional, in `~/.claude/governor.json`. Leave it out and the defaults apply: enforce mode, 15 USD budget, a one-line spend readout per turn.
 
+A higher default budget for every project:
+
+```json
+{"budget_usd": 25}
 ```
-{"budget_usd": 25}                       # a higher default for every project
-{"mode": "observe", "readout": "off"}    # first day: price everything, enforce nothing
+
+Or, for the first day on a machine, price everything and enforce nothing:
+
+```json
+{"mode": "observe", "readout": "off"}
 ```
+
+The file is plain JSON: one object, no comments.
 
 In each repository where the workflow will run, keep its working files out of git once:
 
@@ -39,11 +48,13 @@ A running `claude` process does not pick up a plugin installed after it started,
 
 ### 1. Start fresh, in the repository
 
-The first thing in context is the governor's policy text and a spend line. If neither is there, the plugin is not loaded and nothing below is enforced.
+The first thing in context is the governor's policy text and a spend line, unless `readout` is `off`, in which case the status line carries the spend instead. If the plugin is not loaded, nothing below is enforced; `claude plugin list` settles it.
 
 ```
-[governor] expensive-tier $0.00 of $15.00 (out 0 tok, cache-read 0) · total $0.00 · session model claude-fable-5-1 · spawns: none
+[governor] expensive-tier $0.00 of $15.00 (out 0 tok, cache-read 0) · total $0.00 · session model unknown · spawns: none
 ```
+
+The model reads `unknown` until the first reply has been priced; from then on it names the session model.
 
 ### 2. Write the brief **(your turn)**
 
@@ -117,7 +128,7 @@ Out of scope: the application code under test, CI configuration.
 
 ## Spend, and the gate
 
-The readout line is in context every turn. `/governor:budget` shows the full picture: cost per model and per subagent, the tool results that cost the most to read, and every spawn with what the hook did to it. A zero-context alternative is the status line; `governor.py statusline-snippet` prints the settings fragment.
+The readout line is in context every turn. `/governor:budget` shows the full picture: cost per model and per subagent, the tool results that cost the most to read, and the most recent spawns with what the hook did to each. A zero-context alternative is the status line; `governor.py statusline-snippet` prints the settings fragment.
 
 > **When the gate closes** tool calls are denied with the reason, and spawning cheap workers is still allowed. Two ways on, both keeping the context:
 >
@@ -135,6 +146,6 @@ Start the session on Opus instead. It reads, runs, and delegates the same way, a
 
 - **A bare `general-purpose` spawn** is pinned to Sonnet but keeps a high effort setting the hook cannot rewrite. The plugin agents pin effort themselves. Say so in the brief.
 - **Skills are named, not guessed.** They trigger on description match, which is not reliable enough for a run you will not watch. Name them.
-- **An installed plugin is a pinned copy.** New versions arrive through `/plugin`; a checkout edited in place is not seen.
+- **An installed plugin is a pinned copy.** It changes only when a new version is installed; a checkout edited in place is not seen.
 - **Headless slices need the install path.** Inside a skill, `${CLAUDE_PLUGIN_ROOT}` resolves; from a shell, the engine lives under `~/.claude/plugins/cache/konyklabs-plugins/governor/<version>/bin/governor.py`.
 - **Dollars on a subscription are notional.** The ratios are exact and the gate uses them; the absolute number is what the same work would cost at list price.

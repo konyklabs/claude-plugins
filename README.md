@@ -221,7 +221,7 @@ plugins/governor/                      bin/governor.py, hooks/hooks.json, agents
 plugins/py-testing/                    skills/ (5, with references and scripts/inventory.py), agents/, tests/, evals/
 plugins/prod-readiness/                skills/ (3, with references and scripts/readiness.py), agents/, tests/, evals/
 scripts/                               validate.sh, audit-deps.sh, dist.sh
-docs/                                  ARCHITECTURE.md, COST-TRACKING.md
+docs/                                  ARCHITECTURE.md, COST-TRACKING.md, PLAYBOOK.md
 .github/workflows/                     validate (manifests, audit, hooks on 3.9 and 3.13) plus the org callers
 ```
 
