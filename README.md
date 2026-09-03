@@ -75,9 +75,11 @@ and add the status line printed by
 `python3 <plugin root>/bin/governor.py statusline-snippet` to
 `~/.claude/settings.json`. Nothing is denied or injected in observe mode;
 the ledger still prices every turn. `docs/COST-TRACKING.md` is the runbook.
+For the full run, from the brief to the budget gate, see `docs/PLAYBOOK.md`.
 
 ## For an agent picking this up
 
+The human-facing sequence is `docs/PLAYBOOK.md`; this section is the reference.
 Everything an agent needs to operate the plugins without reading the code.
 
 **Skills** (slash commands, namespaced by plugin):
