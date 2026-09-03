@@ -29,7 +29,19 @@ Every spec has:
   from "improving" the design.
 - **Out of scope**: what looks adjacent and is not wanted.
 
-Keep it under a page. A spec that needs more is two slices.
+Keep it under a page. A spec that needs more is two slices. Paths and values
+in the spec are exact: a directory, a pin, a config value the conductor can
+resolve in one command is resolved before the spec is written, never handed
+to the worker as "find X". Then check it before dispatch:
+
+```
+python3 "${CLAUDE_PLUGIN_ROOT}/bin/governor.py" spec check .governor/specs/<slug>.md
+```
+
+It refuses a spec over the size cap and warns when a spec mixes three or
+more kinds of work, has more than six done items or five files, or asks
+the worker to find a value. `run-worker` and `run-level` run the same check
+and print its warnings as `SPEC WARNING` lines.
 
 ## 2. Pick the worker
 
@@ -79,7 +91,9 @@ worktree under `.governor/wt/<plan>/<id>` on branch `<plan>/<id>`, a bounded num
 at once, a retry with backoff when a worker dies on an API overload, one
 `VERDICT:` line per slice and a `LEVEL n:` summary. The index under
 `.governor/runs/<plan>/` makes a rerun skip the slices already DONE (unless
-their spec changed since), and `governor.py runs <plan>` prints it. A process ends with a verdict or a
+their spec changed since), and `governor.py runs <plan>` prints it. A worker
+needs the project's environment in its worktree: pass `--setup "uv sync"`
+(or the project's equivalent) and it runs once in each new worktree. A process ends with a verdict or a
 timeout; there is no idle worker to lose track of. Read the report files it
 names, never the workers' output.
 

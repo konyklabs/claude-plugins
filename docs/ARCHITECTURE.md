@@ -231,6 +231,24 @@ many-agent work ("dozens to hundreds of agents per run"); the local review
 gate as a Workflow is a separate task. `run-level` is for the implementation
 levels, where each worker needs a checkout, a budget cap and a report file.
 
+### The spec gate, and where worker dollars show
+
+Field feedback from a real run (2026-09-03): one spec bundled investigation,
+an upgrade, a regression check, new tests and quality gates, and the worker
+ran out of turns; another asked the worker to find a cache directory the
+conductor could have resolved in a second; and two headless workers' spend
+never appeared on the budget line. The split rule and the resolve-first rule
+were prose. `spec check` makes them a script: an empty spec or one over the
+size cap stops the dispatch, and a spec that mixes three or more kinds of
+work, has more than six done items or five files, or asks the worker to
+find a value is warned about, by `spec check` itself and by `run-worker` and
+`run-level` before they spawn. Headless workers are their own sessions, so
+the ledger never sees them; `worker_spend` sums the run indexes under
+`.governor/runs`; the readout and the status line show it as `workers $`,
+and `status` as a `Headless workers` line. `run-level --setup` runs one command in each new worktree,
+because a worker without the project's environment fights the editor's
+type checker instead of doing the slice.
+
 ## py-testing: what it is and is not
 
 Five skills that follow the authoring rules the org already uses (third

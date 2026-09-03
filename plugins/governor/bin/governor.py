@@ -527,7 +527,7 @@ class Ledger:
     def record_spawn(self, subagent_type: str, model: Optional[str], action: str) -> None:
         self.state["spawns"].append({"type": clean_label(subagent_type), "model": clean_label(model or ""), "action": action, "ts": time.time()})
 
-    def readout(self, cfg: Dict[str, Any]) -> str:
+    def readout(self, cfg: Dict[str, Any], project_dir: Optional[str] = None) -> str:
         """One line for the per-turn context injection."""
         exp = self.expensive_spend(cfg)
         budget = float(cfg["budget_usd"])
@@ -546,16 +546,22 @@ class Ledger:
             f"(out {_k(out_tok)} tok, cache-read {_k(cread)}) · total ${self.total_spend():.2f} "
             f"· session model {model} · spawns: {spawn_txt}"
         )
+        workers = worker_spend(project_dir)
+        if workers >= 0.005:  # headless workers are their own sessions; the ledger never sees them
+            line += f" · workers ${workers:.2f} (all runs in this project)"
         if self.state["unpriced_models"]:
             line += " · unpriced (charged at the top rate): " + ", ".join(self.state["unpriced_models"])
         if cfg.get("_ignored"):
             line += f" · {len(cfg['_ignored'])} config value(s) ignored, see /governor:budget"
         return line
 
-    def report(self, cfg: Dict[str, Any]) -> str:
+    def report(self, cfg: Dict[str, Any], project_dir: Optional[str] = None) -> str:
         """Markdown for `governor.py status`."""
         lines = [f"# governor: session {self.session_id}", ""]
         lines.append(f"Budget (expensive tier): ${float(cfg['budget_usd']):.2f}  ·  spent: ${self.expensive_spend(cfg):.2f}  ·  all models: ${self.total_spend():.2f}")
+        workers = worker_spend(project_dir)
+        if workers >= 0.005:
+            lines.append(f"Headless workers (run-worker / run-level, every run recorded under .governor/runs, all sessions): ${workers:.2f}, not in the figures above")
         lines.append(f"Session model: {self.main_model() or 'unknown'}  ·  effort: {self.state.get('main_effort') or 'unknown'}")
         if self.state["unpriced_models"]:
             lines.append("Models missing from pricing.json, charged at the top rate: " + ", ".join(self.state["unpriced_models"]))
@@ -578,6 +584,34 @@ class Ledger:
             for s in self.state["spawns"][-12:]:
                 lines.append(f"- {s['type']} → {s['model'] or '?'} ({s['action']})")
         return "\n".join(lines)
+
+
+def worker_spend(project_dir: Optional[str]) -> float:
+    """Dollars spent by headless workers, summed from the run indexes under
+    the project's .governor/runs. Those workers are their own sessions, so
+    the conductor's ledger never sees them; this is how the readout does."""
+    total = 0.0
+    try:
+        root = Path(str(project_dir) if project_dir else (os.environ.get("CLAUDE_PROJECT_DIR") or "."))
+        for f in (root / ".governor" / "runs").glob("*/level-*.json"):
+            # Read on every prompt: only regular files of a sane size, never through a symlink.
+            if f.is_symlink() or not f.is_file() or f.stat().st_size > 1_000_000:
+                continue
+            try:
+                idx = json.loads(f.read_text())
+                slices = idx.get("slices") or {}
+            except (OSError, ValueError, AttributeError):
+                continue
+            for e in (slices.values() if isinstance(slices, dict) else []):
+                try:
+                    c = float((e or {}).get("cost") or 0.0)  # one bad value loses one slice, not the file
+                except (ValueError, TypeError, AttributeError):
+                    continue
+                if math.isfinite(c) and c >= 0:
+                    total += c
+    except (OSError, TypeError, ValueError):
+        pass
+    return round(total, 4)
 
 
 def clean_label(s: str) -> str:
@@ -1101,12 +1135,12 @@ def emit(obj: Dict[str, Any]) -> None:
     sys.stdout.flush()
 
 
-def policy_text(ledger: Ledger, cfg: Dict[str, Any]) -> str:
+def policy_text(ledger: Ledger, cfg: Dict[str, Any], project_dir: Optional[str] = None) -> str:
     try:
         text = (PLUGIN_ROOT / "policy.md").read_text().strip()
     except OSError:
         text = "governor active."
-    return text + "\n\n" + ledger.readout(cfg)
+    return text + "\n\n" + ledger.readout(cfg, project_dir)
 
 
 EXPLORE_TEXT = (
@@ -1124,13 +1158,13 @@ def h_session_start(hook: Dict[str, Any], cfg: Dict[str, Any], ledger: Ledger) -
     if cfg.get("readout") == "off":
         return {}
     if cfg.get("mode") == "explore":
-        return {"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": EXPLORE_TEXT + "\n" + ledger.readout(cfg)}}
+        return {"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": EXPLORE_TEXT + "\n" + ledger.readout(cfg, hook.get("cwd"))}}
     if cfg.get("mode") == "observe":
-        return {"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": "governor is in observe mode: spend is tracked, nothing is enforced.\n" + ledger.readout(cfg)}}
+        return {"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": "governor is in observe mode: spend is tracked, nothing is enforced.\n" + ledger.readout(cfg, hook.get("cwd"))}}
     return {
         "hookSpecificOutput": {
             "hookEventName": "SessionStart",
-            "additionalContext": policy_text(ledger, cfg),
+            "additionalContext": policy_text(ledger, cfg, hook.get("cwd")),
         }
     }
 
@@ -1143,7 +1177,7 @@ def h_user_prompt(hook: Dict[str, Any], cfg: Dict[str, Any], ledger: Ledger) -> 
     return {
         "hookSpecificOutput": {
             "hookEventName": "UserPromptSubmit",
-            "additionalContext": ledger.readout(cfg),
+            "additionalContext": ledger.readout(cfg, hook.get("cwd")),
         }
     }
 
@@ -1295,7 +1329,7 @@ def cmd_status(args: List[str], cfg: Dict[str, Any]) -> int:
     if tp:
         ledger.update(tp)
         ledger.save()
-    print(ledger.report(cfg))
+    print(ledger.report(cfg, os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()))
     return 0
 
 
@@ -1428,6 +1462,9 @@ def cmd_statusline(cfg: Dict[str, Any]) -> int:
         n = len([x for x in led.state["spawns"] if not x["action"].startswith("deny")])
         if n:
             parts.append(f"spawns {n}")
+    workers = worker_spend((data.get("workspace") or {}).get("current_dir") or data.get("cwd") or os.getcwd())
+    if workers >= 0.005:
+        parts.append(f"workers ${workers:.2f}")
     if isinstance(claude_cost, (int, float)):
         parts.append(f"claude ${claude_cost:.2f}")
     if isinstance(ctx, (int, float)):
@@ -1623,6 +1660,104 @@ TRANSIENT_RE = re.compile(r"overloaded|rate.?limit|\b529\b|\b503\b|\b502\b|serve
 VERDICTS = ("DONE", "PARTIAL", "BLOCKED", "NONCOMPLIANT", "FAILED")
 
 
+# A spec longer than this is two slices (delegate skill: "keep it under a
+# page"); the hard cap is the brief cap, past which it is pasting material.
+SPEC_SOFT_LINES = 80
+# The hard cap on a spec. Its own knob, not the consult brief's: tightening
+# one must not make every slice fail at dispatch. 8000 chars is two pages.
+SPEC_MAX_CHARS = 8000
+# A worktree setup command (an environment install) that runs longer than
+# this is a problem to look at, not to wait for.
+SETUP_TIMEOUT_S = 600.0
+# More done items than this, or more files to change, and the slice is
+# doing several jobs (decompose skill: one to five files per slice).
+SPEC_MAX_DONE = 6
+SPEC_MAX_FILES = 5
+# Kinds of work; a spec that mixes three or more ran a worker out of turns
+# in the field. Each pattern names the kind for the message.
+SPEC_KINDS = (
+    ("investigate", re.compile(r"\b(investigat\w*|explor\w*|survey|review (?:the )?(?:diff|changes?)|look at what changed|understand|audit|assess|analy[sz]e)\b", re.I)),
+    ("upgrade", re.compile(r"\b(upgrad\w*|updat\w* (?:the )?(?:pin|pinned|version|dependency)|bump|re-?pin|migrat\w*)\b", re.I)),
+    ("regression", re.compile(r"\b(regression|(?:old|existing|current) tests? (?:still )?pass|re-?run (?:the )?(?:old|existing|full) (?:tests?|suite)|still pass)\b", re.I)),
+    ("new tests", re.compile(r"\b(write|add|create|build)\b[^\n.]{0,40}\b(tests?|coverage)\b|\btest coverage\b", re.I)),
+    ("quality gates", re.compile(r"\b(lint\w*|quality gates?|type-?check\w*|mypy|pyright|ruff|black|formatter|pre-commit)\b", re.I)),
+    ("rewrite", re.compile(r"\b(rewrite|rework|refactor\w*|restructure)\b", re.I)),
+)
+# A lookup told NOT to happen is not a lookup.
+SPEC_NEGATION_RE = re.compile(r"\b(do not|don'?t|never|no need to|without)\b", re.I)
+# A line that asks the worker to find a value the conductor could resolve in
+# one command: several worker turns spent on a lookup, in the field.
+SPEC_LOOKUP_RE = re.compile(r"\b(find|locate|figure out|determine|discover|look up|work out)\b[^\n]{0,60}\b(path|directory|dir|folder|file|config\w*|value|version|where)\b", re.I)
+
+
+def spec_check_problems(text: str, cfg: Dict[str, Any]) -> Tuple[List[str], List[str]]:
+    """(errors, warnings) for a slice spec before dispatch. Errors stop the
+    dispatch: an empty spec, or one over the size cap. Warnings are the
+    signs a spec is two slices or carries a lookup the conductor owed."""
+    errors: List[str] = []
+    warnings: List[str] = []
+    if not text.strip():
+        return ["spec is empty"], []
+    if len(text) > SPEC_MAX_CHARS:
+        errors.append(f"spec is {len(text)} chars, cap {SPEC_MAX_CHARS}: point at files instead of pasting them, or split")
+    lines = text.splitlines()
+    if len(lines) > SPEC_SOFT_LINES:
+        warnings.append(f"spec is {len(lines)} lines, more than {SPEC_SOFT_LINES}: a spec that needs more is two slices")
+    if not re.search(r"^\s*(\*\*Goal|#{1,6}\s*Goal)", text, re.M | re.I):
+        warnings.append("no Goal line: one sentence, the observable outcome")
+    for h in ("Files", "Definition of done", "Tests to run", "Out of scope"):
+        if not has_heading(text, h):
+            warnings.append(f"missing '## {h}'")
+    done = done_items(section_body(text, "Definition of done"))
+    if len(done) > SPEC_MAX_DONE:
+        warnings.append(f"{len(done)} done items, more than {SPEC_MAX_DONE}: split the slice")
+    files_body = section_body(text, "Files")
+    cut = re.search(r"(?im)^.*\b(leave alone|do not (?:touch|change)|untouched|not in scope)\b.*$", files_body)
+    change = files_body[:cut.start()] if cut else files_body
+    nfiles = len([ln for ln in change.splitlines() if re.match(r"^\s*[-*]\s+`", ln)])
+    if nfiles > SPEC_MAX_FILES:
+        warnings.append(f"{nfiles} files to change, more than {SPEC_MAX_FILES}: split the slice")
+    # Kinds and lookups are judged on the work itself: the goal, the files
+    # and the definition of done; not on the sections that narrow the slice.
+    first_heading = re.search(r"^#{1,6}\s", text[1:], re.M)
+    goal = text[: first_heading.start() + 1] if first_heading else text
+    work = "\n".join([goal, files_body, section_body(text, "Definition of done")])
+    kinds = [name for name, rx in SPEC_KINDS if rx.search(work)]
+    if len(kinds) >= 3:
+        warnings.append("mixes " + ", ".join(kinds) + ": three or more kinds of work in one slice ran a worker out of turns; split")
+    for ln in work.splitlines():
+        m = SPEC_LOOKUP_RE.search(ln)
+        if m and not ln.lstrip().startswith("#") and not SPEC_NEGATION_RE.search(ln[: m.start()]):
+            warnings.append("asks the worker to resolve a value the conductor can: '" + one_line(ln, 80) + "'")
+            break
+    return errors, warnings
+
+
+def cmd_spec(args: List[str], cfg: Dict[str, Any]) -> int:
+    """governor.py spec check FILE|- : errors stop dispatch (exit 1), warnings are printed with '! '."""
+    usage = "usage: governor.py spec check FILE|-"
+    if not args or args[0] != "check":
+        print(usage)
+        return 2
+    src = next((a for a in args[1:] if not a.startswith("--")), "-")
+    if src == "-" and sys.stdin.isatty():
+        print(usage)
+        return 2
+    try:
+        text = sys.stdin.read() if src == "-" else Path(src).read_text()
+    except (OSError, ValueError) as e:
+        print(f"NONCOMPLIANT spec={src}")
+        print(f"- cannot read {src}: {e}")
+        return 1
+    errors, warnings = spec_check_problems(text, cfg)
+    print(f"{'OK' if not errors else 'NONCOMPLIANT'} spec={src}")
+    for e in errors:
+        print(f"- {e}")
+    for w in warnings:
+        print(f"! {w}")
+    return 0 if not errors else 1
+
+
 def parse_worker_output(stdout: str) -> Tuple[str, Dict[str, Any]]:
     """`claude -p --output-format json` prints one object with the text under
     'result'; anything else (older CLI, a fake in tests) is taken as the text."""
@@ -1642,11 +1777,16 @@ def run_worker_once(spec_path: str, agent: str, budget: str, out_dir: Path, cfg:
     report path, cost, session_id, transient (the failure was the API, a
     retry may help) and error. The conductor never sees the worker's tool
     output: only the verdict line and the report file."""
-    out: Dict[str, Any] = {"verdict": "FAILED", "problems": [], "report": None, "cost": 0.0, "session_id": None, "transient": False, "error": ""}
+    out: Dict[str, Any] = {"verdict": "FAILED", "problems": [], "report": None, "cost": 0.0, "session_id": None, "transient": False, "error": "", "warnings": []}
     try:
         spec = Path(spec_path).read_text()
     except (OSError, ValueError) as e:
         out["error"] = f"cannot read spec: {e}"
+        return out
+    errors, warnings = spec_check_problems(spec, cfg)
+    out["warnings"] = warnings
+    if errors:
+        out["error"] = "spec check: " + "; ".join(errors)
         return out
     short = agent.split(":", 1)[-1]
     contract = cfg["report_contracts"].get(short, "worker")
@@ -1682,7 +1822,8 @@ def run_worker_once(spec_path: str, agent: str, budget: str, out_dir: Path, cfg:
         return out
     text, meta = parse_worker_output(proc.stdout)
     try:
-        out["cost"] = float(meta.get("total_cost_usd") or 0.0)
+        c = float(meta.get("total_cost_usd") or 0.0)
+        out["cost"] = c if math.isfinite(c) and c >= 0 else 0.0  # NaN, inf and negatives would poison every later sum
     except (TypeError, ValueError):
         out["cost"] = 0.0  # untrusted subprocess JSON; a bad number is not a reason to lose the verdict
     sid = meta.get("session_id")
@@ -1724,15 +1865,29 @@ def cmd_run_worker(args: List[str], cfg: Dict[str, Any], project_dir: Optional[s
         return 2
     out_dir = Path(_arg(args, "--out") or (Path(project_dir or ".") / ".governor" / "runs"))
     r = run_worker_once(spec_path, agent, budget, out_dir, cfg, resume=_arg(args, "--resume"), dry_run="--dry-run" in args)
+    if "--dry-run" not in args and r.get("report"):
+        # One index entry per run, so worker_spend and `runs` see single-slice dispatches too.
+        idx_path = out_dir.parent / "run-worker" / "level-0.json" if out_dir.name != "run-worker" else out_dir / "level-0.json"
+        idx = load_index(idx_path) or {"plan": "run-worker", "level": 0, "slices": {}}
+        key = Path(r["report"]).stem
+        idx["slices"][key] = {"state": "done" if r["verdict"] == "DONE" else "failed", "verdict": r["verdict"], "attempts": 1,
+                              "cost": float(r.get("cost") or 0.0), "report": r["report"], "session_id": r.get("session_id"), "error": one_line(r.get("error") or "", 300)}
+        try:
+            idx_path.parent.mkdir(parents=True, exist_ok=True)
+            idx_path.write_text(json.dumps(idx, indent=2) + "\n")
+        except OSError as e:
+            log_error(f"run-worker index not written: {e}")
     if "--dry-run" in args:
         if not r.get("cmd"):
             print(f"ERROR {r['error']}")
             return 2
         print("DRY-RUN " + " ".join(r["cmd"]))
         print(f"report -> {r['report_path']}")
+        for w in r.get("warnings") or []:
+            print(f"SPEC WARNING {one_line(w, 200)}")
         return 0
     if r["verdict"] == "FAILED" and not r["report"]:
-        print(f"ERROR {r['error']}")
+        print(f"ERROR {one_line(r['error'], 300)}")
         return 2 if "spec" in r["error"] or "PATH" in r["error"] else 1
     print(f"VERDICT: {r['verdict']} agent={agent} budget=${budget} cost=${r['cost']:.2f} report={r['report']}"
           + (f" session={r['session_id']}" if r.get("session_id") else ""))
@@ -1740,6 +1895,8 @@ def cmd_run_worker(args: List[str], cfg: Dict[str, Any], project_dir: Optional[s
         print(f"- {one_line(r['error'], 200)}" + (" (transient)" if r["transient"] else ""))
     for pr in r["problems"]:
         print(f"- {one_line(pr, 200)}")
+    for w in r.get("warnings") or []:
+        print(f"SPEC WARNING {one_line(w, 200)}")  # after the verdict: the first line is the contract
     return 0 if r["verdict"] == "DONE" else 1
 
 
@@ -1770,7 +1927,7 @@ def ensure_exclude(root: Path) -> None:
         log_error(f"exclude not written: {e}")
 
 
-def ensure_worktree(root: Path, plan: str, slice_id: str) -> Tuple[Optional[Path], str]:
+def ensure_worktree(root: Path, plan: str, slice_id: str) -> Tuple[Optional[Path], str, bool]:
     """A worktree per slice under .governor/wt/<plan>/<slice> on branch
     <plan>/<slice>. Namespaced by plan, as the run index is: two plans may
     reuse a slice id and must never share a checkout. An existing directory
@@ -1780,8 +1937,8 @@ def ensure_worktree(root: Path, plan: str, slice_id: str) -> Tuple[Optional[Path
     if path.exists():
         rc, head = _git(path, "rev-parse", "--abbrev-ref", "HEAD")
         if rc != 0 or head.strip() != branch:
-            return None, f"{path} exists but is on {head.strip() or '?'}, not {branch}"
-        return path, branch
+            return None, f"{path} exists but is on {head.strip() or '?'}, not {branch}", False
+        return path, branch, False
     ensure_exclude(root)
     _git(root, "worktree", "prune")  # a registration whose directory is gone would refuse the add
     rc, _ = _git(root, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}")
@@ -1790,8 +1947,8 @@ def ensure_worktree(root: Path, plan: str, slice_id: str) -> Tuple[Optional[Path
     else:
         rc, msg = _git(root, "worktree", "add", "-b", branch, str(path), "HEAD")
     if rc != 0:
-        return None, msg
-    return path, branch
+        return None, msg, False
+    return path, branch, True
 
 
 def spec_digest(path: Path) -> str:
@@ -1817,8 +1974,10 @@ def cmd_run_level(args: List[str], cfg: Dict[str, Any], project_dir: Optional[st
            [--timeout S] [--agent NAME] [--specs DIR] [--no-worktree] [--dry-run]
     Each slice: its own worktree, a bounded number of attempts with backoff on a transient
     failure, one VERDICT line. The index under .governor/runs/<plan>/ makes a rerun resume."""
-    usage = "usage: governor.py run-level PLAN.json --level N [--parallel K] [--budget USD] [--retries N] [--backoff S] [--timeout S] [--agent NAME] [--specs DIR] [--no-worktree] [--dry-run]"
-    plan_path = next((a for a in args if not a.startswith("--") and a.endswith(".json")), None)
+    usage = "usage: governor.py run-level PLAN.json --level N [--parallel K] [--budget USD] [--retries N] [--backoff S] [--timeout S] [--agent NAME] [--specs DIR] [--setup CMD] [--no-worktree] [--dry-run]"
+    valued = ("--level", "--parallel", "--budget", "--retries", "--backoff", "--timeout", "--agent", "--specs", "--setup")
+    values = {args[i + 1] for i, a in enumerate(args[:-1]) if a in valued}
+    plan_path = next((a for a in args if not a.startswith("--") and a.endswith(".json") and a not in values), None)
     level_s = _arg(args, "--level")
     if not plan_path or level_s is None:
         print(usage)
@@ -1856,6 +2015,9 @@ def cmd_run_level(args: List[str], cfg: Dict[str, Any], project_dir: Optional[st
         return 2
     agent_default = _arg(args, "--agent") or "governor:implementer"
     use_worktree = "--no-worktree" not in args
+    setup_cmd = _arg(args, "--setup")  # run once in each newly created worktree, e.g. "uv sync": a worker needs the project's environment
+    if setup_cmd and not use_worktree:
+        print("NOTE --setup is ignored with --no-worktree: the checkout is the project's own")
 
     index = load_index(index_path) or {"plan": name, "level": level, "slices": {}}
     for sid in ids:
@@ -1912,10 +2074,24 @@ def cmd_run_level(args: List[str], cfg: Dict[str, Any], project_dir: Optional[st
                 save()
                 print(f"VERDICT: FAILED slice={sid} attempts=0 cost=$0.00 error=no spec at {spec}")
             return "FAILED"
+        # The spec check needs only the text: refuse before a worktree or a setup is paid for.
+        try:
+            spec_errors, spec_warnings = spec_check_problems(spec.read_text(), cfg)
+        except (OSError, ValueError) as e:
+            spec_errors, spec_warnings = [f"cannot read spec: {e}"], []
+        with lock:
+            for w in spec_warnings:
+                print(f"SPEC WARNING slice={sid} {one_line(w, 160)}")
+        if spec_errors:
+            with lock:
+                entry.update(state="failed", verdict="FAILED", error=one_line("spec check: " + "; ".join(spec_errors), 300))
+                save()
+                print(f"VERDICT: FAILED slice={sid} attempts=0 cost=$0.00 error={one_line('spec check: ' + '; '.join(spec_errors), 120)}")
+            return "FAILED"
         cwd: Optional[str] = None
         if use_worktree:
             with lock:
-                wt, branch_or_msg = ensure_worktree(root, name, sid)
+                wt, branch_or_msg, created = ensure_worktree(root, name, sid)
             if wt is None:
                 with lock:
                     entry.update(state="failed", verdict="FAILED", error=one_line(f"worktree: {branch_or_msg[-200:]}", 300))
@@ -1925,6 +2101,24 @@ def cmd_run_level(args: List[str], cfg: Dict[str, Any], project_dir: Optional[st
             cwd = str(wt)
             with lock:
                 entry.update(worktree=str(wt), branch=branch_or_msg)
+            # Setup runs until it has succeeded once for this worktree: a failed
+            # setup leaves the directory behind, and a rerun must not skip it.
+            if setup_cmd and (created or entry.get("setup") != "ok"):
+                import subprocess
+                try:
+                    sp = subprocess.run(setup_cmd, shell=True, cwd=cwd, capture_output=True, text=True, timeout=SETUP_TIMEOUT_S, check=False)
+                    rc_setup, tail = sp.returncode, one_line((sp.stderr or sp.stdout)[-300:], 160)
+                except subprocess.TimeoutExpired:
+                    rc_setup, tail = 124, f"setup timed out after {SETUP_TIMEOUT_S:.0f}s"
+                with lock:
+                    entry["setup"] = "ok" if rc_setup == 0 else "failed"
+                    save()
+                if rc_setup != 0:
+                    with lock:
+                        entry.update(state="failed", verdict="FAILED", error=one_line(f"setup failed ({rc_setup}): {tail}", 300))
+                        save()
+                        print(f"VERDICT: FAILED slice={sid} attempts=0 cost=$0.00 error={one_line(f'setup failed ({rc_setup}): {tail}', 120)}")
+                    return "FAILED"
         attempt = int(entry.get("attempts") or 0)  # cumulative, for the record
         this_run = 0  # the retry allowance is per invocation
         result: Dict[str, Any] = {"verdict": "FAILED", "error": "not run", "transient": False, "cost": 0.0, "report": None, "session_id": None, "problems": []}
@@ -2121,6 +2315,8 @@ def main(argv: List[str]) -> int:
         return cmd_run_worker(args, cfg, project_dir)
     if event == "run-level":
         return cmd_run_level(args, cfg, project_dir)
+    if event == "spec":
+        return cmd_spec(args, cfg)
     if event == "runs":
         return cmd_runs(args, project_dir)
     if event not in HOOK_EVENTS:
