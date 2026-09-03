@@ -128,6 +128,7 @@ is sent back (twice at most).
 | `governor.py mode [show\|explore\|enforce\|observe] [--user\|--project]` | the mode, per project in the user's file; a project file may only set enforce |
 | `governor.py plan build slices.json` / `plan check plan.json` | slices to levels; refuses cycles and same-level file conflicts |
 | `governor.py run-worker --spec FILE --agent governor:implementer --budget 2` | one slice, headless, under `--max-budget-usd`, report checked; prints one `VERDICT:` line |
+| `governor.py run-level PLAN.json --level N [--parallel K] [--retries N]` / `runs [PLAN]` | every slice of a level as a supervised headless worker: worktree each, retry on overload, resumable index, one `VERDICT:` line per slice |
 | `governor.py statusline-snippet` | the settings fragment for the status line |
 | `inventory.py tests [--json] [--diff before.json]` | test-suite facts; the diff is the integration evidence |
 | `readiness.py [ROOT] --tier precommit|release [--only id,id] [--json]` | the categorized scan; full report in `.readiness/report.json` |

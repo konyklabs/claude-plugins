@@ -195,6 +195,30 @@ user's top level; a project file may only set `enforce`. `/governor:explore`
 frames the question and routes the exit; `/governor:brief` switches back to
 `enforce` as its first step, because a brief is the first durable act.
 
+### Supervised headless workers
+
+Checked against the docs on 2026-09-03: a hand-spawned subagent that hits
+an API error is marked failed and must be resumed by hand; a headless
+`claude -p` run retries retryable errors itself and emits `api_retry`
+events; fan-out is documented as a loop over `claude -p` with
+`--allowedTools` and worktrees; and Anthropic's own multi-agent system
+passes lightweight references back to the orchestrator and resumes from
+checkpoints rather than restarting. `run-level` is that shape in one
+command: one `run-worker` per slice of a plan level, in its own worktree
+(`.governor/wt/<id>`, branch `<plan>/<id>`), at most `LEVEL_PARALLEL` at
+once, up to `LEVEL_RETRIES` outer retries with doubling backoff when the
+process died on something `TRANSIENT_RE` recognises (overload, rate limit,
+5xx, connection reset), and never a retry on anything else, because that
+would spend the budget on the same failure. Every attempt updates the index
+under `.governor/runs/<plan>/level-N.json`; a rerun skips DONE slices, and
+`runs` prints the table. The worker runs with `--output-format json`, so
+cost and session id are recorded per slice and a PARTIAL worker can be
+continued with `run-worker --resume <session>`. Not `--bare`: bare mode
+needs an API key, and this plugin runs on subscription login.
+
+What the conductor sees is one line per slice and a summary; the reports
+are files. That is the "lightweight references" rule applied.
+
 ## py-testing: what it is and is not
 
 Five skills that follow the authoring rules the org already uses (third
@@ -288,6 +312,12 @@ Not verified:
 - The explore checkpoint's deny-once behaviour in a real session: unit
   tests cover the flag and both calls; no session has yet reached its
   budget in explore mode.
+
+- `run-level` under a real API overload: the retry path is covered by a
+  fake `claude` that dies with a 529 on its first call; no real overload has
+  been observed through it yet. The worktree and index paths were checked
+  with a real `claude` on a two-slice plan (see the run record on the
+  driving task).
 
 ## Rejected
 

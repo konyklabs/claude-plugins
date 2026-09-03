@@ -66,8 +66,22 @@ The runner passes the spec, caps spend with `--max-budget-usd`, allows
 only the tools a worker needs (`worker_allowed_tools` in `governor.json` to
 widen), writes the report to `.governor/runs/`, checks it against the
 contract, and prints one line: `VERDICT: DONE|PARTIAL|BLOCKED|NONCOMPLIANT
-... report=<path>`. Exit 0 only on DONE. Several slices of one level can
-run this way in parallel from a shell loop.
+... report=<path>`. Exit 0 only on DONE.
+
+For a whole level of a plan, do not loop by hand; the supervisor does it:
+
+```
+python3 "${CLAUDE_PLUGIN_ROOT}/bin/governor.py" run-level .governor/plan.json --level 1
+```
+
+One worker per slice (spec at `.governor/specs/<id>.md`), each in its own
+worktree under `.governor/wt/<id>` on branch `<plan>/<id>`, a bounded number
+at once, a retry with backoff when a worker dies on an API overload, one
+`VERDICT:` line per slice and a `LEVEL n:` summary. The index under
+`.governor/runs/<plan>/` makes a rerun skip the slices already DONE, and
+`governor.py runs <plan>` prints it. A process ends with a verdict or a
+timeout; there is no idle worker to lose track of. Read the report files it
+names, never the workers' output.
 
 ## 3. Read the evidence, not the prose
 

@@ -59,9 +59,9 @@ dependencies are done), refuses cycles and unknown dependencies, and refuses
 two slices in one level that change the same file, which is the collision
 that breaks parallel worktrees. It writes `.governor/plan.md` and
 `.governor/plan.json`; `plan check .governor/plan.json` re-validates after an
-edit. Slices within a level run in parallel in worktrees (`isolation:
-"worktree"` on the spawn, or `run-worker` from a shell loop); levels run in
-sequence. The conductor integrates each level before starting the next,
+edit. Slices within a level run in parallel in worktrees: `governor.py run-level
+.governor/plan.json --level N` supervises them (worktree per slice, retry
+on overload, resumable index); levels run in sequence. The conductor integrates each level before starting the next,
 running the full test command once per level, not per slice.
 
 ## 4. Specs

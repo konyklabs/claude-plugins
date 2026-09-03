@@ -1117,3 +1117,106 @@ def test_budget_set_still_writes_through_the_shared_helper(env, capsys):
     assert governor.main(["budget", "set", "10", "--project"]) == 0
     assert json.loads((env["project"] / ".claude" / "governor.json").read_text())["budget_usd"] == 10.0
     assert governor.load_config(proj)["budget_usd"] == 10.0
+
+
+# --------------------------------------------------------------------------- supervised levels (governor.py run-level)
+
+FAKE_CLAUDE = """#!/bin/sh
+cat > /dev/null
+n=$(cat "$FAKE_COUNT" 2>/dev/null || echo 0); n=$((n+1)); echo $n > "$FAKE_COUNT"
+if [ "$n" -le "${FAKE_FAIL_FIRST:-0}" ]; then echo "API Error: 529 Overloaded" >&2; exit 1; fi
+if [ -n "$FAKE_JSON" ]; then
+  python3 -c 'import json,os,sys; print(json.dumps({"result": os.environ["FAKE_REPORT"], "total_cost_usd": 0.05, "session_id": "sess-" + os.environ.get("FAKE_COUNT","x")[-4:], "is_error": False}))'
+else
+  printf '%s' "$FAKE_REPORT"
+fi
+"""
+
+
+def _level_fixture(tmp_path, env, git=False):
+    proj = env["project"]
+    if git:
+        subprocess.run(["git", "init", "-q", str(proj)], check=True)
+        subprocess.run(["git", "-C", str(proj), "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init"], check=True)
+    specs = proj / ".governor" / "specs"; specs.mkdir(parents=True, exist_ok=True)
+    for sid in ("a", "b"):
+        (specs / f"{sid}.md").write_text(f"# Spec: {sid}\nGoal.\n")
+    plan = proj / "plan.json"
+    plan.write_text(json.dumps({"name": "p1", "slices": [{"id": "a", "files": ["a.py"]}, {"id": "b", "files": ["b.py"]}], "levels": [["a", "b"]]}))
+    fake_bin = tmp_path / "bin"; fake_bin.mkdir(exist_ok=True)
+    fake = fake_bin / "claude"; fake.write_text(FAKE_CLAUDE); fake.chmod(0o755)
+    base_env = {**os.environ, "GOVERNOR_STATE_DIR": str(env["state"]), "CLAUDE_PROJECT_DIR": str(proj), "HOME": str(env["tmp"] / "home"),
+                "PATH": str(fake_bin) + ":" + os.environ["PATH"], "FAKE_REPORT": GOOD_WORKER, "FAKE_COUNT": str(tmp_path / "count")}
+    return plan, base_env
+
+
+def _run_level(base_env, *extra, **env_over):
+    return subprocess.run([sys.executable, str(BIN / "governor.py"), "run-level", *extra], capture_output=True, text=True, env={**base_env, **env_over})
+
+
+def test_run_level_runs_slices_in_parallel_and_writes_the_index(env, tmp_path):
+    plan, base_env = _level_fixture(tmp_path, env)
+    r = _run_level(base_env, str(plan), "--level", "0", "--no-worktree", "--parallel", "2", "--backoff", "0", FAKE_JSON="1")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert r.stdout.count("VERDICT: DONE") == 2 and "LEVEL 0: 2 DONE (of 2)" in r.stdout
+    idx = json.loads((env["project"] / ".governor" / "runs" / "p1" / "level-0.json").read_text())
+    assert {s["verdict"] for s in idx["slices"].values()} == {"DONE"}
+    assert all(s["attempts"] == 1 and s["cost"] == 0.05 and s["session_id"] for s in idx["slices"].values())
+    assert all(Path(s["report"]).exists() for s in idx["slices"].values())
+    # runs prints the table
+    r = subprocess.run([sys.executable, str(BIN / "governor.py"), "runs", "p1"], capture_output=True, text=True, env=base_env)
+    assert r.returncode == 0 and "| p1 | 0 | a | done | DONE | 1 | 0.05 |" in r.stdout
+
+
+def test_run_level_retries_transient_failures_and_resumes(env, tmp_path):
+    plan, base_env = _level_fixture(tmp_path, env)
+    # the first process dies on 529, the retry succeeds; serial so the count is deterministic
+    r = _run_level(base_env, str(plan), "--level", "0", "--no-worktree", "--parallel", "1", "--backoff", "0", "--retries", "2", FAKE_FAIL_FIRST="1")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "RETRY slice=a attempt=1" in r.stdout and "VERDICT: DONE slice=a attempts=2" in r.stdout and "VERDICT: DONE slice=b attempts=1" in r.stdout
+    # a non-transient death is not retried
+    (tmp_path / "count").unlink()
+    fake = tmp_path / "bin" / "claude"; fake.write_text("#!/bin/sh\ncat > /dev/null\necho 'permission denied' >&2\nexit 1\n"); fake.chmod(0o755)
+    idx_path = env["project"] / ".governor" / "runs" / "p1" / "level-0.json"
+    idx_path.unlink()
+    r = _run_level(base_env, str(plan), "--level", "0", "--no-worktree", "--parallel", "1", "--backoff", "0")
+    assert r.returncode == 1 and "RETRY" not in r.stdout and r.stdout.count("VERDICT: FAILED") == 2
+    idx = json.loads(idx_path.read_text())
+    assert all(s["attempts"] == 1 for s in idx["slices"].values())
+    # resume: mark a DONE by hand, rerun with the good fake; only b runs
+    idx["slices"]["a"]["verdict"] = "DONE"; idx_path.write_text(json.dumps(idx))
+    fake.write_text(FAKE_CLAUDE); fake.chmod(0o755)
+    r = _run_level(base_env, str(plan), "--level", "0", "--no-worktree", "--parallel", "1", "--backoff", "0")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "SKIP slice=a already DONE" in r.stdout and r.stdout.count("VERDICT: DONE slice=b") == 1 and "VERDICT: DONE slice=a" not in r.stdout
+
+
+def test_run_level_worktrees_missing_spec_and_dry_run(env, tmp_path):
+    plan, base_env = _level_fixture(tmp_path, env, git=True)
+    r = _run_level(base_env, str(plan), "--level", "0", "--dry-run")
+    assert r.returncode == 0 and "RUN  slice=a" in r.stdout and "worktree=" in r.stdout and "parallel=" in r.stdout
+    r = _run_level(base_env, str(plan), "--level", "0", "--parallel", "2", "--backoff", "0")
+    assert r.returncode == 0, r.stdout + r.stderr
+    for sid in ("a", "b"):
+        wt = env["project"] / ".governor" / "wt" / sid
+        assert wt.is_dir() and (wt / ".git").exists()
+        branches = subprocess.run(["git", "-C", str(env["project"]), "branch", "--list", f"p1/{sid}"], capture_output=True, text=True).stdout
+        assert f"p1/{sid}" in branches
+    # a slice without a spec fails without spawning anything
+    (env["project"] / ".governor" / "specs" / "b.md").unlink()
+    (env["project"] / ".governor" / "runs" / "p1" / "level-0.json").unlink()
+    r = _run_level(base_env, str(plan), "--level", "0", "--parallel", "1", "--backoff", "0")
+    assert r.returncode == 1 and "VERDICT: FAILED slice=b attempts=0" in r.stdout and "no spec" in r.stdout
+    # bad arguments
+    r = _run_level(base_env, str(plan))
+    assert r.returncode == 2 and "usage" in r.stdout
+    r = _run_level(base_env, str(plan), "--level", "7")
+    assert r.returncode == 2 and "cannot read plan level" in r.stdout
+
+
+def test_parse_worker_output_and_transient_classification():
+    text, meta = governor.parse_worker_output(json.dumps({"result": "## Result\nDONE", "total_cost_usd": 0.1, "session_id": "s"}))
+    assert text.startswith("## Result") and meta["total_cost_usd"] == 0.1
+    assert governor.parse_worker_output("plain text") == ("plain text", {})
+    assert governor.TRANSIENT_RE.search("API Error: 529 Overloaded") and governor.TRANSIENT_RE.search("rate limit exceeded")
+    assert not governor.TRANSIENT_RE.search("permission denied") and not governor.TRANSIENT_RE.search("invalid_request")

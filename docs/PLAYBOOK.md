@@ -88,6 +88,12 @@ One spec per slice under `.governor/specs/`, then a Sonnet worker (`governor:imp
 - `## Changed files` Checked against the spec's file list. A file outside the list is a finding even if the change looks right.
 - `## Evidence` The command on a `$` line and its output. The hook verified the command really ran; the conductor verifies it proves the definition of done.
 
+Or hand the whole level to the supervisor and read one line per slice:
+`governor.py run-level .governor/plan.json --level 1` runs every slice as a
+headless worker in its own worktree, retries a worker that dies on an API
+overload, and resumes from its index if rerun. Workers that sit idle or get
+lost are not a thing it can do; a process ends with a verdict or a timeout.
+
 ### 6. Integrate per level
 
 The conductor merges a level, runs the full test command once, and for a test suite runs the inventory diff against the saved before-state. That diff is the evidence the restructure did what the plan said.
