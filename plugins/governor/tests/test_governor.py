@@ -1222,10 +1222,44 @@ def test_run_level_worktrees_missing_spec_and_dry_run(env, tmp_path):
     assert r.returncode == 2 and "cannot read plan level" in r.stdout
 
 
+def test_error_shaped_results_keep_cost_session_and_retry_only_on_diagnostics(env, tmp_path):
+    # the real shape on 2.1.258: type=result, subtype=error_*, is_error, errors, cost and session, no 'result' key
+    plan, base_env = _level_fixture(tmp_path, env)
+    fake = tmp_path / "bin" / "claude"
+    fake.write_text("#!/bin/sh\ncat > /dev/null\npython3 -c 'import json,os; print(json.dumps({\"type\": \"result\", \"subtype\": os.environ[\"SUBTYPE\"], \"is_error\": True, \"errors\": [os.environ[\"ERRTXT\"]], \"total_cost_usd\": 1.87, \"session_id\": \"abc\"}))'\nexit 1\n")
+    fake.chmod(0o755)
+    r = _run_level(base_env, str(plan), "--level", "0", "--no-worktree", "--parallel", "1", "--backoff", "0", "--retries", "0", SUBTYPE="error_max_budget_usd", ERRTXT="Reached maximum budget ($2)")
+    assert r.returncode == 1 and r.stdout.count("VERDICT: FAILED") == 2 and "RETRY" not in r.stdout, r.stdout + r.stderr
+    idx = json.loads((env["project"] / ".governor" / "runs" / "p1" / "level-0.json").read_text())
+    a = idx["slices"]["a"]
+    assert a["cost"] == 1.87 and a["session_id"] == "abc" and "error_max_budget_usd" in a["error"] and "maximum budget" in a["error"]
+    # an overload in the diagnostics is retried
+    (env["project"] / ".governor" / "runs" / "p1" / "level-0.json").unlink()
+    r = _run_level(base_env, str(plan), "--level", "0", "--no-worktree", "--parallel", "1", "--backoff", "0", "--retries", "1", SUBTYPE="error_during_execution", ERRTXT="API Error: 529 Overloaded")
+    assert r.returncode == 1 and "RETRY slice=a attempt=1" in r.stdout and "VERDICT: FAILED slice=a attempts=2" in r.stdout
+    # an overload mentioned in the worker's own prose is not
+    fake.write_text("#!/bin/sh\ncat > /dev/null\npython3 -c 'import json; print(json.dumps({\"type\": \"result\", \"subtype\": \"error_during_execution\", \"is_error\": True, \"errors\": [\"permission denied\"], \"result\": \"I was adding a handler for the 503 overloaded case and a connection reset retry\", \"total_cost_usd\": 0.2, \"session_id\": \"s2\"}))'\nexit 1\n")
+    fake.chmod(0o755)
+    (env["project"] / ".governor" / "runs" / "p1" / "level-0.json").unlink()
+    r = _run_level(base_env, str(plan), "--level", "0", "--no-worktree", "--parallel", "1", "--backoff", "0", "--retries", "2")
+    assert r.returncode == 1 and "RETRY" not in r.stdout and r.stdout.count("attempts=1") == 2
+    # run-worker: same shape, same record
+    spec = env["project"] / ".governor" / "specs" / "a.md"
+    r = subprocess.run([sys.executable, str(BIN / "governor.py"), "run-worker", "--spec", str(spec), "--out", str(tmp_path / "runs")], capture_output=True, text=True, env=base_env)
+    assert r.returncode == 1 and r.stdout.startswith("VERDICT: FAILED") and "cost=$0.20" in r.stdout and "session=s2" in r.stdout and "permission denied" in r.stdout
+    # ids: a trailing newline is not a valid id
+    assert not governor.ID_RE.match("shared\n") and governor.ID_RE.match("shared")
+    assert governor.plan_levels([{"id": "shared\n"}])[1]
+
+
 def test_parse_worker_output_and_transient_classification():
     text, meta = governor.parse_worker_output(json.dumps({"result": "## Result\nDONE", "total_cost_usd": 0.1, "session_id": "s"}))
     assert text.startswith("## Result") and meta["total_cost_usd"] == 0.1
     assert governor.parse_worker_output("plain text") == ("plain text", {})
+    text, meta = governor.parse_worker_output(json.dumps({"type": "result", "subtype": "error_max_turns", "is_error": True, "errors": ["Reached maximum number of turns (1)"], "total_cost_usd": 0.01, "session_id": "z"}))
+    assert text == "" and meta["is_error"] and meta["total_cost_usd"] == 0.01
+    assert governor.parse_worker_output(json.dumps([1, 2])) == (json.dumps([1, 2]), {})
+    assert governor.parse_worker_output(json.dumps({"result": {"a": 1}}))[0] == json.dumps({"a": 1})
     assert governor.TRANSIENT_RE.search("API Error: 529 Overloaded") and governor.TRANSIENT_RE.search("rate limit exceeded")
     assert not governor.TRANSIENT_RE.search("permission denied") and not governor.TRANSIENT_RE.search("invalid_request")
 

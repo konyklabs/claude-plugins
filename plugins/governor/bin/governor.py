@@ -623,7 +623,7 @@ def clean_label(s: str) -> str:
 # What a slice id or plan name may be: one path component, no leading dot,
 # so path_label is the identity on it and two distinct ids can never share
 # a worktree or a branch.
-ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$")
+ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}\Z")  # \Z, not $: $ would accept a trailing newline
 
 
 def one_line(s: Any, n: int = 200) -> str:
@@ -1760,14 +1760,18 @@ def cmd_spec(args: List[str], cfg: Dict[str, Any]) -> int:
 
 
 def parse_worker_output(stdout: str) -> Tuple[str, Dict[str, Any]]:
-    """`claude -p --output-format json` prints one object with the text under
-    'result'; anything else (older CLI, a fake in tests) is taken as the text."""
+    """`claude -p --output-format json` prints one object: on success the text
+    is under 'result'; an error result (subtype error_*, is_error true, an
+    'errors' list, still with total_cost_usd and session_id) has no 'result'
+    key at all (observed on 2.1.258). Anything that is not such an object
+    (older CLI, a fake in tests) is taken as the text."""
     try:
         obj = json.loads(stdout)
     except ValueError:
         return stdout, {}
-    if isinstance(obj, dict) and "result" in obj:
-        return str(obj.get("result") or ""), obj
+    if isinstance(obj, dict) and (obj.get("type") == "result" or "result" in obj or "is_error" in obj or "subtype" in obj):
+        res = obj.get("result")
+        return (res if isinstance(res, str) else ("" if res is None else json.dumps(res))), obj
     return stdout, {}
 
 
@@ -1834,9 +1838,13 @@ def run_worker_once(spec_path: str, agent: str, budget: str, out_dir: Path, cfg:
     out["report"] = str(report_path)
     died = (proc.returncode != 0 and not text.strip()) or bool(meta.get("is_error"))
     if died:
-        tail = one_line((proc.stderr.strip() or text.strip())[-300:], 200)
+        # Diagnostics only: the CLI's subtype and errors list, and stderr. Never
+        # the worker's own text, which may discuss overloads without having had one.
+        errs = meta.get("errors")
+        diag = " ".join([str(meta.get("subtype") or ""), " ".join(str(e) for e in errs) if isinstance(errs, list) else str(errs or ""), proc.stderr.strip()]).strip()
+        tail = one_line((diag or text.strip())[-300:], 200)
         out["error"] = (f"claude reported an error: {tail}" if proc.returncode == 0 else f"claude exited {proc.returncode}: {tail}")
-        out["transient"] = bool(TRANSIENT_RE.search(proc.stderr + " " + text))
+        out["transient"] = bool(TRANSIENT_RE.search(diag))
         return out
     problems = report_problems(text, contract)
     m = RESULT_RE.search(text)
