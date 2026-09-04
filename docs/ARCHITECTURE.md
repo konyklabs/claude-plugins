@@ -256,6 +256,48 @@ and `status` as a `Headless workers` line. `run-level --setup` runs one command 
 because a worker without the project's environment fights the editor's
 type checker instead of doing the slice.
 
+## Dead workers (2026-09-04)
+
+Measured across every subagent transcript on one machine (22 project
+directories, 2026-08-24 to 2026-09-04): 335 subagents, 13 died on an API
+error (202 USD of the 3,542 USD all 335 cost at list price), and 6 of those
+13 died on a usage limit (178 USD, one agent alone 164 USD). Separately, 61 Sonnet workers ran at `xhigh` effort (162 USD)
+because a bare `general-purpose` spawn is pinned to Sonnet by the model-pin
+guardrail but still inherits the session's effort — there is no matching pin
+for `effort`. The `SubagentStop` report-contract send-back, by contrast, is
+not where the spend goes: 3 in total.
+
+Two changes follow from those numbers. A bare `general-purpose` spawn now
+routes to a new agent, `governor:worker` (Sonnet, medium effort, every tool,
+no report contract), closing the effort gap the 61 workers above show for a
+spawn that carries no spec to hold a report contract against. And a worker's
+death is now read by the hook and reported to the conductor in the same
+turn: a transient API error is a retry-once signal (wait, then re-spawn with
+the same spec), a usage-limit death is a switch-tier signal (the hook denies
+further spawns onto that model for the rest of the session). No hook runs
+on a background task notification, so a death that arrives that way is
+covered by the policy text instead: the conductor treats the same phrase,
+"Agent terminated early due to an API error", the same way. `governor.py
+status` lists the dead workers.
+
+Field-verified 2026-09-04 on Claude Code 2.1.260: a `PreToolUse`
+`updatedInput.subagent_type` rewrite is honoured — a `general-purpose` spawn
+ran as `governor:scout` on Haiku, shown by both `subagent_stats.by_type` and
+the subagent's own transcript.
+
+The advice goes out on both channels a PostToolUse hook has: `hookSpecificOutput.additionalContext`, which the hooks reference describes as "added to Claude's context alongside the tool result" (checked 2026-09-04), and `systemMessage`, which is shown to the person. The first review round of this change had it on `systemMessage` alone, which the model never reads.
+
+Not verified: the `tool_response` shape of a failed foreground `Agent` call.
+The hook matches the exact phrase above, only when it opens the response and
+the response is one message long, and is a no-op on anything else: a worker
+that finished and merely quotes the phrase in its report is not a death.
+
+Known limit: a plan-wide session limit is recorded against the model that was
+running, so only that family is denied. When the plan itself is out, the
+conductor's own calls fail the same way and the wall is visible without the
+guard; recording it against every family would deny the cheap tiers on a
+per-model limit, which is the common case.
+
 ## py-testing: what it is and is not
 
 Five skills that follow the authoring rules the org already uses (third

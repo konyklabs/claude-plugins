@@ -7,7 +7,7 @@ step that can be a script is a script.
 
 | plugin | what it is | install name |
 |---|---|---|
-| **governor** | Guardrails in code for Fable-tier sessions: spawns are pinned to cheap workers, forks are denied, an expensive spawn needs a written brief, a priced per-session budget is enforced from the transcript, and workers cannot stop without evidence. Agents with pinned model and effort, skills for triage, delegation, decomposition and consultation, a ledger, a status line, and headless worker runs under a hard dollar cap. | `governor@konyklabs-plugins` |
+| **governor** | Guardrails in code for Fable-tier sessions: spawns are pinned to cheap workers (a bare one to its own `worker` agent), forks are denied, an expensive spawn needs a written brief, a priced per-session budget is enforced from the transcript, workers cannot stop without evidence, and a dead worker is named with what to do about it — retry once, or switch tier. Agents with pinned model and effort, skills for triage, delegation, decomposition and consultation, a ledger, a status line, and headless worker runs under a hard dollar cap. | `governor@konyklabs-plugins` |
 | **py-testing** | Python test engineering: pytest project layout, Playwright API and browser tests, SQLAlchemy test fixtures, and the workflow for untangling a large unmerged test suite, with a deterministic inventory script and a Sonnet worker that has the stack skills preloaded. | `py-testing@konyklabs-plugins` |
 | **prod-readiness** | Production-readiness and security scanning for API sample apps and developer portals: one deterministic scan emits a categorized report, external scanners are summarized to counts and never installed, an Opus auditor judges only the rows that need judgment. Twenty-five check classes from a real hardening pass, nineteen settled by the scanner. | `prod-readiness@konyklabs-plugins` |
 
@@ -50,7 +50,7 @@ until `version` in its `plugin.json` changes, so use `--plugin-dir` while
 developing.
 
 Verify: `claude plugin list` shows the three as enabled; `claude plugin
-details governor` shows 7 skills, 5 agents, 5 hooks and about 1,350
+details governor` shows 7 skills, 6 agents, 6 hooks and about 1,500
 always-on tokens per session.
 
 ## First session
@@ -108,6 +108,7 @@ Everything an agent needs to operate the plugins without reading the code.
 | `governor:senior-implementer` | opus, high | the same, for hard slices | worker |
 | `governor:reviewer` | opus, medium | review a diff against its spec | JSON findings with failure scenarios |
 | `governor:architect` | fable, high | one structured decision; spawn only with a brief | decision record |
+| `governor:worker` | sonnet, medium | catches a bare `general-purpose` spawn; every tool, no spec | none |
 | `py-testing:test-implementer` | sonnet, medium | test slices, four stack skills preloaded | worker |
 | `prod-readiness:scanner` | sonnet, medium | run the scan and the installed tools | worker |
 | `prod-readiness:auditor` | opus, medium | judge the scan's review rows | JSON findings with failure scenarios |

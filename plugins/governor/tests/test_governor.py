@@ -57,6 +57,23 @@ def tool_result_line(tool_use_id, body):
     return json.dumps({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": tool_use_id, "content": body}]}})
 
 
+def error_line(msg_id, text, model="<synthetic>"):
+    """An API error line, in the shape Claude Code writes one (verified against
+    a real transcript on 2026-09-04): the flag is top-level and the model of
+    the line itself is "<synthetic>", never the model that was running."""
+    return json.dumps({
+        "type": "assistant",
+        "isApiErrorMessage": True,
+        "message": {
+            "id": msg_id,
+            "model": model,
+            "role": "assistant",
+            "content": [{"type": "text", "text": text}],
+            "usage": {"input_tokens": 0, "output_tokens": 0},
+        },
+    })
+
+
 @pytest.fixture
 def env(tmp_path, monkeypatch):
     state = tmp_path / "state"
@@ -210,6 +227,13 @@ def test_config_values_are_validated_not_trusted(env):
     assert cfg["budget_usd"] == 15.0 and any("unreadable" in n for n in cfg["_ignored"])
 
 
+def test_route_general_purpose_false_in_project_file_is_ignored(env):
+    (env["project"] / ".claude" / "governor.json").write_text(json.dumps({"route_general_purpose": False}))
+    cfg = governor.load_config(str(env["project"]))
+    assert cfg["route_general_purpose"] is True
+    assert any("route_general_purpose" in n and "loosen" in n for n in cfg["_ignored"])
+
+
 # --------------------------------------------------------------------------- agent policy
 
 
@@ -223,6 +247,34 @@ def test_model_less_spawn_is_pinned_to_worker_model(env):
     assert d["action"] == "rewrite"
     assert d["updated_input"]["model"] == "sonnet"
     assert d["updated_input"]["prompt"] == "do x"
+
+
+def test_general_purpose_routes_to_governor_worker(env):
+    led = fable_session(env)
+    d = governor.agent_policy({"subagent_type": "general-purpose", "prompt": "do x"}, governor.DEFAULTS, led, str(env["project"]))
+    assert d["action"] == "rewrite"
+    assert d["updated_input"]["subagent_type"] == "governor:worker"
+    assert d["updated_input"]["model"] == "sonnet"
+    assert "governor:worker" in d["reason"]
+
+
+def test_general_purpose_with_explicit_model_is_not_routed(env):
+    led = fable_session(env)
+    d = governor.agent_policy({"subagent_type": "general-purpose", "model": "opus", "prompt": "p"}, governor.DEFAULTS, led, str(env["project"]))
+    assert d["action"] == "allow"
+    assert d["model"] == "opus"
+    assert "routed_to" not in d
+
+
+def test_route_general_purpose_false_in_user_file_leaves_type_untouched(env):
+    (env["tmp"] / "home" / ".claude" / "governor.json").write_text(json.dumps({"route_general_purpose": False}))
+    cfg = governor.load_config(str(env["project"]))
+    assert cfg["route_general_purpose"] is False
+    led = fable_session(env)
+    d = governor.agent_policy({"subagent_type": "general-purpose", "prompt": "do x"}, cfg, led, str(env["project"]))
+    assert d["action"] == "rewrite"
+    assert d["updated_input"]["model"] == "sonnet"
+    assert d["updated_input"].get("subagent_type") == "general-purpose"
 
 
 def test_inherit_is_treated_as_model_less(env):
@@ -352,7 +404,15 @@ def test_agent_rewrite_goes_out_as_updated_input(env):
     hso = out["hookSpecificOutput"]
     assert "permissionDecision" not in hso
     assert hso["updatedInput"]["model"] == "sonnet"
+    assert hso["updatedInput"]["subagent_type"] == "governor:worker"
     assert led.state["spawns"][-1]["action"] == "rewrite"
+
+
+def test_status_shows_general_purpose_routed_to_worker(env):
+    tp = make_session(env["tmp"], main_lines=assistant_lines("m1", "claude-fable-5-1", usage(out=10), blocks=1))
+    led = governor.Ledger("sess1", governor.Pricing.load())
+    governor.h_pre_tool_use(dict(hook_base(tp), tool_name="Agent", tool_input={"subagent_type": "general-purpose", "prompt": "p"}), governor.DEFAULTS, led, str(env["project"]))
+    assert "general-purpose → governor:worker (rewrite)" in led.report(governor.DEFAULTS)
 
 
 def test_expensive_spawn_increments_counter_only_when_allowed(env):
@@ -421,6 +481,14 @@ def test_subagent_stop_accepts_good_report_and_ignores_unknown_agents(env):
     led = governor.Ledger("sess1", governor.Pricing.load())
     assert governor.h_subagent_stop({"session_id": "sess1", "transcript_path": str(tp), "agent_id": "aimpl-2"}, governor.DEFAULTS, led) == {}
     assert governor.h_subagent_stop({"session_id": "sess1", "transcript_path": str(tp), "agent_id": "aother"}, governor.DEFAULTS, led) == {}
+
+
+def test_declared_model_resolves_worker_and_it_is_not_held_to_a_contract(env):
+    assert governor.declared_model("governor:worker", governor.DEFAULTS, str(env["project"])) == "sonnet"
+    agents = {"aw-1": ({"customAgentType": "governor:worker"}, assistant_lines("s1", "claude-sonnet-5", usage(out=5), blocks=1, text="just prose, no report contract"))}
+    tp = make_session(env["tmp"], main_lines=assistant_lines("m1", "claude-fable-5-1", usage(out=10), blocks=1), agents=agents)
+    led = governor.Ledger("sess1", governor.Pricing.load())
+    assert governor.h_subagent_stop({"session_id": "sess1", "transcript_path": str(tp), "agent_id": "aw-1"}, governor.DEFAULTS, led) == {}
 
 
 def test_subagent_stop_uses_agent_type_and_transcript_from_hook_when_present(env):
@@ -591,9 +659,13 @@ def test_sibling_plugin_agent_found_in_checkout(env):
     cfg = dict(governor.DEFAULTS, worker_model="haiku")
     d = governor.agent_policy({"subagent_type": "py-testing:test-implementer", "prompt": "p"}, cfg, led, str(env["project"]))
     assert d["action"] == "allow" and d["model"] == "sonnet"
-    # an unknown plugin still falls through to the rewrite
-    d = governor.agent_policy({"subagent_type": "nope:worker", "prompt": "p"}, cfg, led, str(env["project"]))
-    assert d["action"] == "rewrite" and d["model"] == "haiku"
+    # an unknown plugin still falls through to the rewrite, even when this
+    # plugin has an agent of the same bare name (worker.md): "nope:worker" is
+    # not governor:worker, and Claude Code would spawn nope's unpinned agent
+    for foreign in ("nope:ghost-agent", "nope:worker"):
+        d = governor.agent_policy({"subagent_type": foreign, "prompt": "p"}, cfg, led, str(env["project"]))
+        assert d["action"] == "rewrite" and d["model"] == "haiku", foreign
+    assert governor.declared_model("nope:worker", cfg, str(env["project"])) is None
 
 
 
@@ -1621,3 +1693,279 @@ def test_run_level_refuses_repeated_ids_and_retries_under_the_remaining_budget(e
     assert "RETRY slice=a attempt=1" in r.stdout and "attempts=2" in r.stdout
     idx = json.loads((env["project"] / ".governor" / "runs" / "p1" / "level-0.json").read_text())
     assert idx["slices"]["a"]["cost"] == 0.0 and "cost_assumed" not in idx["slices"]["a"]
+
+
+# --------------------------------------------------------------------------- dead workers
+
+# The wording of a real usage-limit message, as QUOTA_RE has to see it.
+QUOTA_TEXT = "You've reached your Fable 5 limit. Run /usage-credits to continue or switch models with /model."
+
+
+def dead_session(tmp):
+    """One worker that died on a 529, one that died on a usage limit, one that
+    finished; a Fable conductor above them."""
+    lines_t = assistant_lines("s1", "claude-sonnet-5", usage(out=5000), blocks=1, tool_use=("t1", "Bash"))
+    lines_t.append(error_line("e1", "API Error: 529 Overloaded"))
+    lines_q = assistant_lines("s2", "claude-opus-5", usage(out=1000), blocks=1, tool_use=("t2", "Read"))
+    lines_q.append(error_line("e2", QUOTA_TEXT))
+    lines_ok = assistant_lines("s3", "claude-sonnet-5", usage(out=10), blocks=1, text="## Result\nDONE")
+    agents = {"aT": ({}, lines_t), "aQ": ({}, lines_q), "aOK": ({}, lines_ok)}
+    return make_session(tmp, main_lines=assistant_lines("m1", "claude-fable-5-1", usage(out=10), blocks=1), agents=agents)
+
+
+def test_ledger_names_dead_workers_and_classifies_the_death(env):
+    led = ledger_for(dead_session(env["tmp"]))
+    t, q, ok = (led.state["agents"][k] for k in ("aT", "aQ", "aOK"))
+    assert (t["ended"], t["death_kind"]) == ("died", "transient")
+    assert "529 Overloaded" in t["error"]
+    assert t["model"] == "claude-sonnet-5"  # not the error line's "<synthetic>"
+    assert (q["ended"], q["death_kind"]) == ("died", "quota")
+    assert ok["ended"] == "completed" and ok["death_kind"] is None
+    # the quota is remembered against the model the dead worker was running
+    assert led.state["quota_hit"]["claude-opus-5"]["error"].startswith("You've reached your Fable 5 limit")
+    assert list(led.state["quota_hit"]) == ["claude-opus-5"]
+    assert led.main_model() == "claude-fable-5-1"
+
+
+def test_main_transcript_quota_error_is_recorded_and_does_not_change_the_session_model(env):
+    lines = assistant_lines("m1", "claude-fable-5-1", usage(out=10), blocks=1)
+    lines.append(error_line("e1", "You've hit your session limit \u00b7 resets 1:50pm (America/New_York)"))
+    led = ledger_for(make_session(env["tmp"], main_lines=lines))
+    assert led.main_model() == "claude-fable-5-1"
+    assert "claude-fable-5-1" in led.state["quota_hit"]
+
+
+def test_status_and_readout_name_the_dead_workers(env):
+    led = ledger_for(dead_session(env["tmp"]))
+    rep = led.report(governor.DEFAULTS)
+    assert "| subagent | model | effort | ended | messages | USD |" in rep
+    assert "died: transient" in rep and "died: quota" in rep and "| completed |" in rep
+    # sonnet 5000 out = $0.05, opus 1000 out = $0.025, and the error lines cost nothing
+    assert "Dead workers: 2 ($0.08 spent before death)" in rep
+    assert "- aT (claude-sonnet-5) died: transient: API Error: 529 Overloaded" in rep
+    assert "dead workers: 2" in led.readout(governor.DEFAULTS)
+
+
+def test_readout_is_silent_when_no_worker_died(env):
+    agents = {"aOK": ({}, assistant_lines("s1", "claude-sonnet-5", usage(out=10), blocks=1, text="## Result\nDONE"))}
+    tp = make_session(env["tmp"], main_lines=assistant_lines("m1", "claude-fable-5-1", usage(out=10), blocks=1), agents=agents)
+    led = ledger_for(tp)
+    assert "dead workers" not in led.readout(governor.DEFAULTS)
+    assert "Dead workers" not in led.report(governor.DEFAULTS)
+
+
+def post_hook(tp, response, tool_name="Agent", tool_input=None):
+    return {
+        "session_id": "sess1", "transcript_path": str(tp), "cwd": ".", "hook_event_name": "PostToolUse",
+        "tool_name": tool_name,
+        "tool_input": {"subagent_type": "governor:implementer", "prompt": "p"} if tool_input is None else tool_input,
+        "tool_response": response,
+    }
+
+
+def test_post_tool_use_advises_one_retry_after_a_transient_death(env):
+    tp = make_session(env["tmp"], main_lines=assistant_lines("m1", "claude-fable-5-1", usage(out=10), blocks=1))
+    led = governor.Ledger("sess1", governor.Pricing.load())
+    out = governor.h_post_tool_use(
+        post_hook(tp, "Agent terminated early due to an API error: 529 Overloaded"), governor.DEFAULTS, led)
+    assert "died on a transient API error" in out["systemMessage"]
+    assert "re-spawn it once" in out["systemMessage"] and "Do not finish the slice inline" in out["systemMessage"]
+    d = led.state["deaths"][-1]
+    assert d["kind"] == "transient" and d["type"] == "governor:implementer" and "529" in d["error"]
+    assert led.state["quota_hit"] == {}
+
+
+def test_post_tool_use_closes_the_tier_after_a_quota_death(env):
+    tp = make_session(env["tmp"], main_lines=assistant_lines("m1", "claude-fable-5-1", usage(out=10), blocks=1))
+    led = governor.Ledger("sess1", governor.Pricing.load())
+    response = {"content": [{"type": "text", "text": "Agent terminated early due to an API error: " + QUOTA_TEXT}]}
+    out = governor.h_post_tool_use(
+        post_hook(tp, response, tool_input={"subagent_type": "reviewer", "model": "opus", "prompt": "p"}),
+        governor.DEFAULTS, led)
+    assert "the opus usage limit is hit" in out["systemMessage"]
+    assert "Spawns onto opus are now denied for this session" in out["systemMessage"]
+    assert "Do not retry on opus" in out["systemMessage"]
+    assert led.state["deaths"][-1]["kind"] == "quota"
+    assert "opus" in led.state["quota_hit"]
+
+
+def test_post_tool_use_is_a_no_op_on_anything_it_does_not_recognise(env):
+    tp = make_session(env["tmp"], main_lines=assistant_lines("m1", "claude-fable-5-1", usage(out=10), blocks=1))
+    led = governor.Ledger("sess1", governor.Pricing.load())
+    assert governor.h_post_tool_use(post_hook(tp, "## Result\nDONE\n"), governor.DEFAULTS, led) == {}
+    assert governor.h_post_tool_use(post_hook(tp, [{"type": "text", "text": "done"}]), governor.DEFAULTS, led) == {}
+    assert governor.h_post_tool_use(
+        post_hook(tp, "Agent terminated early due to an API error", tool_name="Bash"), governor.DEFAULTS, led) == {}
+    assert led.state["deaths"] == [] and led.state["quota_hit"] == {}
+
+
+def test_post_tool_use_records_in_observe_mode_without_saying_anything(env):
+    tp = make_session(env["tmp"], main_lines=assistant_lines("m1", "claude-fable-5-1", usage(out=10), blocks=1))
+    led = governor.Ledger("sess1", governor.Pricing.load())
+    cfg = dict(governor.DEFAULTS, mode="observe")
+    assert governor.h_post_tool_use(
+        post_hook(tp, "Agent terminated early due to an API error: 503"), cfg, led) == {}
+    assert led.state["deaths"][-1]["kind"] == "transient"
+
+
+def test_policy_denies_a_spawn_onto_a_model_whose_limit_is_hit(env):
+    tp = make_session(env["tmp"], main_lines=assistant_lines("m1", "claude-fable-5-1", usage(out=10), blocks=1))
+    led = ledger_for(tp)
+    led.note_quota_hit("opus", QUOTA_TEXT)  # the alias, as a spawn writes it
+    d = governor.agent_policy({"subagent_type": "s", "model": "claude-opus-5", "prompt": "p"}, governor.DEFAULTS, led, str(env["project"]))
+    assert d["action"] == "deny" and d["model"] == "claude-opus-5"
+    assert "the claude-opus-5 usage limit was hit this session" in d["reason"]
+    assert "You've reached your Fable 5 limit" in d["reason"]
+    assert governor.agent_policy({"subagent_type": "s", "model": "sonnet", "prompt": "p"}, governor.DEFAULTS, led, str(env["project"]))["action"] == "allow"
+    # the pin-a-model-less-spawn rewrite is denied too when it is the worker tier that is out
+    led.state["quota_hit"] = {}
+    led.note_quota_hit("claude-sonnet-5", "usage limit reached")
+    d3 = governor.agent_policy({"subagent_type": "general-purpose", "prompt": "p"}, governor.DEFAULTS, led, str(env["project"]))
+    assert d3["action"] == "deny" and "the sonnet usage limit was hit this session" in d3["reason"]
+
+
+def test_post_tool_use_ignores_a_report_that_merely_quotes_the_phrase(env):
+    # a worker that finished, writing about this feature: DEATH_RE's phrase and
+    # a quota word both appear, yet nothing died and no tier may be closed
+    tp = make_session(env["tmp"], main_lines=assistant_lines("m1", "claude-fable-5-1", usage(out=10), blocks=1))
+    led = governor.Ledger("sess1", governor.Pricing.load())
+    report = ("## Result\nDONE. Added DEATH_RE, which matches 'Agent terminated early due to an API error';"
+              " on a usage limit it denies the tier.")
+    assert governor.h_post_tool_use(post_hook(tp, report), governor.DEFAULTS, led) == {}
+    long_death = "Agent terminated early due to an API error: 529 Overloaded. " + "x" * governor.DEATH_MAX_CHARS
+    assert governor.h_post_tool_use(post_hook(tp, long_death), governor.DEFAULTS, led) == {}
+    assert led.state["deaths"] == [] and led.state["quota_hit"] == {}
+
+
+def test_post_tool_use_recognises_the_notification_prefix_and_block_shapes(env):
+    tp = make_session(env["tmp"], main_lines=assistant_lines("m1", "claude-fable-5-1", usage(out=10), blocks=1))
+    led = governor.Ledger("sess1", governor.Pricing.load())
+    prefixed = 'Agent "Add api fixture" failed: Agent terminated early due to an API error: 529 Overloaded'
+    out = governor.h_post_tool_use(post_hook(tp, prefixed), governor.DEFAULTS, led)
+    assert "died on a transient API error" in out["systemMessage"]
+    blocks = [{"type": "text", "text": "Agent terminated early due to an API error: 500 Internal server error"}]
+    out2 = governor.h_post_tool_use(post_hook(tp, blocks), governor.DEFAULTS, led)
+    assert "died on a transient API error" in out2["systemMessage"]
+    assert "{" not in out2["systemMessage"] and "{" not in led.state["deaths"][-1]["error"]  # the text, not the JSON around it
+    assert [d["kind"] for d in led.state["deaths"]] == ["transient", "transient"]
+
+
+def test_post_tool_use_records_a_quota_hit_in_observe_mode(env):
+    tp = make_session(env["tmp"], main_lines=assistant_lines("m1", "claude-fable-5-1", usage(out=10), blocks=1))
+    led = governor.Ledger("sess1", governor.Pricing.load())
+    cfg = dict(governor.DEFAULTS, mode="observe")
+    death = "Agent terminated early due to an API error: " + QUOTA_TEXT
+    assert governor.h_post_tool_use(post_hook(tp, death, tool_input={"subagent_type": "s", "model": "opus", "prompt": "p"}), cfg, led) == {}
+    assert led.state["deaths"][-1]["kind"] == "quota" and "opus" in led.state["quota_hit"]
+
+
+def test_policy_denies_the_allow_path_when_the_session_model_is_quota_hit(env):
+    # always_pin_workers off, cheap session: the spawn would inherit the session
+    # model, and that is the model whose limit is hit
+    tp = make_session(env["tmp"], main_lines=assistant_lines("m1", "claude-sonnet-5", usage(out=10), blocks=1))
+    led = ledger_for(tp)
+    cfg = dict(governor.DEFAULTS, always_pin_workers=False)
+    assert governor.agent_policy({"subagent_type": "general-purpose", "prompt": "p"}, cfg, led, str(env["project"]))["action"] == "allow"
+    led.note_quota_hit("claude-sonnet-5", QUOTA_TEXT)
+    d = governor.agent_policy({"subagent_type": "general-purpose", "prompt": "p"}, cfg, led, str(env["project"]))
+    assert d["action"] == "deny" and "the claude-sonnet-5 usage limit was hit this session" in d["reason"]
+
+
+def test_api_error_as_a_workers_first_line_does_not_seed_a_synthetic_model(env):
+    agents = {"aX": ({}, [error_line("e1", QUOTA_TEXT)])}
+    tp = make_session(env["tmp"], main_lines=assistant_lines("m1", "claude-fable-5-1", usage(out=10), blocks=1), agents=agents)
+    led = ledger_for(tp)
+    row = led.state["agents"]["aX"]
+    assert (row["ended"], row["death_kind"], row["model"]) == ("died", "quota", "")
+    assert led.state["quota_hit"] == {}  # no model known, so no tier is closed over a guess
+    assert "<synthetic>" not in led.report(governor.DEFAULTS)
+
+
+def test_post_tool_use_puts_the_advice_in_the_model_channel(env):
+    # systemMessage is shown to the person; additionalContext is what the model
+    # reads (hooks reference, PostToolUse, checked 2026-09-04)
+    tp = make_session(env["tmp"], main_lines=assistant_lines("m1", "claude-fable-5-1", usage(out=10), blocks=1))
+    led = governor.Ledger("sess1", governor.Pricing.load())
+    out = governor.h_post_tool_use(post_hook(tp, "Agent terminated early due to an API error: 529 Overloaded"), governor.DEFAULTS, led)
+    assert out["hookSpecificOutput"]["hookEventName"] == "PostToolUse"
+    assert out["hookSpecificOutput"]["additionalContext"] == out["systemMessage"]
+    assert "re-spawn it once" in out["systemMessage"]
+
+
+def test_post_tool_use_resolves_the_dead_workers_model_like_the_policy_did(env):
+    # a project agent pinning opus, resolved from the project dir (not the cwd);
+    # a model-less general-purpose spawn ran on the worker model, so its quota
+    # death closes sonnet, never the conductor's tier
+    (env["project"] / ".claude" / "agents").mkdir(parents=True, exist_ok=True)
+    (env["project"] / ".claude" / "agents" / "analyst.md").write_text("---\nname: analyst\nmodel: opus\n---\nbody\n")
+    tp = make_session(env["tmp"], main_lines=assistant_lines("m1", "claude-fable-5-1", usage(out=10), blocks=1))
+    led = ledger_for(tp)
+    death = "Agent terminated early due to an API error: " + QUOTA_TEXT
+    hook = dict(post_hook(tp, death, tool_input={"subagent_type": "analyst", "prompt": "p"}), cwd=str(env["project"] / "plugins"))
+    governor.h_post_tool_use(hook, governor.DEFAULTS, led, str(env["project"]))
+    assert list(led.state["quota_hit"]) == ["opus"]
+    led.state["quota_hit"] = {}
+    governor.h_post_tool_use(post_hook(tp, death, tool_input={"subagent_type": "general-purpose", "prompt": "p"}), governor.DEFAULTS, led, str(env["project"]))
+    assert list(led.state["quota_hit"]) == ["sonnet"]
+    assert "claude-fable-5-1" not in led.state["quota_hit"]
+
+
+def test_post_tool_use_names_a_plan_wide_session_limit(env):
+    tp = make_session(env["tmp"], main_lines=assistant_lines("m1", "claude-fable-5-1", usage(out=10), blocks=1))
+    led = governor.Ledger("sess1", governor.Pricing.load())
+    death = "Agent terminated early due to an API error: You've hit your session limit \u00b7 resets 1:50pm (America/New_York)"
+    out = governor.h_post_tool_use(post_hook(tp, death), governor.DEFAULTS, led)
+    assert "plan's session limit" in out["systemMessage"] and "Every tier is out" in out["systemMessage"]
+    assert "governor:senior-implementer" not in out["systemMessage"]
+    assert led.state["deaths"][-1]["kind"] == "quota"
+
+
+def test_status_lists_the_deaths_the_agent_tool_reported(env):
+    # the worker died before its transcript existed: no row, but the hook saw it
+    tp = make_session(env["tmp"], main_lines=assistant_lines("m1", "claude-fable-5-1", usage(out=10), blocks=1))
+    led = ledger_for(tp)
+    governor.h_post_tool_use(post_hook(tp, "Agent terminated early due to an API error: 529 Overloaded"), governor.DEFAULTS, led)
+    rep = led.report(governor.DEFAULTS)
+    assert "Deaths reported by the Agent tool" in rep
+    assert "- governor:implementer (sonnet) transient: Agent terminated early due to an API error: 529 Overloaded" in rep
+    assert "dead workers: 1" in led.readout(governor.DEFAULTS)
+
+
+def test_a_final_message_with_string_content_counts_as_completed(env):
+    line = json.dumps({"type": "assistant", "message": {"id": "s9", "model": "claude-sonnet-5", "role": "assistant",
+                                                         "content": "## Result\nDONE", "usage": {"input_tokens": 1, "output_tokens": 5}}})
+    agents = {"aS": ({}, [line])}
+    tp = make_session(env["tmp"], main_lines=assistant_lines("m1", "claude-fable-5-1", usage(out=10), blocks=1), agents=agents)
+    assert ledger_for(tp).state["agents"]["aS"]["ended"] == "completed"
+
+
+def test_a_bare_project_agent_that_pins_nothing_is_not_answered_by_the_plugins_worker(env):
+    (env["project"] / ".claude" / "agents").mkdir(parents=True, exist_ok=True)
+    (env["project"] / ".claude" / "agents" / "worker.md").write_text("---\nname: worker\n---\nbody\n")
+    led = fable_session(env)
+    assert governor.declared_model("worker", governor.DEFAULTS, str(env["project"])) is None
+    d = governor.agent_policy({"subagent_type": "worker", "prompt": "p"}, governor.DEFAULTS, led, str(env["project"]))
+    assert d["action"] == "rewrite" and d["updated_input"]["model"] == "sonnet"
+
+
+def test_quota_denial_says_when_the_spawns_model_is_unpriced(env):
+    tp = make_session(env["tmp"], main_lines=assistant_lines("m1", "claude-fable-5-1", usage(out=10), blocks=1))
+    led = ledger_for(tp)
+    led.note_quota_hit("claude-fable-5-1", QUOTA_TEXT)
+    d = governor.agent_policy({"subagent_type": "s", "model": "claude-newmodel-9", "prompt": "p"}, governor.DEFAULTS, led, str(env["project"]))
+    assert d["action"] == "deny" and "not in pricing.json" in d["reason"]
+
+
+def test_quota_hit_ignores_a_model_the_pricing_table_cannot_resolve(env):
+    tp = make_session(env["tmp"], main_lines=assistant_lines("m1", "claude-fable-5-1", usage(out=10), blocks=1))
+    led = ledger_for(tp)
+    led.note_quota_hit("<synthetic>", "usage limit")
+    assert led.state["quota_hit"] == {}  # or every later spawn would be denied
+    assert governor.agent_policy({"subagent_type": "s", "model": "sonnet", "prompt": "p"}, governor.DEFAULTS, led, str(env["project"]))["action"] == "allow"
+
+
+def test_post_tool_use_is_wired_into_hooks_json():
+    assert "post-tool-use" in governor.HOOK_EVENTS
+    entries = json.loads((BIN.parent / "hooks" / "hooks.json").read_text())["hooks"]["PostToolUse"]
+    assert [e["matcher"] for e in entries] == ["Agent"]
+    assert "post-tool-use" in entries[0]["hooks"][0]["command"]
