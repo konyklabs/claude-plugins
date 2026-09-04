@@ -1,0 +1,146 @@
+{
+  "base_url": "http://localhost:8000",
+  "explored_at": "2026-09-04T12:00:00Z",
+  "roles": ["anonymous", "member", "admin"],
+  "screens": [
+    {
+      "id": "auth.login",
+      "area": "auth",
+      "path": "/login",
+      "title": "Sign in",
+      "roles": ["anonymous"],
+      "actions": [
+        {"id": "submit", "kind": "submit", "label": "Sign in", "to": "org.home"}
+      ],
+      "forms": [{"id": "login", "fields": ["email", "password"]}],
+      "states": ["error:invalid-credentials"],
+      "links": ["docs.home"]
+    },
+    {
+      "id": "org.home",
+      "area": "org",
+      "path": "/",
+      "title": "Home",
+      "roles": ["member", "admin"],
+      "actions": [
+        {"id": "sign-out", "kind": "submit", "label": "Sign out", "to": "auth.login"}
+      ],
+      "forms": [],
+      "states": [],
+      "links": ["org.members", "credentials.list", "docs.home"]
+    },
+    {
+      "id": "org.members",
+      "area": "org",
+      "path": "/members",
+      "title": "Members",
+      "roles": ["member", "admin"],
+      "actions": [
+        {"id": "remove", "kind": "mutate", "label": "Remove", "to": "org.members"}
+      ],
+      "forms": [],
+      "states": [],
+      "links": ["org.home"]
+    },
+    {
+      "id": "credentials.list",
+      "area": "credentials",
+      "path": "/credentials",
+      "title": "Credentials",
+      "roles": ["member", "admin"],
+      "actions": [
+        {"id": "new", "kind": "navigate", "label": "New credential", "to": "credentials.new"},
+        {"id": "revoke", "kind": "mutate", "label": "Revoke", "to": "credentials.list"}
+      ],
+      "forms": [],
+      "states": [],
+      "links": ["org.home", "credentials.new"]
+    },
+    {
+      "id": "credentials.new",
+      "area": "credentials",
+      "path": "/credentials/new",
+      "title": "New credential",
+      "roles": ["member", "admin"],
+      "actions": [
+        {"id": "submit", "kind": "submit", "label": "Create", "to": "credentials.list"}
+      ],
+      "forms": [{"id": "new-credential", "fields": ["name"]}],
+      "states": ["error:invalid-name"],
+      "links": ["credentials.list"]
+    },
+    {
+      "id": "docs.home",
+      "area": "docs",
+      "path": "/docs",
+      "title": "Docs",
+      "roles": ["anonymous", "member", "admin"],
+      "actions": [],
+      "forms": [],
+      "states": [],
+      "links": ["auth.login"]
+    },
+    {
+      "id": "admin.settings",
+      "area": "admin",
+      "path": "/admin",
+      "title": "Admin",
+      "roles": ["admin"],
+      "actions": [],
+      "forms": [],
+      "states": ["error:forbidden"],
+      "links": ["org.home"]
+    }
+  ],
+  "flows": [
+    {
+      "id": "auth.sign-in",
+      "area": "auth",
+      "name": "Sign in",
+      "role": "anonymous",
+      "steps": ["auth.login", "org.home"]
+    },
+    {
+      "id": "auth.sign-out",
+      "area": "auth",
+      "name": "Sign out",
+      "role": "member",
+      "steps": ["org.home", "auth.login"]
+    },
+    {
+      "id": "org.members.remove",
+      "area": "org",
+      "name": "Remove a member",
+      "role": "admin",
+      "steps": ["org.members"]
+    },
+    {
+      "id": "credentials.create",
+      "area": "credentials",
+      "name": "Create a credential",
+      "role": "member",
+      "steps": ["credentials.list", "credentials.new", "credentials.list"]
+    },
+    {
+      "id": "credentials.revoke",
+      "area": "credentials",
+      "name": "Revoke a credential",
+      "role": "member",
+      "steps": ["credentials.list"]
+    },
+    {
+      "id": "docs.read",
+      "area": "docs",
+      "name": "Read the docs",
+      "role": "anonymous",
+      "steps": ["docs.home"]
+    },
+    {
+      "id": "admin.settings",
+      "area": "admin",
+      "name": "Open admin settings",
+      "role": "admin",
+      "steps": ["admin.settings"]
+    }
+  ]
+}

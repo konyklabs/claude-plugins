@@ -24,6 +24,12 @@
       "source": "./plugins/prod-readiness",
       "description": "Production-readiness and security-scanning checks: a categorized deterministic scan, summarized external scanners, and an auditor agent, ordered by observed impact.",
       "category": "security"
+    },
+    {
+      "name": "signoff",
+      "source": "./plugins/signoff",
+      "description": "Reconciles an application's end-to-end coverage against what it does: explore, mine, tile, fill, report, human-readable test cases.",
+      "category": "testing"
     }
   ]
 }

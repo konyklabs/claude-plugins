@@ -1,0 +1,33 @@
+{
+  "tiles": 26,
+  "covered": [
+    "auth.login.render.anonymous",
+    "auth.session.required-for-app",
+    "auth.sign-in.valid-password",
+    "auth.sign-in.wrong-password",
+    "credentials.create.name-validation",
+    "docs.home.public",
+    "org.home.render.member"
+  ],
+  "gaps": [
+    "admin.settings.requires-admin",
+    "credentials.create.shows-secret-once",
+    "credentials.revoke.requires-owner-or-admin",
+    "org.members.remove.requires-admin",
+    "auth.sign-out.clears-session",
+    "admin.settings.error.forbidden",
+    "auth.login.error.invalid-credentials",
+    "credentials.new.error.invalid-name",
+    "admin.settings.render.admin",
+    "credentials.list.render.admin",
+    "credentials.list.render.member",
+    "credentials.new.render.admin",
+    "credentials.new.render.member",
+    "docs.home.render.admin",
+    "docs.home.render.anonymous",
+    "docs.home.render.member",
+    "org.home.render.admin",
+    "org.members.render.admin",
+    "org.members.render.member"
+  ]
+}
