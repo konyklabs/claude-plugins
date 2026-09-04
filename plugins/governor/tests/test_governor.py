@@ -1846,6 +1846,7 @@ def test_post_tool_use_recognises_the_notification_prefix_and_block_shapes(env):
     blocks = [{"type": "text", "text": "Agent terminated early due to an API error: 500 Internal server error"}]
     out2 = governor.h_post_tool_use(post_hook(tp, blocks), governor.DEFAULTS, led)
     assert "died on a transient API error" in out2["systemMessage"]
+    assert "{" not in out2["systemMessage"] and "{" not in led.state["deaths"][-1]["error"]  # the text, not the JSON around it
     assert [d["kind"] for d in led.state["deaths"]] == ["transient", "transient"]
 
 
@@ -1927,6 +1928,7 @@ def test_status_lists_the_deaths_the_agent_tool_reported(env):
     rep = led.report(governor.DEFAULTS)
     assert "Deaths reported by the Agent tool" in rep
     assert "- governor:implementer (sonnet) transient: Agent terminated early due to an API error: 529 Overloaded" in rep
+    assert "dead workers: 1" in led.readout(governor.DEFAULTS)
 
 
 def test_a_final_message_with_string_content_counts_as_completed(env):

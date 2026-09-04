@@ -694,9 +694,11 @@ class Ledger:
         workers = worker_spend(project_dir)
         if workers >= 0.005:  # headless workers are their own sessions; the ledger never sees them
             line += f" · workers ${workers:.2f} (all runs in this project)"
-        dead = self.dead_agents()
+        # Transcript deaths and hook-reported deaths have no join key, so the
+        # larger count stands: one death seen both ways counts once.
+        dead = max(len(self.dead_agents()), len(self.state.get("deaths") or []))
         if dead:  # silent when none: a zero here would be noise on every turn
-            line += f" · dead workers: {len(dead)}"
+            line += f" · dead workers: {dead}"
         if self.state["unpriced_models"]:
             line += " · unpriced (charged at the top rate): " + ", ".join(self.state["unpriced_models"])
         if cfg.get("_ignored"):
