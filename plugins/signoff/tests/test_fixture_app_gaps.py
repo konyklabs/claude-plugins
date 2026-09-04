@@ -151,6 +151,50 @@ def test_tiles_match_expected_json(tiled):
     assert len(tiles_doc["tiles"]) == EXPECTED["tiles"]
     assert covered == EXPECTED["covered"]
     assert tiles_doc["gaps"] == EXPECTED["gaps"]
+    # Nothing in the suite claims a tile the map and the rules do not define.
+    assert tiles_doc["unknown_claims"] == []
+
+
+def test_the_suites_disabled_test_claims_a_tile_without_covering_it(tiled):
+    """The fixture's one skipped test (fixture-app/e2e/test_auth.py) claims
+    `auth.sign-out.clears-session`. Its claim is recorded apart, the tile
+    stays uncovered, and the ranked gaps are the same as without it."""
+    _copy_dir, _qa, tests_doc, tiles_doc = tiled
+    skipped_ids = sorted(test["id"] for test in tests_doc["tests"] if test["skipped"])
+    assert skipped_ids == sorted(
+        test_id for ids in EXPECTED["skipped"].values() for test_id in ids)
+
+    by_id = {tile["id"]: tile for tile in tiles_doc["tiles"]}
+    for tile_id, test_ids in EXPECTED["skipped"].items():
+        tile = by_id[tile_id]
+        assert tile["skipped_tests"] == test_ids
+        assert tile["tests"] == []
+        assert tile["status"] == "uncovered"
+        assert tile_id in tiles_doc["gaps"]
+
+
+def test_the_report_marks_the_gap_the_disabled_test_claims(tiled):
+    """report.py's gap list says so too, in the same words as tile.py."""
+    copy_dir, qa, _tests_doc, _tiles_doc = tiled
+    out_path = copy_dir / "testcases" / "coverage.md"
+    code, out, err = run(REPORT_SCRIPT, "--tiles", str(qa / "tiles.json"),
+                         "--out", str(out_path), cwd=copy_dir)
+    assert code == 0, err
+    for tile_id, test_ids in EXPECTED["skipped"].items():
+        assert "`%s` (rule, medium) (claimed by a disabled test: %s)" % (
+            tile_id, test_ids[0]) in out
+
+
+def test_the_report_percent_is_the_rounded_one(tiled):
+    """One percent rule (F5): the fixture is 7 covered of 26 tiles, 27%."""
+    copy_dir, qa, _tests_doc, tiles_doc = tiled
+    assert len(tiles_doc["tiles"]) == 26
+    assert sum(1 for tile in tiles_doc["tiles"] if tile["status"] == "covered") == 7
+    out_path = copy_dir / "testcases" / "coverage.md"
+    code, out, err = run(REPORT_SCRIPT, "--tiles", str(qa / "tiles.json"),
+                         "--out", str(out_path), cwd=copy_dir)
+    assert code == 0, err
+    assert "26 tiles, 7 covered, 0 manual, 19 uncovered, 27% covered" in out
 
 
 # --------------------------------------------------------------------------- cases.py

@@ -6,9 +6,14 @@
     "auth.sign-in.valid-password",
     "auth.sign-in.wrong-password",
     "credentials.create.name-validation",
-    "docs.home.public",
+    "docs.home.render.anonymous",
     "org.home.render.member"
   ],
+  "skipped": {
+    "auth.sign-out.clears-session": [
+      "e2e/test_auth.py::test_sign_out_clears_the_session"
+    ]
+  },
   "gaps": [
     "admin.settings.requires-admin",
     "credentials.create.shows-secret-once",
@@ -18,13 +23,13 @@
     "admin.settings.error.forbidden",
     "auth.login.error.invalid-credentials",
     "credentials.new.error.invalid-name",
+    "docs.home.public",
     "admin.settings.render.admin",
     "credentials.list.render.admin",
     "credentials.list.render.member",
     "credentials.new.render.admin",
     "credentials.new.render.member",
     "docs.home.render.admin",
-    "docs.home.render.anonymous",
     "docs.home.render.member",
     "org.home.render.admin",
     "org.members.render.admin",

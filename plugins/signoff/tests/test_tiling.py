@@ -4,6 +4,12 @@ The Playwright fixtures under ``fixtures/`` are real reporter output captured
 on 2026-09-04 from Playwright 1.62 (a listing and a run of the same suite);
 every other fixture is written inline here so the expectation and the input
 sit next to each other.
+
+The absolute paths those two captures carried were neutralised: every path
+under the capture directory now reads ``/work/pw-list/...`` (``rootDir`` is
+``/work/pw-list/e2e``, and the annotation locations sit under it). Nothing
+else in them was touched, and the tests derive ``--cwd`` from the fixture's
+own ``rootDir``, so no test depends on where the capture happened.
 """
 import importlib.util
 import json
@@ -337,10 +343,10 @@ CASE_AUTOMATED = """# TC-auth-002: Sign in with a valid password
 """
 
 
-def build_inputs(tmp_path, with_cases=True):
-    write(tmp_path / "map.json", MAP)
+def build_inputs(tmp_path, with_cases=True, mapping=None, tests=None):
+    write(tmp_path / "map.json", MAP if mapping is None else mapping)
     write(tmp_path / "rules.json", RULES)
-    write(tmp_path / "tests.json", TESTS)
+    write(tmp_path / "tests.json", TESTS if tests is None else tests)
     if with_cases:
         cases = tmp_path / "testcases" / "auth"
         cases.mkdir(parents=True)
@@ -350,8 +356,8 @@ def build_inputs(tmp_path, with_cases=True):
     return tmp_path
 
 
-def run_tile(tmp_path, with_cases=True):
-    build_inputs(tmp_path, with_cases)
+def run_tile(tmp_path, with_cases=True, mapping=None, tests=None):
+    build_inputs(tmp_path, with_cases, mapping, tests)
     argv = ["--map", str(tmp_path / "map.json"), "--rules", str(tmp_path / "rules.json"),
             "--tests", str(tmp_path / "tests.json"), "--out", str(tmp_path / "tiles.json")]
     if with_cases:
@@ -425,7 +431,8 @@ def test_tile_ranks_gaps_by_risk_then_kind_then_id(tmp_path):
 def test_tile_prints_counts_per_area_and_the_ranked_gaps(tmp_path, capsys):
     run_tile(tmp_path)
     out = capsys.readouterr().out
-    assert "12 tiles: 2 covered, 1 manual, 9 uncovered (16% covered)" in out
+    # 2 of 12 is 16.67, and the one percent rule rounds (formats.md).
+    assert "12 tiles: 2 covered, 1 manual, 9 uncovered (17% covered)" in out
     assert "| auth | 5 | 2 | 1 | 2 |" in out
     assert "| docs | 4 | 0 | 0 | 4 |" in out
     assert "| org | 3 | 0 | 0 | 3 |" in out
@@ -469,3 +476,334 @@ def test_tile_without_cases_leaves_every_untested_tile_uncovered(tmp_path):
     assert payload["gaps"][:3] == ["auth.session.required-for-app",
                                    "auth.sign-in.wrong-password",
                                    "auth.login.error.invalid-credentials"]
+
+
+# --------------------------------------------------------------------------- F1: a disabled test
+
+SKIPPED_MODULE = '''
+import pytest
+
+
+@pytest.mark.skip(reason="the flow is not stable yet")
+@pytest.mark.tile("auth.sign-out.clears-session")
+def test_sign_out(page):
+    pass
+
+
+@pytest.mark.skipif(True, reason="only on one platform")
+@pytest.mark.tile("org.home.render.admin")
+def test_admin_home(page):
+    pass
+
+
+@pytest.mark.xfail(reason="known bug")
+@pytest.mark.tile("org.home.error.forbidden")
+def test_forbidden(page):
+    pass
+
+
+@pytest.mark.tile("auth.sign-in.valid-password")
+def test_sign_in(page):
+    pass
+'''
+
+
+def test_pytest_skip_skipif_and_xfail_are_recorded_as_skipped(tmp_path):
+    """A test that cannot run claims its tile without exercising it."""
+    (tmp_path / "e2e").mkdir()
+    (tmp_path / "e2e" / "test_skips.py").write_text(SKIPPED_MODULE, encoding="utf-8")
+    out = tmp_path / "tests.json"
+    assert list_tests("--stack", "pytest", tmp_path / "e2e", "--cwd", tmp_path, "--out", out) == 0
+    found = by_id(read(out))
+    assert {test_id: test["skipped"] for test_id, test in found.items()} == {
+        "e2e/test_skips.py::test_sign_out": True,
+        "e2e/test_skips.py::test_admin_home": True,
+        "e2e/test_skips.py::test_forbidden": True,
+        "e2e/test_skips.py::test_sign_in": False,
+    }
+    # The claim itself is still read: it is the claim that makes the tile a lie.
+    assert found["e2e/test_skips.py::test_sign_out"]["tiles"] == ["auth.sign-out.clears-session"]
+
+
+def test_playwright_expected_status_and_annotations_mark_a_test_skipped(tmp_path):
+    report = write(tmp_path / "report.json", {
+        "config": {"rootDir": str(tmp_path / "e2e")}, "suites": [{"title": "a.spec.ts", "specs": [
+            {"title": "disabled by expectedStatus", "file": "a.spec.ts", "line": 3, "tags": [],
+             "tests": [{"expectedStatus": "skipped", "annotations": [], "results": []}]},
+            {"title": "disabled by annotation", "file": "a.spec.ts", "line": 7, "tags": [],
+             "tests": [{"expectedStatus": "passed", "results": [],
+                        "annotations": [{"type": "fixme", "description": "flaky"}]}]},
+            {"title": "runs", "file": "a.spec.ts", "line": 11, "tags": [],
+             "tests": [{"expectedStatus": "passed", "annotations": [], "results": []}]}]}]})
+    out = tmp_path / "tests.json"
+    assert list_tests("--stack", "playwright-ts", "--input", report,
+                      "--cwd", tmp_path, "--out", out) == 0
+    found = by_id(read(out))
+    assert found["e2e/a.spec.ts::disabled by expectedStatus"]["skipped"] is True
+    assert found["e2e/a.spec.ts::disabled by annotation"]["skipped"] is True
+    assert found["e2e/a.spec.ts::runs"]["skipped"] is False
+
+
+def test_the_shipped_listing_is_not_read_as_a_suite_of_skipped_tests(tmp_path):
+    """A listing reports every test `status: skipped` with `expectedStatus:
+    passed`; only the latter means the test is disabled."""
+    report = FIXTURES / "playwright-list.json"
+    out = tmp_path / "tests.json"
+    assert list_tests("--stack", "playwright-ts", "--input", report,
+                      "--cwd", capture_cwd(report), "--out", out) == 0
+    assert [test["skipped"] for test in read(out)["tests"]] == [False, False, False, False]
+
+
+SKIPPED_TESTS_DOC = {
+    "stack": "pytest", "listed_at": "2026-09-04T18:20:00Z", "command": "--stack pytest e2e",
+    "tests": [
+        {"id": "e2e/test_auth.py::test_sign_in", "title": "test_sign_in",
+         "file": "e2e/test_auth.py", "line": 4, "tags": [], "annotations": [],
+         "tiles": ["auth.sign-in.valid-password"], "skipped": False},
+        {"id": "e2e/test_auth.py::test_wrong", "title": "test_wrong",
+         "file": "e2e/test_auth.py", "line": 9, "tags": ["skip"], "annotations": [],
+         "tiles": ["auth.sign-in.wrong-password"], "skipped": True},
+    ]}
+
+
+def test_a_disabled_test_does_not_cover_its_tile(tmp_path, capsys):
+    code, payload = run_tile(tmp_path, with_cases=False, tests=SKIPPED_TESTS_DOC)
+    assert code == 0
+    tiles = {tile["id"]: tile for tile in payload["tiles"]}
+    claimed = tiles["auth.sign-in.wrong-password"]
+    # The claim is recorded, apart, and the tile is a gap all the same.
+    assert claimed["tests"] == []
+    assert claimed["skipped_tests"] == ["e2e/test_auth.py::test_wrong"]
+    assert claimed["status"] == "uncovered"
+    assert "auth.sign-in.wrong-password" in payload["gaps"]
+    # The one test that runs still covers its tile, and carries no skipped id.
+    assert tiles["auth.sign-in.valid-password"]["status"] == "covered"
+    assert tiles["auth.sign-in.valid-password"]["skipped_tests"] == []
+    out = capsys.readouterr().out
+    assert ("`auth.sign-in.wrong-password` (rule, medium risk) "
+            "(claimed by a disabled test: e2e/test_auth.py::test_wrong)") in out
+
+
+# --------------------------------------------------------------------------- F2, F5, F11, F14
+
+CASE_WITH_A_SECOND_STATUS = """# TC-auth-003: Sign in with a valid password
+
+- area: auth
+- tiles: auth.sign-in.valid-password
+- role: anonymous
+- priority: high
+- status: manual
+- automated:
+
+## Preconditions
+
+- none
+
+## Steps
+
+| # | Action | Expected |
+|---|--------|----------|
+| 1 | Open /login | The form shows |
+
+## Notes
+
+The line below is prose about the case, not the case's metadata.
+
+- status: automated
+- tiles: org.home.render.member
+"""
+
+
+def test_the_case_parser_reads_the_metadata_block_only(tmp_path):
+    """A `- status:` line written in the prose is prose (F2): the case is
+    manual, so its tile is `manual`, and the tile named down there is not
+    touched at all."""
+    build_inputs(tmp_path, with_cases=False)
+    cases = tmp_path / "testcases" / "auth"
+    cases.mkdir(parents=True)
+    (cases / "TC-auth-003.md").write_text(CASE_WITH_A_SECOND_STATUS, encoding="utf-8")
+    assert tile_py.main(["--map", str(tmp_path / "map.json"), "--rules", str(tmp_path / "rules.json"),
+                         "--tests", str(tmp_path / "tests.json"), "--cases", str(tmp_path / "testcases"),
+                         "--out", str(tmp_path / "tiles.json")]) == 0
+    tiles = {tile["id"]: tile for tile in read(tmp_path / "tiles.json")["tiles"]}
+    assert tiles["auth.sign-in.valid-password"]["cases"] == ["TC-auth-003"]
+    assert tiles["org.home.render.member"]["cases"] == []
+    assert tiles["org.home.render.member"]["status"] == "uncovered"
+
+
+def test_the_percent_is_rounded_to_the_nearest_whole():
+    """One percent rule (F5): 7 of 26 is 26.9, which is 27, not 26."""
+    tiles = [{"id": "t.%d" % n, "area": "a", "kind": "rule", "risk": "high",
+              "tests": ["e2e/a.py::t"] if n < 7 else [], "skipped_tests": [], "cases": [],
+              "status": "covered" if n < 7 else "uncovered"} for n in range(26)]
+    summary = tile_py.render(tiles, [], ".qa/tiles.json")
+    assert "26 tiles: 7 covered, 0 manual, 19 uncovered (27% covered)" in summary
+    assert tile_py.render([], [], ".qa/tiles.json").splitlines()[2].startswith(
+        "0 tiles: 0 covered, 0 manual, 0 uncovered (0% covered)")
+
+
+def test_a_screen_whose_roles_is_not_a_list_is_a_finding_not_a_traceback(tmp_path, capsys):
+    """F11: fail closed on a wrong-typed field, with no walk over an int."""
+    mapping = json.loads(json.dumps(MAP))
+    mapping["screens"][0]["roles"] = 5
+    code, _payload = run_tile(tmp_path, with_cases=False, mapping=mapping)
+    assert code == 2
+    err = capsys.readouterr().err
+    assert "bad-field: roles of screen auth.login is not a list" in err
+    assert "Traceback" not in err
+    assert not (tmp_path / "tiles.json").exists()
+
+
+RENAMED_CLAIM_DOC = {
+    "stack": "pytest", "listed_at": "2026-09-04T18:20:00Z", "command": "--stack pytest e2e",
+    "tests": [{"id": "e2e/test_auth.py::test_sign_in", "title": "test_sign_in",
+               "file": "e2e/test_auth.py", "line": 4, "tags": [], "annotations": [],
+               # The rule was renamed to `auth.sign-in.valid-password`; the
+               # test still claims the id it had before.
+               "tiles": ["auth.sign-in.valid-passwords"], "skipped": False}]}
+
+
+def test_a_claim_on_an_id_nothing_defines_is_warned_about_and_recorded(tmp_path, capsys):
+    code, payload = run_tile(tmp_path, with_cases=False, tests=RENAMED_CLAIM_DOC)
+    assert code == 0
+    assert payload["unknown_claims"] == [
+        {"test": "e2e/test_auth.py::test_sign_in", "tile": "auth.sign-in.valid-passwords"}]
+    assert ("warning: e2e/test_auth.py::test_sign_in claims unknown tile "
+            "auth.sign-in.valid-passwords") in capsys.readouterr().err
+    # The tile the claim meant is still a gap: a typo does not cover anything.
+    tiles = {tile["id"]: tile for tile in payload["tiles"]}
+    assert tiles["auth.sign-in.valid-password"]["status"] == "uncovered"
+    assert "auth.sign-in.valid-password" in payload["gaps"]
+
+
+class _Finished(object):
+    """The two fields of a `subprocess.run` result that tests.py reads."""
+
+    def __init__(self, returncode, stdout=b""):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = b""
+
+
+def _npx_returns(monkeypatch, finished):
+    """`npx` on PATH, returning this result instead of being run."""
+    monkeypatch.setattr(tests_py.shutil, "which", lambda name: "/usr/bin/" + name)
+    monkeypatch.setattr(tests_py.subprocess, "run",
+                        lambda *args, **kwargs: finished)
+
+
+def test_a_listing_that_exited_non_zero_is_refused(tmp_path, capsys, monkeypatch):
+    """F17: a failed listing is not a listing, whatever it printed."""
+    _npx_returns(monkeypatch, _Finished(1, json.dumps(
+        {"config": {"rootDir": str(tmp_path / "e2e")}, "suites": [], "errors": []}
+    ).encode("utf-8")))
+    out = tmp_path / "tests.json"
+    assert list_tests("--stack", "playwright-ts", "--run", "--cwd", tmp_path, "--out", out) == 2
+    err = capsys.readouterr().err
+    assert "skip:" in err and "exited 1" in err
+    # Nothing written, so a previous tests.json is never replaced by a worse one.
+    assert not out.exists()
+
+
+def test_a_listing_that_reported_errors_is_refused(tmp_path, capsys, monkeypatch):
+    """F17: a suite that failed to load lists only what compiled."""
+    _npx_returns(monkeypatch, _Finished(0, json.dumps({
+        "config": {"rootDir": str(tmp_path / "e2e")},
+        "suites": [{"title": "a.spec.ts", "specs": [
+            {"title": "one that did compile", "file": "a.spec.ts", "line": 3, "tags": [],
+             "tests": [{"expectedStatus": "passed", "annotations": [], "results": []}]}]}],
+        "errors": [{"message": "cannot find module"}],
+    }).encode("utf-8")))
+    out = tmp_path / "tests.json"
+    assert list_tests("--stack", "playwright-ts", "--run", "--cwd", tmp_path, "--out", out) == 2
+    err = capsys.readouterr().err
+    assert "skip:" in err and "1 `errors` entry" in err
+    assert not out.exists()
+
+
+def test_a_clean_listing_is_written(tmp_path, capsys, monkeypatch):
+    """The other half of F17: exit zero and an empty `errors` is a listing."""
+    _npx_returns(monkeypatch, _Finished(0, json.dumps({
+        "config": {"rootDir": str(tmp_path / "e2e")},
+        "suites": [{"title": "a.spec.ts", "specs": [
+            {"title": "renders @tile:org.home.render.member", "file": "a.spec.ts", "line": 3,
+             "tags": ["tile:org.home.render.member"],
+             "tests": [{"expectedStatus": "passed", "annotations": [], "results": []}]}]}],
+        "errors": [],
+    }).encode("utf-8")))
+    out = tmp_path / "tests.json"
+    assert list_tests("--stack", "playwright-ts", "--run", "--cwd", tmp_path, "--out", out) == 0
+    assert read(out)["tests"][0]["tiles"] == ["org.home.render.member"]
+
+
+# --------------------------------------------------------------------------- F16: sanitizing
+
+
+def test_a_three_hundred_character_title_is_cut_and_marked(tmp_path):
+    """F16: a title is capped, and the cut is visible so it never reads whole."""
+    long_title = "a" * 300
+    report = write(tmp_path / "report.json", {
+        "config": {"rootDir": str(tmp_path / "e2e")}, "suites": [{"title": "a.spec.ts", "specs": [
+            {"title": long_title, "file": "a.spec.ts", "line": 3, "tags": [],
+             "tests": [{"expectedStatus": "passed", "annotations": [], "results": []}]}]}]})
+    out = tmp_path / "tests.json"
+    assert list_tests("--stack", "playwright-ts", "--input", report,
+                      "--cwd", tmp_path, "--out", out) == 0
+    only = read(out)["tests"][0]
+    assert len(only["title"]) == tests_py.TEXT_CHARS
+    assert only["title"].endswith(tests_py.CUT_MARK)
+    assert len(only["id"]) == tests_py.TEXT_CHARS
+
+
+def test_a_newline_in_a_claim_cannot_break_the_line_it_is_printed_on(tmp_path):
+    """F16: control characters are replaced before a claim reaches tests.json."""
+    report = write(tmp_path / "report.json", {
+        "config": {"rootDir": str(tmp_path / "e2e")}, "suites": [{"title": "a.spec.ts", "specs": [
+            {"title": "claims", "file": "a.spec.ts", "line": 3,
+             "tags": ["tile:org.home\n\n## Coverage\n\n100% covered"],
+             "tests": [{"expectedStatus": "passed", "annotations": [], "results": []}]}]}]})
+    out = tmp_path / "tests.json"
+    assert list_tests("--stack", "playwright-ts", "--input", report,
+                      "--cwd", tmp_path, "--out", out) == 0
+    claimed = read(out)["tests"][0]["tiles"][0]
+    assert "\n" not in claimed
+    assert claimed == "org.home??## Coverage??100% covered"
+
+
+BAD_ID_RULES = {"mined_at": "2026-09-04T18:10:00Z", "rules": [
+    {"id": "auth.sign-in.valid-password", "area": "auth", "flow": "auth.sign-in",
+     "kind": "transition", "risk": "high", "statement": "s", "source": "app.py:1",
+     "screens": ["auth.login"]},
+    {"id": "../../etc/passwd", "area": "auth", "flow": "auth.sign-in",
+     "kind": "guard", "statement": "s", "source": "app.py:2", "screens": ["auth.login"]},
+]}
+
+
+def test_a_tile_id_outside_the_pattern_is_dropped_with_a_warning(tmp_path, capsys):
+    """F16: an id tile.py cannot vouch for never becomes a tile at all."""
+    write(tmp_path / "map.json", MAP)
+    write(tmp_path / "rules.json", BAD_ID_RULES)
+    write(tmp_path / "tests.json", TESTS)
+    assert tile_py.main(["--map", str(tmp_path / "map.json"),
+                         "--rules", str(tmp_path / "rules.json"),
+                         "--tests", str(tmp_path / "tests.json"),
+                         "--out", str(tmp_path / "tiles.json")]) == 0
+    ids = [tile["id"] for tile in read(tmp_path / "tiles.json")["tiles"]]
+    assert "../../etc/passwd" not in ids
+    assert "auth.sign-in.valid-password" in ids
+    assert "bad-tile-id: ../../etc/passwd is not" in capsys.readouterr().err
+
+
+def test_the_listing_timeout_fails_closed(tmp_path, capsys, monkeypatch):
+    """F10: a hung `npx` is exit 2 and a `skip:` reason, never a tests.json."""
+    def timeout(*args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd=tests_py.LIST_COMMAND,
+                                        timeout=tests_py.LIST_TIMEOUT_SECONDS)
+
+    monkeypatch.setattr(tests_py.shutil, "which", lambda name: "/usr/bin/" + name)
+    monkeypatch.setattr(tests_py.subprocess, "run", timeout)
+    out = tmp_path / "tests.json"
+    assert list_tests("--stack", "playwright-ts", "--run", "--cwd", tmp_path, "--out", out) == 2
+    err = capsys.readouterr().err
+    assert "skip:" in err and "did not finish in %ds" % tests_py.LIST_TIMEOUT_SECONDS in err
+    assert not out.exists()

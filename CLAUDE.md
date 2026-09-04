@@ -19,7 +19,7 @@ Paste the output in the commit or PR; never say "tests pass" without it.
 
 ## Rules that shape every change
 
-- **Standard library only, no network.** The three Python scripts import
+- **Standard library only, no network.** The plugins' Python scripts import
   nothing outside the stdlib and open no sockets; the audit fails
   otherwise. External tools are run only if already on PATH, never
   installed, and their output is reduced to counts.
@@ -71,4 +71,6 @@ Paste the output in the commit or PR; never say "tests pass" without it.
   `pricing.json` beside it, with the date checked.
 - Scanner: `plugins/prod-readiness/skills/readiness-review/scripts/readiness.py`.
 - Inventory: `plugins/py-testing/skills/untangling-test-suites/scripts/inventory.py`.
-- Driving tasks: konyklabs/roadmap#60 and #61.
+- signoff scripts: `plugins/signoff/skills/*/scripts/` (formats in
+  `plugins/signoff/formats.md`).
+- Driving tasks: konyklabs/roadmap#60, #61 and #120.

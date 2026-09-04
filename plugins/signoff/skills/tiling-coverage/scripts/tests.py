@@ -6,7 +6,9 @@ Two stacks:
 * ``playwright-ts`` reads Playwright's JSON reporter output, either a saved
   report (``--input``) or a fresh listing (``--run``, which runs
   ``npx playwright test --list --reporter=json``: an external tool expected
-  on PATH, never installed, and this script itself opens no socket).
+  on PATH, never installed, and this script itself opens no socket). A
+  ``--run`` listing is written only when it exited zero and reported no
+  ``errors``; anything else is exit 2 and a ``skip:`` reason.
 * ``pytest`` parses the suite with ``ast``, without importing or running it.
 
 The output is ``.qa/tests.json`` exactly as ``plugins/signoff/formats.md``
@@ -69,6 +71,21 @@ TILE_TAG_RE = re.compile(r"^@?tile:(.+)$")
 # The annotation type formats.md reserves for a claim.
 TILE_ANNOTATION_TYPE = "tile"
 
+# A test that cannot run does not cover the tile it claims, so a disabled test
+# is recorded as such and tile.py keeps its claims out of `tests`.
+#
+# pytest: the three markers that stop a test running or expect it to fail,
+# whatever arguments they carry. `xfail` is here because a test expected to
+# fail proves nothing about the behaviour it claims.
+PYTEST_SKIP_MARKERS = ("skip", "skipif", "xfail")
+
+# Playwright: `test.skip()` and `test.fixme()` set the test's `expectedStatus`
+# to this in both a listing and a run report; the two annotation types are the
+# same two calls seen from the annotation side (measured 2026-09-04, and the
+# annotation is what a `test.skip()` inside a describe block leaves behind).
+PLAYWRIGHT_SKIPPED_STATUS = "skipped"
+PLAYWRIGHT_SKIP_ANNOTATIONS = ("skip", "fixme")
+
 # A tag token inside a title: whitespace-delimited and starting with `@`.
 # The id uses the title with these removed (formats.md, "Identifiers").
 TITLE_TAG_RE = re.compile(r"(?:^|\s)@\S+")
@@ -77,8 +94,34 @@ TITLE_TAG_RE = re.compile(r"(?:^|\s)@\S+")
 # `from pytest import mark` form, and a bare `tile` imported by name.
 TILE_DECORATORS = {"pytest.mark.tile", "mark.tile", "tile"}
 
+# Playwright's own key for the load-time failures of a listing. A suite that
+# would not compile lists whatever it managed to load, so a non-empty `errors`
+# means the listing is partial: fail closed rather than tile against it and
+# report every unloaded spec's tile as a gap.
+ERRORS_KEY = "errors"
+
 # UTC in the shape formats.md uses (`2026-09-04T18:20:00Z`).
 TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
+
+
+# CLAUDE.md: a string that originates in a scanned repository is sanitized,
+# length-capped and origin-marked before it reaches a report, because the
+# report is untrusted input to the model that reads it. A newline inside an
+# id is how a fake `## Coverage` heading gets into a Markdown report.
+CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
+# An id or an area: past the longest real one, still one line on a screen.
+ID_CHARS = 120
+# A title or a path, which legitimately runs longer than an id.
+TEXT_CHARS = 200
+# The cut is marked, so a value that was truncated never reads as a whole one.
+CUT_MARK = "\u2026"
+
+
+def _safe(value, cap=ID_CHARS):
+    """One repository-born string, fit to print: control characters and
+    newlines replaced, length capped, the cut marked."""
+    text = CONTROL_RE.sub("?", str(value))
+    return text if len(text) <= cap else text[:cap - 1] + CUT_MARK
 
 
 def _now() -> str:
@@ -96,13 +139,13 @@ def _tiles_from(tags: Sequence[Any], annotations: Sequence[Dict[str, Any]]) -> L
     for tag in tags:
         match = TILE_TAG_RE.match(str(tag).strip())
         if match:
-            tile = match.group(1).strip()
+            tile = _safe(match.group(1).strip())
             if tile and tile not in tiles:
                 tiles.append(tile)
     for annotation in annotations:
         if annotation.get("type") != TILE_ANNOTATION_TYPE:
             continue
-        tile = (annotation.get("description") or "").strip()
+        tile = _safe((annotation.get("description") or "").strip())
         if tile and tile not in tiles:
             tiles.append(tile)
     return tiles
@@ -145,13 +188,26 @@ def _spec_annotations(spec: Dict[str, Any]) -> List[Dict[str, str]]:
                 if not isinstance(annotation, dict):
                     continue
                 description = annotation.get("description")
-                item = {"type": str(annotation.get("type", "")),
-                        "description": "" if description is None else str(description)}
+                item = {"type": _safe(annotation.get("type", "")),
+                        "description": "" if description is None
+                                       else _safe(description, TEXT_CHARS)}
                 key = (item["type"], item["description"])
                 if key not in keys:
                     keys.add(key)
                     seen.append(item)
     return seen
+
+
+def _spec_is_skipped(spec: Dict[str, Any], annotations: Sequence[Dict[str, str]]) -> bool:
+    """Whether Playwright will not run this spec: `expectedStatus` on any of
+    its projects, or a `skip`/`fixme` annotation on any of them."""
+    for test in spec.get("tests") or []:
+        if isinstance(test, dict) and test.get("expectedStatus") == PLAYWRIGHT_SKIPPED_STATUS:
+            return True
+    for annotation in annotations:
+        if annotation.get("type") in PLAYWRIGHT_SKIP_ANNOTATIONS:
+            return True
+    return False
 
 
 def parse_playwright(report: Dict[str, Any], cwd: str) -> List[Dict[str, Any]]:
@@ -171,17 +227,20 @@ def parse_playwright(report: Dict[str, Any], cwd: str) -> List[Dict[str, Any]]:
         # directory such a report was produced in.
         absolute = os.path.join(root_dir or cwd, spec_file)
         relative = os.path.relpath(absolute, cwd)
-        title = _strip_tag_tokens(str(spec.get("title") or ""))
-        tags = list(spec.get("tags") or [])
+        title = _safe(_strip_tag_tokens(str(spec.get("title") or "")), TEXT_CHARS)
+        relative = _safe(relative, TEXT_CHARS)
+        tags = [_safe(tag) for tag in spec.get("tags") or []]
         annotations = _spec_annotations(spec)
         tests.append({
-            "id": relative + "::" + title,
+            # A test id is a path joined to a title, so it is capped as one.
+            "id": _safe(relative + "::" + title, TEXT_CHARS),
             "title": title,
             "file": relative,
             "line": spec.get("line") or 0,
             "tags": tags,
             "annotations": annotations,
             "tiles": _tiles_from(tags, annotations),
+            "skipped": _spec_is_skipped(spec, annotations),
         })
     return tests
 
@@ -197,10 +256,20 @@ def run_playwright_list(cwd: str) -> Tuple[Optional[Dict[str, Any]], Optional[st
         return None, "skip: %s did not finish in %ds" % (" ".join(LIST_COMMAND), LIST_TIMEOUT_SECONDS)
     except OSError as error:
         return None, "skip: cannot run %s (%s)" % (LIST_COMMAND[0], error)
+    if finished.returncode != 0:
+        # A listing that failed is not a listing. Nothing is written, so the
+        # previous tests.json is never quietly replaced by a shorter one.
+        return None, "skip: %s exited %d; the suite did not list" % (
+            LIST_COMMAND[0], finished.returncode)
     text = finished.stdout.decode("utf-8", errors="replace")
     report = _parse_report_text(text)
     if report is None:
         return None, "skip: %s exited %d without a JSON report" % (LIST_COMMAND[0], finished.returncode)
+    errors = report.get(ERRORS_KEY)
+    if errors:
+        count = len(errors) if isinstance(errors, list) else 1
+        return None, "skip: the listing reported %d `%s` entr%s; a suite that failed to load is not a listing" % (
+            count, ERRORS_KEY, "y" if count == 1 else "ies")
     return report, None
 
 
@@ -235,11 +304,12 @@ def _decorator_name(node: ast.expr) -> str:
     return ".".join(reversed(parts))
 
 
-def _marks(node: ast.expr) -> Tuple[List[str], List[str], bool]:
-    """(tile ids, other marker names, a tile claim with no id) of one function."""
+def _marks(node: ast.expr) -> Tuple[List[str], List[str], bool, bool]:
+    """(tile ids, other marker names, a tile claim with no id, disabled) of one function."""
     tiles: List[str] = []
     tags: List[str] = []
     empty_claim = False
+    skipped = False
     for decorator in getattr(node, "decorator_list", []):
         name = _decorator_name(decorator)
         if name in TILE_DECORATORS:
@@ -248,15 +318,19 @@ def _marks(node: ast.expr) -> Tuple[List[str], List[str], bool]:
             for argument in arguments:
                 if isinstance(argument, ast.Constant) and isinstance(argument.value, str):
                     found = True
-                    if argument.value not in tiles:
-                        tiles.append(argument.value)
+                    tile = _safe(argument.value)
+                    if tile not in tiles:
+                        tiles.append(tile)
             if not found:
                 empty_claim = True
             continue
         parts = name.split(".")
-        if len(parts) >= 2 and parts[-2] == "mark" and parts[-1] not in tags:
-            tags.append(parts[-1])
-    return tiles, tags, empty_claim
+        if len(parts) >= 2 and parts[-2] == "mark":
+            if parts[-1] in PYTEST_SKIP_MARKERS:
+                skipped = True
+            if _safe(parts[-1]) not in tags:
+                tags.append(_safe(parts[-1]))
+    return tiles, tags, empty_claim, skipped
 
 
 def _collect(body: Sequence[ast.stmt], prefix: List[str], relative: str,
@@ -265,18 +339,19 @@ def _collect(body: Sequence[ast.stmt], prefix: List[str], relative: str,
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             if not node.name.startswith(TEST_FUNCTION_PREFIX):
                 continue
-            tiles, tags, empty_claim = _marks(node)
+            tiles, tags, empty_claim, skipped = _marks(node)
             if empty_claim:
                 warnings.append("%s:%d empty-tile-claim: a tile mark with no id claims nothing"
                                 % (relative, node.lineno))
             tests.append({
-                "id": "::".join([relative] + prefix + [node.name]),
-                "title": node.name,
+                "id": _safe("::".join([relative] + prefix + [node.name]), TEXT_CHARS),
+                "title": _safe(node.name, TEXT_CHARS),
                 "file": relative,
                 "line": node.lineno,
                 "tags": tags,
                 "annotations": [],
                 "tiles": tiles,
+                "skipped": skipped,
             })
         elif isinstance(node, ast.ClassDef) and node.name.startswith(TEST_CLASS_PREFIX):
             _collect(node.body, prefix + [node.name], relative, tests, warnings)
@@ -290,7 +365,7 @@ def parse_pytest_tree(root: str, cwd: str, warnings: List[str]) -> List[Dict[str
             if not TEST_FILE_RE.match(filename):
                 continue
             path = os.path.join(directory, filename)
-            relative = os.path.relpath(path, cwd)
+            relative = _safe(os.path.relpath(path, cwd), TEXT_CHARS)
             try:
                 with open(path, "r", encoding="utf-8", errors="replace") as handle:
                     text = handle.read()

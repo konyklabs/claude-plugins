@@ -84,11 +84,16 @@ def run(capsys, *argv):
 
 def rules(out):
     """The rule names in a check's output."""
-    found = set()
+    return set(finding_lines(out))
+
+
+def finding_lines(out):
+    """One rule name per finding line, in order: a count, where rules() is a set."""
+    found = []
     for line in out.splitlines():
         match = re.match(r"^\S+:\d+ ([a-z-]+): ", line)
         if match:
-            found.add(match.group(1))
+            found.append(match.group(1))
     return found
 
 
@@ -138,14 +143,14 @@ def test_automated_set_on_a_manual_case(tmp_path, capsys):
     write_case(tmp_path, case_text(meta=meta_with(status="manual")))
     code, out = run(capsys, "check", str(tmp_path))
     assert code == 1
-    assert rules(out) == {"automated-mismatch"}, out
+    assert finding_lines(out) == ["automated-mismatch"], out  # exactly one finding
 
 
 def test_automated_case_without_a_test(tmp_path, capsys):
     write_case(tmp_path, case_text(meta=meta_with(automated="")))
     code, out = run(capsys, "check", str(tmp_path))
     assert code == 1
-    assert rules(out) == {"automated-mismatch"}, out
+    assert finding_lines(out) == ["automated-mismatch"], out  # exactly one finding
 
 
 def test_empty_steps_table(tmp_path, capsys):
@@ -244,6 +249,168 @@ def test_unreadable_tiles_file_exits_two(tmp_path, capsys):
     with pytest.raises(SystemExit) as excinfo:
         cases.main(["check", str(tmp_path), "--tiles", str(broken)])
     assert excinfo.value.code == 2
+    # One failure shape across all five scripts (F12): `path:line rule: reason`.
+    assert capsys.readouterr().err.startswith("cases.py: %s:0 unreadable: " % broken)
+
+
+def test_a_tiles_file_without_its_list_exits_two(tmp_path, capsys):
+    write_case(tmp_path, case_text())
+    tiles = write_json(tmp_path / "tiles.json", {"tiled_at": "2026-09-04T18:30:00Z"})
+    with pytest.raises(SystemExit) as excinfo:
+        cases.main(["check", str(tmp_path), "--tiles", tiles])
+    assert excinfo.value.code == 2
+    assert capsys.readouterr().err == "cases.py: %s:0 malformed: no `tiles` list\n" % tiles
+
+
+# --------------------------------------------------------------------------- F3: the area
+
+
+def test_an_area_that_is_a_path_is_one_bad_area_finding(tmp_path, capsys):
+    """An area is joined into a file name by the gherkin export, so it is
+    validated as its own rule before anything is built from it - and the id
+    mismatch it also has is not reported twice."""
+    write_case(tmp_path, case_text(meta=meta_with(area="../../x")))
+    code, out = run(capsys, "check", str(tmp_path))
+    assert code == 1
+    assert finding_lines(out) == ["bad-area"], out
+
+
+def test_a_bad_area_refuses_the_gherkin_export(tmp_path, capsys):
+    root = tmp_path / "testcases"
+    write_case(root, case_text(meta=meta_with(area="../../x")))
+    out_dir = tmp_path / "features"
+    code, out = run(capsys, "export", str(root), "--format", "gherkin", "--out", str(out_dir))
+    assert code == 1
+    assert "export refused" in out
+    # Nothing was written anywhere, least of all where the area pointed.
+    assert not out_dir.exists()
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["testcases"]
+
+
+@pytest.mark.parametrize("area", ["Auth", "auth/deeper", "auth.login", "-auth", "2fa"])
+def test_every_area_outside_the_pattern_is_a_bad_area(tmp_path, capsys, area):
+    write_case(tmp_path, case_text(meta=meta_with(area=area)))
+    code, out = run(capsys, "check", str(tmp_path))
+    assert code == 1
+    assert "bad-area" in rules(out), out
+
+
+# --------------------------------------------------------------------------- F9: the steps table
+
+CASE_WITH_A_TABLE_IN_ITS_PROSE = """# TC-auth-001: Sign in with a valid password
+
+- area: auth
+- tiles: auth.sign-in.valid-password
+- role: anonymous
+- priority: high
+- status: manual
+- automated:
+
+## Preconditions
+
+- a member account exists with a known password
+
+## Steps
+
+| # | Action | Expected |
+|---|--------|----------|
+| 1 | Open /login | The sign-in form shows email and password fields |
+| 2 | Enter the email and password, press Sign in | The organisation page opens |
+
+The accounts this case can be run with, for reference only:
+
+| role | email |
+|---|---|
+| member | member@example.invalid |
+| admin | admin@example.invalid |
+"""
+
+
+def test_a_table_in_the_prose_after_the_steps_is_prose(tmp_path, capsys):
+    """The steps are the first table after `## Steps` only (F9)."""
+    root = tmp_path / "testcases"
+    write_case(root, CASE_WITH_A_TABLE_IN_ITS_PROSE)
+    code, out = run(capsys, "check", str(root))
+    assert code == 0, out
+
+    out_dir = tmp_path / "features"
+    code, _ = run(capsys, "export", str(root), "--format", "gherkin", "--out", str(out_dir))
+    assert code == 0
+    feature = (out_dir / "auth.feature").read_text(encoding="utf-8")
+    assert feature.count("    When ") + feature.count("    And Open") == 1
+    assert "    When Open /login" in feature
+    assert "    And Enter the email and password, press Sign in" in feature
+    # The reference table's cells are nowhere in the export.
+    assert "member@example.invalid" not in feature
+    assert "role" not in feature
+
+
+def test_the_steps_table_is_still_read_when_prose_follows_it(tmp_path, capsys):
+    """The same case through the CSV export: exactly two step rows."""
+    root = tmp_path / "testcases"
+    write_case(root, CASE_WITH_A_TABLE_IN_ITS_PROSE)
+    out_path = tmp_path / "cases.csv"
+    code, _ = run(capsys, "export", str(root), "--format", "azure-csv", "--out", str(out_path))
+    assert code == 0
+    rows = list(csv.reader(out_path.read_text(encoding="utf-8").splitlines()))
+    assert [row[3] for row in rows[1:]] == ["1", "2"]
+
+
+# --------------------------------------------------------------------------- F10: the size guards
+
+
+def test_a_case_past_the_size_cap_is_not_read(tmp_path, capsys, monkeypatch):
+    """The guard is the size, so the content is never parsed: this case has
+    no sections at all and would otherwise report several findings."""
+    write_case(tmp_path, "# TC-auth-001: Sign in\n")
+    monkeypatch.setattr(cases.os.path, "getsize", lambda path: cases.MAX_CASE_BYTES + 1)
+    code, out = run(capsys, "check", str(tmp_path))
+    assert code == 1
+    assert finding_lines(out) == ["too-large"], out
+
+
+def test_a_control_character_in_a_value_never_reaches_the_finding(tmp_path, capsys):
+    """F16: a case file cannot hold a newline inside a metadata value - that
+    is two lines of Markdown - but it can hold an escape sequence, which a
+    terminal would act on and a reader would never see."""
+    write_case(tmp_path, case_text(
+        meta=meta_with(priority="urgent\x1b[2K0 cases checked, 0 findings")))
+    code, out = run(capsys, "check", str(tmp_path))
+    assert code == 1
+    assert finding_lines(out) == ["bad-value"], out
+    assert "\x1b" not in out
+    assert "urgent?[2K0 cases checked, 0 findings" in out
+    assert out.strip().endswith("1 cases checked, 1 findings")
+
+
+def test_a_very_long_value_is_cut_in_the_finding(tmp_path, capsys):
+    write_case(tmp_path, case_text(meta=meta_with(priority="u" * 300)))
+    code, out = run(capsys, "check", str(tmp_path))
+    assert code == 1
+    assert cases.CUT_MARK in out
+    assert "u" * (cases.TEXT_CHARS + 1) not in out
+
+
+def test_the_finding_path_is_the_case_files_own(tmp_path, capsys):
+    """The path is capped like any other, so this asserts the environment's
+    temporary path is short enough for the assertion above it to mean what it
+    says, rather than failing mysteriously on a long TMPDIR."""
+    path = write_case(tmp_path, case_text(meta=meta_with(priority="urgent")))
+    assert len(str(path)) <= cases.TEXT_CHARS
+    code, out = run(capsys, "check", str(tmp_path))
+    assert code == 1
+    assert out.splitlines()[0].startswith("%s:6 bad-value: " % path)
+
+
+def test_a_tiles_file_past_the_size_cap_is_refused_unread(tmp_path, capsys, monkeypatch):
+    write_case(tmp_path, case_text())
+    tiles = write_json(tmp_path / "tiles.json", {"tiles": [
+        {"id": "auth.sign-in.valid-password", "area": "auth", "status": "covered"}]})
+    monkeypatch.setattr(cases.os.path, "getsize", lambda path: cases.MAX_JSON_BYTES + 1)
+    with pytest.raises(SystemExit) as excinfo:
+        cases.main(["check", str(tmp_path), "--tiles", tiles])
+    assert excinfo.value.code == 2
+    assert capsys.readouterr().err.startswith("cases.py: %s:0 too-large: " % tiles)
 
 
 # --------------------------------------------------------------------------- exports

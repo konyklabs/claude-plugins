@@ -55,7 +55,17 @@ scripts have real gaps to report:
 - `auth.sign-in.wrong-password`
 - `auth.session.required-for-app`
 - `credentials.create.name-validation`
-- `docs.home.public`
+- `docs.home.render.anonymous` (the `docs.home.public` rule itself stays uncovered: it is the one low-risk rule, and the gap ranking needs one)
+
+One test is disabled and claims a tile anyway:
+`e2e/test_auth.py::test_sign_out_clears_the_session` carries
+`@pytest.mark.skip` and `@pytest.mark.tile("auth.sign-out.clears-session")`.
+It is here because a disabled test is the one way a suite can look like
+coverage without being any: `tests.py` records it as `skipped`, `tile.py`
+puts the claim under the tile's `skipped_tests` instead of its `tests`, and
+the tile stays `uncovered` and stays in the ranked gaps, flagged as claimed
+by a disabled test. `expected.json`'s `skipped` object is that expectation,
+and its `gaps` array is unchanged by the test's presence.
 
 Left deliberately uncovered: signing out, removing a member, revoking a
 credential, creating a credential (only its name validation is claimed, not
@@ -73,7 +83,8 @@ above actually does, field for field against `plugins/signoff/formats.md`;
 they stand in for what an `explore` and a `mine` step would otherwise
 produce (those are agents, out of scope for this slice). `expected.json`
 is the tile count, the covered list and the ranked gap list derived by hand
-from `map.json`, `rules.json` and the suite's `@pytest.mark.tile` claims —
+from `map.json`, `rules.json` and the suite's `@pytest.mark.tile` claims
+(the disabled test's claim counts for none of it) —
 render and error-state tiles carry no risk in `formats.md`'s own schema, so
 this fixture assigns render tiles `low` and error-state tiles `medium`,
 consistently, to make the gap ranking well-defined; a later script may

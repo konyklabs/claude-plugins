@@ -14,8 +14,9 @@ Usage:
     tile.py --map .qa/map.json --rules .qa/rules.json --tests .qa/tests.json
             [--cases testcases] --out .qa/tiles.json
 
-Exit 0 on valid input (a rule naming an unknown screen or flow is a warning
-on stderr, not a failure), 2 on an input that cannot be read.
+Exit 0 on valid input (a rule naming an unknown screen or flow, and a test
+claiming a tile nothing defines, are warnings on stderr, not failures), 2 on
+an input that cannot be read or that carries a field of the wrong type.
 
 Standard library only, no network.
 """
@@ -69,7 +70,45 @@ TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 CASE_TITLE_RE = re.compile(r"^#\s*(TC-[A-Za-z0-9-]+-\d+)\s*:")
 CASE_META_RE = re.compile(r"^-\s*(tiles|status)\s*:\s*(.*)$")
 CASE_FILE_RE = re.compile(r"^TC-.*\.md$")
+# The metadata block ends at the first `## ` heading, so a `- status:` line
+# written in the prose after the steps table is prose. cases.py draws the
+# block the same way and keeps the first value of a repeated key; the two
+# parsers must agree, or a case would tile differently from how it lints.
+CASE_HEADING_RE = re.compile(r"^##[ \t]+")
 
+# formats.md: `.qa/tests.json` records a disabled test. A test that cannot run
+# proves nothing, so its claims are listed apart and never make a tile covered.
+SKIPPED_TEST_KEY = "skipped"
+
+# The suffix a gap carries when the only thing claiming it is disabled. The
+# reader needs to know the tile is not merely unwritten but falsely claimed.
+DISABLED_NOTE = " (claimed by a disabled test: %s)"
+
+
+# CLAUDE.md: a string that originates in a scanned repository is sanitized,
+# length-capped and origin-marked before it reaches a report, because the
+# report is untrusted input to the model that reads it. A newline inside an
+# id is how a fake `## Coverage` heading gets into a Markdown report.
+CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
+# An id or an area: past the longest real one, still one line on a screen.
+ID_CHARS = 120
+# A title or a path, which legitimately runs longer than an id.
+TEXT_CHARS = 200
+# The cut is marked, so a value that was truncated never reads as a whole one.
+CUT_MARK = "\u2026"
+
+
+def _safe(value, cap=ID_CHARS):
+    """One repository-born string, fit to print: control characters and
+    newlines replaced, length capped, the cut marked."""
+    text = CONTROL_RE.sub("?", str(value))
+    return text if len(text) <= cap else text[:cap - 1] + CUT_MARK
+
+
+# formats.md's ids are lower-case dotted slugs. Checked rather than trusted:
+# an id is printed into a Markdown report and joined into file names, so one
+# carrying a slash, a backtick or a newline is refused at the door.
+SAFE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._:-]*$")
 
 def _now() -> str:
     return time.strftime(TIMESTAMP_FORMAT, time.gmtime())
@@ -96,20 +135,26 @@ def _tile(tile_id: str, area: str, kind: str, risk: str, flow: Optional[str],
           rule: Optional[str], screen: Optional[str], role: Optional[str]) -> Dict[str, Any]:
     return {"id": tile_id, "area": area, "kind": kind, "flow": flow, "rule": rule,
             "screen": screen, "role": role, "risk": risk,
-            "tests": [], "cases": [], "status": "uncovered"}
+            "tests": [], "skipped_tests": [], "cases": [], "status": "uncovered"}
 
 
 def build_tiles(mapping: Dict[str, Any], rules: Dict[str, Any],
                 warnings: List[str], rules_path: str) -> List[Dict[str, Any]]:
     """Every rule, every screen x role, every error state - in that order."""
     screens = [s for s in mapping.get("screens") or [] if isinstance(s, dict)]
-    screen_ids = {str(s.get("id")) for s in screens}
-    flow_ids = {str(f.get("id")) for f in mapping.get("flows") or [] if isinstance(f, dict)}
+    screen_ids = {_safe(s.get("id")) for s in screens}
+    flow_ids = {_safe(f.get("id")) for f in mapping.get("flows") or [] if isinstance(f, dict)}
 
     tiles: List[Dict[str, Any]] = []
     seen: Dict[str, str] = {}
 
     def add(tile: Dict[str, Any]) -> None:
+        if not SAFE_ID_RE.match(tile["id"]):
+            # Dropped, not renamed: a tile whose id this version cannot vouch
+            # for would be printed into a Markdown report and named in a case.
+            warnings.append("%s:0 bad-tile-id: %s is not %s and was dropped"
+                            % (rules_path, tile["id"], SAFE_ID_RE.pattern))
+            return
         if tile["id"] in seen:
             warnings.append("%s:0 duplicate-tile: %s is already a %s tile"
                             % (rules_path, tile["id"], seen[tile["id"]]))
@@ -121,34 +166,35 @@ def build_tiles(mapping: Dict[str, Any], rules: Dict[str, Any],
         if not isinstance(rule, dict) or not rule.get("id"):
             warnings.append("%s:0 malformed-rule: a rule with no id was skipped" % rules_path)
             continue
-        rule_id = str(rule["id"])
-        risk = rule.get("risk") or RISK_BY_RULE_KIND.get(str(rule.get("kind")), UNKNOWN_RISK)
-        flow = rule.get("flow")
-        if flow and str(flow) not in flow_ids:
+        rule_id = _safe(rule["id"])
+        risk = _safe(rule.get("risk") or RISK_BY_RULE_KIND.get(str(rule.get("kind")), UNKNOWN_RISK))
+        flow = _safe(rule["flow"]) if rule.get("flow") else ""
+        if flow and flow not in flow_ids:
             warnings.append("%s:0 unknown-flow: rule %s names flow %s" % (rules_path, rule_id, flow))
         for screen in rule.get("screens") or []:
-            if str(screen) not in screen_ids:
+            if _safe(screen) not in screen_ids:
                 warnings.append("%s:0 unknown-screen: rule %s names screen %s"
-                                % (rules_path, rule_id, screen))
-        add(_tile(rule_id, str(rule.get("area") or ""), "rule", str(risk),
-                  str(flow) if flow else None, rule_id, None, None))
+                                % (rules_path, rule_id, _safe(screen)))
+        add(_tile(rule_id, _safe(rule.get("area") or ""), "rule", risk,
+                  flow or None, rule_id, None, None))
 
     for screen in screens:
-        screen_id = str(screen.get("id"))
-        area = str(screen.get("area") or "")
+        screen_id = _safe(screen.get("id"))
+        area = _safe(screen.get("area") or "")
         for role in screen.get("roles") or []:
-            add(_tile("%s.render.%s" % (screen_id, role), area, "render", RENDER_RISK,
-                      None, None, screen_id, str(role)))
+            role = _safe(role)
+            add(_tile(_safe("%s.render.%s" % (screen_id, role)), area, "render", RENDER_RISK,
+                      None, None, screen_id, role))
 
     for screen in screens:
-        screen_id = str(screen.get("id"))
-        area = str(screen.get("area") or "")
+        screen_id = _safe(screen.get("id"))
+        area = _safe(screen.get("area") or "")
         for state in screen.get("states") or []:
-            text = str(state)
+            text = _safe(state)
             if not text.startswith(ERROR_STATE_PREFIX):
                 continue
             slug = text[len(ERROR_STATE_PREFIX):]
-            add(_tile("%s.error.%s" % (screen_id, slug), area, "error", ERROR_RISK,
+            add(_tile(_safe("%s.error.%s" % (screen_id, slug)), area, "error", ERROR_RISK,
                       None, None, screen_id, None))
     return tiles
 
@@ -171,36 +217,60 @@ def read_cases(directory: str, findings: List[str]) -> List[Dict[str, Any]]:
             except OSError as error:
                 findings.append("%s:0 unreadable: %s" % (path, error))
                 continue
-            case_id = os.path.splitext(filename)[0]
+            case_id = _safe(os.path.splitext(filename)[0])
             tiles: List[str] = []
             status = ""
-            for line in lines:
+            seen_keys = set()
+            title_at = None
+            for index, line in enumerate(lines):
                 title = CASE_TITLE_RE.match(line)
                 if title:
-                    case_id = title.group(1)
-                    continue
+                    case_id = _safe(title.group(1))
+                    title_at = index
+                    break
+            for line in lines[(title_at + 1) if title_at is not None else 0:]:
+                if CASE_HEADING_RE.match(line):
+                    break
                 meta = CASE_META_RE.match(line)
-                if not meta:
+                if not meta or meta.group(1) in seen_keys:
                     continue
+                seen_keys.add(meta.group(1))
                 if meta.group(1) == "tiles":
-                    tiles = [t.strip() for t in meta.group(2).split(",") if t.strip()]
+                    tiles = [_safe(t.strip()) for t in meta.group(2).split(",") if t.strip()]
                 else:
-                    status = meta.group(2).strip()
+                    status = _safe(meta.group(2).strip())
             cases.append({"id": case_id, "tiles": tiles, "status": status, "path": path})
     return cases
 
 
 def overlay(tiles: List[Dict[str, Any]], tests: List[Dict[str, Any]],
-            cases: List[Dict[str, Any]]) -> None:
-    """Set `tests`, `cases` and `status` on every tile."""
+            cases: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+    """Set `tests`, `skipped_tests`, `cases` and `status` on every tile.
+
+    Returns the claims on tiles nothing defines, in the order they were read:
+    a renamed rule leaves its old id claimed by a test that now proves
+    nothing, and dropping that silently is how a gap hides.
+    """
     by_id = {tile["id"]: tile for tile in tiles}
+    unknown: List[Dict[str, str]] = []
+    unknown_seen = set()
     for test in tests:
         if not isinstance(test, dict):
             continue
+        # A disabled test's claims go to `skipped_tests`, never to `tests`,
+        # so `status` below cannot be computed as covered from one.
+        field = "skipped_tests" if test.get(SKIPPED_TEST_KEY) else "tests"
+        test_id = _safe(test.get("id"), TEXT_CHARS)
         for tile_id in test.get("tiles") or []:
-            tile = by_id.get(str(tile_id))
-            if tile is not None and test.get("id") not in tile["tests"]:
-                tile["tests"].append(test.get("id"))
+            tile = by_id.get(_safe(tile_id))
+            if tile is None:
+                key = (test_id, _safe(tile_id))
+                if key not in unknown_seen:
+                    unknown_seen.add(key)
+                    unknown.append({"test": key[0], "tile": key[1]})
+                continue
+            if test_id not in tile[field]:
+                tile[field].append(test_id)
     manual: Dict[str, bool] = {}
     for case in cases:
         for tile_id in case["tiles"]:
@@ -218,6 +288,7 @@ def overlay(tiles: List[Dict[str, Any]], tests: List[Dict[str, Any]],
             tile["status"] = MANUAL_CASE_STATUS
         else:
             tile["status"] = "uncovered"
+    return unknown
 
 
 def rank_gaps(tiles: List[Dict[str, Any]]) -> List[str]:
@@ -226,6 +297,39 @@ def rank_gaps(tiles: List[Dict[str, Any]]) -> List[str]:
     gaps.sort(key=lambda t: (RISK_ORDER.get(t["risk"], RISK_ORDER[UNKNOWN_RISK]),
                              KIND_ORDER.get(t["kind"], len(KIND_ORDER)), t["id"]))
     return [t["id"] for t in gaps]
+
+
+def check_shapes(mapping: Dict[str, Any], map_path: str,
+                 rules: Dict[str, Any], rules_path: str, findings: List[str]) -> None:
+    """Every list this script walks, checked before it is walked.
+
+    Fail closed: a field of the wrong type is a `path:line rule` finding and
+    exit 2, never an AttributeError or a TypeError from the middle of a walk.
+    """
+
+    def want_list(value: Any, path: str, what: str) -> None:
+        if value is not None and not isinstance(value, list):
+            findings.append("%s:0 bad-field: %s is not a list" % (path, what))
+
+    want_list(mapping.get("flows"), map_path, "flows")
+    for screen in mapping.get("screens") or []:
+        if not isinstance(screen, dict):
+            findings.append("%s:0 bad-field: a screen is not an object" % map_path)
+            continue
+        name = str(screen.get("id", "<unnamed>"))
+        # `actions` is checked with the two this script walks: a map whose
+        # actions are not a list is malformed wherever it is read next.
+        for field in ("roles", "actions", "states"):
+            want_list(screen.get(field), map_path, "%s of screen %s" % (field, name))
+    if isinstance(mapping.get("flows"), list):
+        for flow in mapping["flows"]:
+            if not isinstance(flow, dict):
+                findings.append("%s:0 bad-field: a flow is not an object" % map_path)
+    for rule in rules.get("rules") or []:
+        if not isinstance(rule, dict):
+            continue          # build_tiles already reports a rule that is not an object
+        want_list(rule.get("screens"), rules_path,
+                  "screens of rule %s" % str(rule.get("id", "<unnamed>")))
 
 
 # --------------------------------------------------------------------------- report
@@ -240,7 +344,8 @@ def render(tiles: List[Dict[str, Any]], gaps: List[str], out: str) -> str:
     total = len(tiles)
     covered = sum(1 for t in tiles if t["status"] == "covered")
     manual = sum(1 for t in tiles if t["status"] == MANUAL_CASE_STATUS)
-    percent = (100 * covered // total) if total else 0
+    # One percent rule (formats.md): round to the nearest whole, 0 with no tiles.
+    percent = int(round(100.0 * covered / total)) if total else 0
     by_id = {tile["id"]: tile for tile in tiles}
 
     lines = ["# Tiles", "",
@@ -256,7 +361,10 @@ def render(tiles: List[Dict[str, Any]], gaps: List[str], out: str) -> str:
         lines.append("None: every tile is covered or has a manual case.")
     for position, tile_id in enumerate(gaps, start=1):
         tile = by_id[tile_id]
-        lines.append("%d. `%s` (%s, %s risk)" % (position, tile_id, tile["kind"], tile["risk"]))
+        disabled = tile.get("skipped_tests") or []
+        lines.append("%d. `%s` (%s, %s risk)%s"
+                     % (position, tile_id, tile["kind"], tile["risk"],
+                        DISABLED_NOTE % disabled[0] if disabled else ""))
     return "\n".join(lines) + "\n"
 
 
@@ -285,12 +393,21 @@ def main(argv: List[str]) -> int:
         return 2
 
     # Past the `findings` gate every input parsed, so none of the three is None.
+    check_shapes(mapping, args.map_path, rules, args.rules_path, findings)
+    if findings:
+        for finding in findings:
+            print("tile.py: %s" % finding, file=sys.stderr)
+        return 2
+
     warnings: List[str] = []
     tiles = build_tiles(mapping, rules, warnings, args.rules_path)
-    overlay(tiles, tests_file.get("tests") or [], cases)
+    unknown_claims = overlay(tiles, tests_file.get("tests") or [], cases)
+    for claim in unknown_claims:
+        warnings.append("warning: %s claims unknown tile %s" % (claim["test"], claim["tile"]))
     gaps = rank_gaps(tiles)
 
-    payload = {"tiled_at": _now(), "tiles": tiles, "gaps": gaps}
+    payload = {"tiled_at": _now(), "tiles": tiles, "gaps": gaps,
+               "unknown_claims": unknown_claims}
     directory = os.path.dirname(os.path.abspath(args.out))
     try:
         if directory:

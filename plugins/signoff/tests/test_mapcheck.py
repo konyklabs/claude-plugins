@@ -8,6 +8,8 @@ import importlib.util
 import json
 from pathlib import Path
 
+import pytest
+
 SKILLS = Path(__file__).resolve().parents[1] / "skills"
 MAPCHECK_SCRIPT = SKILLS / "exploring-app" / "scripts" / "mapcheck.py"
 
@@ -162,3 +164,64 @@ def test_an_unreadable_map_exits_two(tmp_path, capsys):
 def test_a_map_that_is_not_an_object_is_one_problem(tmp_path, capsys):
     assert run(tmp_path, ["screens"]) == 1
     assert "malformed: the map is not a JSON object" in capsys.readouterr().out
+
+
+def test_a_screen_whose_roles_is_not_a_list_is_a_problem_not_a_traceback(tmp_path, capsys):
+    """F11: every list is checked before it is walked, so a field of the
+    wrong type is an ordinary problem line and exit 1, never a TypeError."""
+    screens = copy.deepcopy(VALID["screens"])
+    screens[0]["roles"] = 5
+    assert run(tmp_path, broken(screens=screens)) == 1
+    out = capsys.readouterr().out
+    assert "malformed: roles of screen auth.login is not a list" in out
+    assert "Traceback" not in out
+    # The rest of the map is still checked: one problem, not a stopped run.
+    assert "1 problem" in out
+
+
+@pytest.mark.parametrize("field", ["actions", "states", "links"])
+def test_every_screen_list_of_the_wrong_type_is_a_problem(tmp_path, capsys, field):
+    screens = copy.deepcopy(VALID["screens"])
+    screens[1][field] = "not a list"
+    assert run(tmp_path, broken(screens=screens)) == 1
+    assert ("malformed: %s of screen org.home is not a list" % field) in capsys.readouterr().out
+
+
+def test_a_flow_whose_steps_is_not_a_list_is_a_problem(tmp_path, capsys):
+    flows = copy.deepcopy(VALID["flows"])
+    flows[0]["steps"] = "auth.login"
+    assert run(tmp_path, broken(flows=flows)) == 1
+    assert "malformed: steps of flow auth.sign-in is not a list" in capsys.readouterr().out
+
+
+def test_an_id_outside_the_pattern_is_a_problem(tmp_path, capsys):
+    """F16: ids are checked, not trusted, because they are printed into a
+    Markdown report and joined into file names downstream."""
+    screens = copy.deepcopy(VALID["screens"])
+    screens[0]["id"] = "../../etc/passwd"
+    flows = copy.deepcopy(VALID["flows"])
+    flows[1]["id"] = "Docs.Read"
+    assert run(tmp_path, broken(screens=screens, flows=flows)) == 1
+    out = capsys.readouterr().out
+    assert "bad-id: screen id ../../etc/passwd is not " in out
+    assert "bad-id: flow id Docs.Read is not " in out
+
+
+def test_a_newline_in_an_id_cannot_forge_a_problem_line(tmp_path, capsys):
+    """F16: a problem is one line, whatever the map says an id is."""
+    screens = copy.deepcopy(VALID["screens"])
+    screens[0]["id"] = "auth.login\nmap ok"
+    path = write_map(tmp_path, broken(screens=screens))
+    assert mapcheck.main([path]) == 1
+    lines = capsys.readouterr().out.splitlines()
+    assert "map ok" not in lines
+    assert any("auth.login?map ok" in line for line in lines), lines
+
+
+def test_a_three_hundred_character_id_is_cut_in_the_problem_line(tmp_path, capsys):
+    screens = copy.deepcopy(VALID["screens"])
+    screens[0]["id"] = "auth." + "z" * 300
+    assert run(tmp_path, broken(screens=screens)) == 1
+    out = capsys.readouterr().out
+    assert mapcheck.CUT_MARK in out
+    assert "z" * (mapcheck.TEXT_CHARS + 1) not in out

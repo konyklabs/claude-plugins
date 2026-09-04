@@ -2,13 +2,13 @@
   "config": {
     "argv": [
       "/opt/homebrew/Cellar/node/26.7.0/bin/node",
-      "/private/tmp/claude-501/-Users-oleg-dev-konyklabs/f8f12e19-c3aa-4dcd-a295-45e54d6973bd/scratchpad/pw-list/node_modules/.bin/playwright",
+      "/work/pw-list/node_modules/.bin/playwright",
       "test",
       "--list",
       "--reporter=json"
     ],
-    "configFile": "/private/tmp/claude-501/-Users-oleg-dev-konyklabs/f8f12e19-c3aa-4dcd-a295-45e54d6973bd/scratchpad/pw-list/playwright.config.ts",
-    "rootDir": "/private/tmp/claude-501/-Users-oleg-dev-konyklabs/f8f12e19-c3aa-4dcd-a295-45e54d6973bd/scratchpad/pw-list/e2e",
+    "configFile": "/work/pw-list/playwright.config.ts",
+    "rootDir": "/work/pw-list/e2e",
     "failOnFlakyTests": false,
     "forbidOnly": false,
     "fullyParallel": false,
@@ -22,13 +22,13 @@
     "preserveOutput": "always",
     "projects": [
       {
-        "outputDir": "/private/tmp/claude-501/-Users-oleg-dev-konyklabs/f8f12e19-c3aa-4dcd-a295-45e54d6973bd/scratchpad/pw-list/test-results",
+        "outputDir": "/work/pw-list/test-results",
         "repeatEach": 1,
         "retries": 0,
         "metadata": {},
         "id": "chromium",
         "name": "chromium",
-        "testDir": "/private/tmp/claude-501/-Users-oleg-dev-konyklabs/f8f12e19-c3aa-4dcd-a295-45e54d6973bd/scratchpad/pw-list/e2e",
+        "testDir": "/work/pw-list/e2e",
         "testIgnore": [],
         "testMatch": [
           "**/*.@(spec|test).?(c|m)[jt]s?(x)"
@@ -93,7 +93,7 @@
                   "type": "tile",
                   "description": "docs.home.render.anonymous",
                   "location": {
-                    "file": "/private/tmp/claude-501/-Users-oleg-dev-konyklabs/f8f12e19-c3aa-4dcd-a295-45e54d6973bd/scratchpad/pw-list/e2e/auth.spec.ts",
+                    "file": "/work/pw-list/e2e/auth.spec.ts",
                     "line": 13,
                     "column": 5
                   }

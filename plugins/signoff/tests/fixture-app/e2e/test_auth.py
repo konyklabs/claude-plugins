@@ -1,5 +1,10 @@
 """Auth, session and public-docs coverage for the fixture app.
 
+One test here is disabled on purpose (see test_sign_out_clears_the_session):
+a skipped test still carries its tile claim, and the fixture exists so that
+tile.py can be shown keeping such a claim out of `tests` and the tile in the
+gap list.
+
 Deliberately uncovered: auth.sign-out.clears-session, org.members.render.*,
 org.members.remove.requires-admin, admin.settings.requires-admin,
 credentials.revoke.requires-owner-or-admin, credentials.create.shows-secret-once,
@@ -44,7 +49,25 @@ def test_unauthenticated_access_redirects_to_login(page, base_url):
     expect(page).to_have_url(base_url + "/login")
 
 
-@pytest.mark.tile("docs.home.public")
+# Disabled, and claiming a tile anyway: exactly the shape that would otherwise
+# report `auth.sign-out.clears-session` as covered by a test that never runs.
+# tile.py records the claim under the tile's `skipped_tests`, leaves the tile
+# uncovered and keeps it in the ranked gaps (expected.json's `skipped`).
+@pytest.mark.skip(reason="placeholder: the sign-out flow is not stable yet")
+@pytest.mark.tile("auth.sign-out.clears-session")
+def test_sign_out_clears_the_session(page, base_url):
+    login(page, "member")
+    page.get_by_role("button", name="Sign out").click()
+    expect(page).to_have_url(base_url + "/login")
+    page.goto("/")
+    expect(page).to_have_url(base_url + "/login")
+
+
+# Claims the render tile, not the `docs.home.public` rule: the rule is the
+# fixture's one low-risk rule and stays uncovered on purpose, so the gap
+# ranking has a low rule to place between the medium error tiles and the low
+# render tiles (the review of roadmap#120 found the order untestable without it).
+@pytest.mark.tile("docs.home.render.anonymous")
 def test_docs_are_public_for_anonymous(page, base_url):
     page.goto("/docs")
     expect(page).to_have_url(base_url + "/docs")

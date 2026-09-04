@@ -31,6 +31,7 @@ The rules ``check`` can report, all of them:
     duplicate-metadata  a key appears twice
     unknown-metadata    a key that is not one of the six
     stray-metadata      a line in the metadata block that is not `- key: value`
+    bad-area            `area` is not the kebab-case identifier formats.md fixes
     bad-value           a value outside its allowed set, or empty where required
     automated-mismatch  `automated` is set on a case that is not automated,
                         or empty on one that is
@@ -93,6 +94,11 @@ COVERED_STATUS = "covered"
 # formats.md writes; a thousandth case in one area is a sign to split the area,
 # not to widen the id.
 ID_RE = re.compile(r"^TC-([a-z][a-z0-9-]*)-([0-9]{3})$")
+# The area on its own, the pattern formats.md gives under "Identifiers" and
+# the one the id above embeds. Checked before an area is joined into any path:
+# an export writes `<area>.feature`, so an area holding a separator or `..`
+# would place a file the writer did not name.
+AREA_RE = re.compile(r"^[a-z][a-z0-9-]*$")
 TITLE_RE = re.compile(r"^#[ \t]+([^:]+):[ \t]*(.*\S)[ \t]*$")
 META_RE = re.compile(r"^-[ \t]+([A-Za-z][A-Za-z0-9_-]*)[ \t]*:[ \t]*(.*?)[ \t]*$")
 BULLET_RE = re.compile(r"^-[ \t]+(.*?)[ \t]*$")
@@ -127,18 +133,44 @@ CSV_LINETERMINATOR = "\n"
 
 EXPORT_FORMATS = ("azure-csv", "gherkin", "markdown")
 
+# `json` does not keep line numbers and a whole-file problem has no line, so
+# every such finding points at line 0 - the shape the other scripts use.
+NO_LINE = 0
+
 
 # --------------------------------------------------------------------------- model
+
+# CLAUDE.md: a string that originates in a scanned repository is sanitized,
+# length-capped and origin-marked before it reaches a report, because the
+# report is untrusted input to the model that reads it. A newline inside an
+# id is how a fake `## Coverage` heading gets into a Markdown report.
+CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
+# An id or an area: past the longest real one, still one line on a screen.
+ID_CHARS = 120
+# A title or a path, which legitimately runs longer than an id.
+TEXT_CHARS = 200
+# The cut is marked, so a value that was truncated never reads as a whole one.
+CUT_MARK = "\u2026"
+
+
+def _safe(value, cap=ID_CHARS):
+    """One repository-born string, fit to print: control characters and
+    newlines replaced, length capped, the cut marked."""
+    text = CONTROL_RE.sub("?", str(value))
+    return text if len(text) <= cap else text[:cap - 1] + CUT_MARK
 
 
 class Finding(object):
     """One lint result: a place, a rule name, and a reason in one line."""
 
     def __init__(self, path, line, rule, reason):
-        self.path = path
+        # The path holds a file name from the tree and the reason interpolates
+        # the case's own values, so both are cleaned here rather than at each
+        # of the twenty places a finding is raised.
+        self.path = _safe(path, TEXT_CHARS)
         self.line = line
         self.rule = rule
-        self.reason = reason
+        self.reason = _safe(reason, TEXT_CHARS)
 
     def key(self):
         return (self.path, self.line, self.rule, self.reason)
@@ -224,8 +256,8 @@ def parse_case(path):
     if not match:
         add(case.title_line, "title-line", "first line is not `# TC-<area>-<nnn>: <title>`")
     else:
-        case.id = match.group(1).strip()
-        case.title = match.group(2).strip()
+        case.id = _safe(match.group(1).strip())
+        case.title = _safe(match.group(2).strip(), TEXT_CHARS)
         id_match = ID_RE.match(case.id)
         if not id_match:
             add(case.title_line, "bad-id", "id `%s` is not TC-<area>-<nnn>" % case.id)
@@ -273,16 +305,22 @@ def parse_case(path):
         add(case.line_of(order[0]) if order else case.title_line, "metadata-order",
             "the metadata keys are not in the order %s" % ", ".join(META_KEYS))
 
-    case.area = values.get("area", "")
-    case.role = values.get("role", "")
-    case.priority = values.get("priority", "")
-    case.status = values.get("status", "")
-    case.tiles = _split_list(values.get("tiles", ""))
-    case.automated = _split_list(values.get("automated", ""))
+    case.area = _safe(values.get("area", ""))
+    case.role = _safe(values.get("role", ""))
+    case.priority = _safe(values.get("priority", ""))
+    case.status = _safe(values.get("status", ""))
+    case.tiles = [_safe(tile) for tile in _split_list(values.get("tiles", ""))]
+    # A test id is a path joined to a title, so it is capped as one.
+    case.automated = [_safe(t, TEXT_CHARS) for t in _split_list(values.get("automated", ""))]
 
     if "area" in values:
         if not case.area:
             add(case.line_of("area"), "bad-value", "`area` is empty")
+        elif not AREA_RE.match(case.area):
+            # One finding, not two: an area this malformed cannot also be
+            # judged against the id, and the id mismatch would only repeat it.
+            add(case.line_of("area"), "bad-area",
+                "`area` is not kebab-case (`%s`)" % AREA_RE.pattern)
         elif case.id_area and case.area != case.id_area:
             add(case.line_of("area"), "bad-value",
                 "`area` is `%s` but the id says `%s`" % (case.area, case.id_area))
@@ -344,7 +382,17 @@ def parse_case(path):
 
     if steps_at is not None:
         start, stop = region(steps_at)
-        table = [(i, lines[i]) for i in range(start, stop) if lines[i].strip().startswith("|")]
+        # The first table only: the header row, the separator row, then the
+        # consecutive `|` rows, ending at the first line that is not one.
+        # Anything after it is the free prose formats.md allows, and a data
+        # table written in that prose is prose, not two more steps.
+        table = []
+        index = start
+        while index < stop and not lines[index].strip().startswith("|"):
+            index += 1
+        while index < stop and lines[index].strip().startswith("|"):
+            table.append((index, lines[index]))
+            index += 1
         if not table:
             add(heads[steps_at][1] + 1, "empty-steps", "no steps table")
         else:
@@ -400,19 +448,24 @@ def collect_cases(root):
 # --------------------------------------------------------------------------- cross-file checks
 
 
+def _fail(path, rule, reason):
+    """Refuse an input, in the `path:line rule: reason` shape every script in
+    this plugin uses. `json` keeps no line numbers, so the line is always 0."""
+    sys.stderr.write("cases.py: %s:%d %s: %s\n" % (path, NO_LINE, rule, reason))
+    raise SystemExit(2)
+
+
 def _load_json(path):
     """Read a JSON file or exit 2: an input that will not parse is not a pass."""
     try:
         if os.path.getsize(path) > MAX_JSON_BYTES:
-            sys.stderr.write("error: %s is larger than %d bytes\n" % (path, MAX_JSON_BYTES))
-            raise SystemExit(2)
+            _fail(path, "too-large", "file is larger than %d bytes" % MAX_JSON_BYTES)
         with open(path, "r", encoding="utf-8") as handle:
             return json.load(handle)
     except SystemExit:
         raise
     except (OSError, ValueError) as exc:
-        sys.stderr.write("error: %s could not be read (%s)\n" % (path, exc.__class__.__name__))
-        raise SystemExit(2)
+        _fail(path, "unreadable", "file could not be read (%s)" % exc.__class__.__name__)
 
 
 def check_tiles(cases, tiles_path):
@@ -420,12 +473,11 @@ def check_tiles(cases, tiles_path):
     data = _load_json(tiles_path)
     tiles = data.get("tiles") if isinstance(data, dict) else None
     if not isinstance(tiles, list):
-        sys.stderr.write("error: %s has no `tiles` list\n" % tiles_path)
-        raise SystemExit(2)
+        _fail(tiles_path, "malformed", "no `tiles` list")
     known = {}
     for tile in tiles:
         if isinstance(tile, dict) and tile.get("id"):
-            known[tile["id"]] = tile.get("status", "")
+            known[_safe(tile["id"])] = _safe(tile.get("status", ""))
 
     findings = []
     named = set()
@@ -449,12 +501,11 @@ def check_tests(cases, tests_path):
     data = _load_json(tests_path)
     tests = data.get("tests") if isinstance(data, dict) else None
     if not isinstance(tests, list):
-        sys.stderr.write("error: %s has no `tests` list\n" % tests_path)
-        raise SystemExit(2)
+        _fail(tests_path, "malformed", "no `tests` list")
     claims = {}
     for test in tests:
         if isinstance(test, dict) and test.get("id"):
-            claims[test["id"]] = set(test.get("tiles") or [])
+            claims[_safe(test["id"], TEXT_CHARS)] = {_safe(t) for t in test.get("tiles") or []}
 
     findings = []
     for case in cases:
@@ -518,6 +569,10 @@ def export_gherkin(cases, out):
     if not os.path.isdir(out):
         os.makedirs(out, exist_ok=True)
     for area, group in sorted(_by_area(cases).items()):
+        # `check` refuses a bad area before an export ever runs; this is the
+        # second lock on the same door, because the area becomes a file name.
+        if not AREA_RE.match(area or ""):
+            _fail(out, "bad-area", "an area is not %s and was not written" % AREA_RE.pattern)
         lines = ["Feature: %s" % area, ""]
         for case in group:
             lines.append("  Scenario: %s %s" % (case.id, case.title))
@@ -573,7 +628,7 @@ def index_of(cases):
             "tiles": case.tiles,
             "status": case.status,
             "automated": case.automated,
-            "path": case.path,
+            "path": _safe(case.path, TEXT_CHARS),
         }
         for case in sorted(cases, key=lambda case: case.id)
     ]
@@ -611,7 +666,7 @@ def main(argv=None):
         _parser().print_help()
         return 2
     if not os.path.isdir(args.root):
-        sys.stderr.write("error: %s is not a directory\n" % args.root)
+        sys.stderr.write("cases.py: %s:%d unreadable: not a directory\n" % (args.root, NO_LINE))
         return 2
 
     if args.command == "index":
