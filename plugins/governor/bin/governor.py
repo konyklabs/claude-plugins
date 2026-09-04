@@ -48,6 +48,13 @@ DEFAULTS: Dict[str, Any] = {
     # Rewrite model-less spawns even when the session itself runs on a cheap
     # model. True because "inherit" on an Opus conductor is still 2.5x Sonnet.
     "always_pin_workers": True,
+    # Route a bare "general-purpose" spawn to governor:worker instead of only
+    # pinning its model. The Agent tool has no effort field to rewrite, so a
+    # model-only pin still inherits the session's effort (field-verified: 61
+    # Sonnet workers ran at xhigh, $162 at list price, before this existed).
+    # True because governor:worker is a safe default for a caller who named
+    # no agent at all: every tool, no report contract to get stuck on.
+    "route_general_purpose": True,
     # Expensive-tier spend, in USD at API list price, after which tool calls
     # are denied until the session changes model or raises the budget. 15 USD
     # is roughly 250k Fable output tokens: a full design session, not a full
@@ -132,6 +139,7 @@ TIGHTEN_ONLY = {
     "enforce_reports": "true",
     "enforce_budget": "true",
     "always_pin_workers": "true",
+    "route_general_purpose": "true",
     "mode": "enforce",
     "expensive_models": "superset",
     "brief_headings": "superset",
@@ -349,6 +357,74 @@ EMPTY_TOTALS = {
     "cost_usd": 0.0,
 }
 
+# A subagent's row. "ended" is its fate as its transcript last showed it:
+# "working" until a line says otherwise, "completed" on a final text block,
+# "died" on an API error line, with "death_kind" saying which kind. Dead
+# workers are 4% of the spawns on this machine and the money spent before
+# they died is not visible anywhere else.
+EMPTY_AGENT = {
+    "model": "",
+    "effort": None,
+    "cost_usd": 0.0,
+    "messages": 0,
+    "ended": "working",
+    "error": "",
+    "death_kind": None,
+}
+
+
+def message_text(content: Any) -> str:
+    """The text of an assistant message. Claude Code writes ``content`` as a
+    string on some lines and as a list of blocks on others; both are read."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return " ".join(
+            str(b.get("text") or "") for b in content if isinstance(b, dict) and b.get("type") == "text"
+        )
+    return ""
+
+
+def response_text(resp: Any) -> str:
+    """The text of a tool response as the model saw it: a string, a list of
+    content blocks, or a dict with a text or content field. Anything else is
+    serialised, so an unknown shape is inspected rather than trusted."""
+    if resp is None:
+        return ""
+    if isinstance(resp, str):
+        return resp
+    if isinstance(resp, list):
+        return " ".join(response_text(b) for b in resp)
+    if isinstance(resp, dict):
+        if resp.get("type") == "text" or "text" in resp:
+            return str(resp.get("text") or "")
+        if "content" in resp:
+            return response_text(resp.get("content"))
+        try:
+            return json.dumps(resp, default=str)
+        except (TypeError, ValueError):
+            return str(resp)
+    return str(resp)
+
+
+def death_kind(text: str) -> str:
+    """Why a worker died, from the error text. Quota is tested first and is
+    not a transient: a usage limit does not clear in a minute, and the field
+    data is six workers that died retrying on the model that was out."""
+    if QUOTA_RE.search(text):
+        return "quota"
+    if TRANSIENT_RE.search(text):
+        return "transient"
+    return "other"
+
+
+def agent_ended(a: Dict[str, Any]) -> str:
+    """The ``ended`` cell of the subagent table: a death carries its kind."""
+    ended = a.get("ended") or "working"
+    if ended == "died":
+        return "died: " + str(a.get("death_kind") or "other")
+    return str(ended)
+
 
 class Ledger:
     """Per-session spend, built incrementally from the transcript files.
@@ -367,7 +443,9 @@ class Ledger:
             "files": {},
             "seen": [],
             "models": {},  # model id -> totals (main + subagents)
-            "agents": {},  # agent id -> {"model", "effort", "cost_usd", "messages"}
+            "agents": {},  # agent id -> EMPTY_AGENT's keys
+            "deaths": [],  # spawns the Agent tool reported as dead, newest last
+            "quota_hit": {},  # model id -> {"error", "ts"}: its usage limit is hit
             "tool_results": {},  # tool name -> bytes returned into the main context
             "main_model": None,
             "main_effort": None,
@@ -392,6 +470,9 @@ class Ledger:
         # far more than one session's messages, and it keeps the file small.
         self.state["seen"] = list(self._seen)[-4000:]
         self.state["spawns"] = self.state["spawns"][-200:]
+        # Deaths are rare and each one is read by a person; 50 is more than a
+        # session produces and keeps the state file small either way.
+        self.state["deaths"] = self.state["deaths"][-50:]
         if len(self.state["pending_tool_uses"]) > 500:
             self.state["pending_tool_uses"] = dict(list(self.state["pending_tool_uses"].items())[-500:])
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -463,11 +544,27 @@ class Ledger:
                 for block in content:
                     if isinstance(block, dict) and block.get("type") == "tool_use":
                         self.state["pending_tool_uses"][block.get("id", "")] = block.get("name", "?")
+            model = msg.get("model") or "unknown"
+            # Fate is read from every line, not only the first of a message:
+            # Claude Code writes one content block per line (verified in a real
+            # transcript, 2026-09-04), so the last line holds the last block,
+            # while the cost below is counted once per message id.
+            if agent_id is not None:
+                self._note_agent_line(agent_id, model, obj, content)
+            elif obj.get("isApiErrorMessage"):
+                head = one_line(message_text(content), 120)
+                if death_kind(head) == "quota":
+                    self.note_quota_hit(self.main_model(), head)
             mid = msg.get("id")
             if not mid or mid in self._seen:
                 return
             self._seen[mid] = None
-            model = msg.get("model") or "unknown"
+            if obj.get("isApiErrorMessage"):
+                # An error line carries no usage and the model "<synthetic>"
+                # (verified in a real transcript, 2026-09-04): its fate was
+                # noted above, and counting it would list a tier nobody ran as
+                # "unpriced, charged at the top rate".
+                return
             usage = msg.get("usage") or {}
             cost = self.pricing.cost_usd(model, usage)
             _, known = self.pricing.priced_key(model)
@@ -482,13 +579,13 @@ class Ledger:
             t["cache_write_1h"] += w1h
             t["cache_read"] += usage.get("cache_read_input_tokens", 0)
             t["cost_usd"] += cost
+            # Error lines returned above, so this model is a real one: the
+            # last real model is the session's or the worker's model.
             if agent_id is None:
                 self.state["main_model"] = model
                 self.state["main_effort"] = obj.get("effort") or self.state["main_effort"]
             else:
-                a = self.state["agents"].setdefault(
-                    agent_id, {"model": model, "effort": None, "cost_usd": 0.0, "messages": 0}
-                )
+                a = self.state["agents"].setdefault(agent_id, dict(EMPTY_AGENT, model=model))
                 a["model"] = model
                 a["effort"] = obj.get("effort") or a["effort"]
                 a["cost_usd"] += cost
@@ -505,7 +602,48 @@ class Ledger:
                 size = len(body) if isinstance(body, str) else len(json.dumps(body)) if body else 0
                 self.state["tool_results"][name] = self.state["tool_results"].get(name, 0) + size
 
+    def _note_agent_line(self, agent_id: str, model: str, obj: Dict[str, Any], content: Any) -> None:
+        """What this line says about the worker's fate, last line winning: an
+        API error line means it died, otherwise a final text block means it
+        finished and a tool_use means it is still working."""
+        synthetic = bool(obj.get("isApiErrorMessage"))
+        # A worker whose first line is the error has no known model; "" is
+        # honest and note_quota_hit ignores it, where "<synthetic>" would be
+        # priced at the top rate and shown as a tier nobody ran.
+        a = self.state["agents"].setdefault(agent_id, dict(EMPTY_AGENT, model="" if synthetic else model))
+        for k, v in EMPTY_AGENT.items():
+            a.setdefault(k, v)  # a ledger written before deaths were recorded
+        if synthetic:
+            head = one_line(message_text(content), 120)
+            a["ended"] = "died"
+            a["error"] = head
+            a["death_kind"] = death_kind(head)
+            if a["death_kind"] == "quota":
+                self.note_quota_hit(a.get("model"), head)
+            return
+        last = content[-1] if isinstance(content, list) and content else None
+        if isinstance(last, dict):
+            if last.get("type") == "text" and str(last.get("text") or "").strip():
+                a["ended"] = "completed"
+            elif last.get("type") == "tool_use":
+                a["ended"] = "working"
+
+    def note_quota_hit(self, model: Optional[str], head: str) -> None:
+        """Remember, for the rest of the session, that this model's usage
+        limit is hit. Only a model the pricing table resolves: an unresolvable
+        id (an error line's "<synthetic>", say) is priced at the top rate by
+        ``priced_key``, so recording it would deny every later spawn on the
+        dearest tier over a model nobody named."""
+        if not model or not self.pricing.resolve(model):
+            return
+        self.state["quota_hit"][model] = {"error": one_line(head, 120), "ts": time.time()}
+
     # -- queries
+    def dead_agents(self) -> List[Tuple[str, Dict[str, Any]]]:
+        """(id, row) for every subagent whose transcript ended in an API
+        error, newest state, in the order the ledger recorded them."""
+        return [(aid, a) for aid, a in self.state["agents"].items() if a.get("ended") == "died"]
+
     def expensive_spend(self, cfg: Dict[str, Any]) -> float:
         return sum(t["cost_usd"] for m, t in self.state["models"].items() if is_expensive(m, cfg))
 
@@ -524,8 +662,11 @@ class Ledger:
         if isinstance(eff, dict) and eff.get("level") and not hook.get("agent_id"):
             self.state["main_effort"] = eff["level"]
 
-    def record_spawn(self, subagent_type: str, model: Optional[str], action: str) -> None:
-        self.state["spawns"].append({"type": clean_label(subagent_type), "model": clean_label(model or ""), "action": action, "ts": time.time()})
+    def record_spawn(self, subagent_type: str, model: Optional[str], action: str, routed_to: Optional[str] = None) -> None:
+        entry = {"type": clean_label(subagent_type), "model": clean_label(model or ""), "action": action, "ts": time.time()}
+        if routed_to:
+            entry["routed_to"] = clean_label(routed_to)
+        self.state["spawns"].append(entry)
 
     def readout(self, cfg: Dict[str, Any], project_dir: Optional[str] = None) -> str:
         """One line for the per-turn context injection."""
@@ -549,6 +690,9 @@ class Ledger:
         workers = worker_spend(project_dir)
         if workers >= 0.005:  # headless workers are their own sessions; the ledger never sees them
             line += f" · workers ${workers:.2f} (all runs in this project)"
+        dead = self.dead_agents()
+        if dead:  # silent when none: a zero here would be noise on every turn
+            line += f" · dead workers: {len(dead)}"
         if self.state["unpriced_models"]:
             line += " · unpriced (charged at the top rate): " + ", ".join(self.state["unpriced_models"])
         if cfg.get("_ignored"):
@@ -571,10 +715,19 @@ class Ledger:
         for m, t in sorted(self.state["models"].items(), key=lambda kv: -kv[1]["cost_usd"]):
             lines.append(f"| {m} | {t['messages']} | {_k(t['input'])} | {_k(t['output'])} | {_k(t['cache_write_5m'])} | {_k(t['cache_write_1h'])} | {_k(t['cache_read'])} | {t['cost_usd']:.2f} |")
         if self.state["agents"]:
-            lines += ["", "| subagent | model | effort | messages | USD |", "|---|---|---|---:|---:|"]
+            lines += ["", "| subagent | model | effort | ended | messages | USD |", "|---|---|---|---|---:|---:|"]
             for aid, a in sorted(self.state["agents"].items(), key=lambda kv: -kv[1]["cost_usd"]):
                 flag = " (inherited session effort?)" if a.get("effort") in ("xhigh", "max") and not is_expensive(a.get("model"), cfg) else ""
-                lines.append(f"| {aid} | {a['model']} | {a.get('effort') or '?'}{flag} | {a['messages']} | {a['cost_usd']:.2f} |")
+                lines.append(f"| {aid} | {a['model']} | {a.get('effort') or '?'}{flag} | {agent_ended(a)} | {a['messages']} | {a['cost_usd']:.2f} |")
+            dead = self.dead_agents()
+            if dead:
+                spent = sum(a["cost_usd"] for _, a in dead)
+                lines += ["", f"Dead workers: {len(dead)} (${spent:.2f} spent before death)", ""]
+                for aid, a in dead:
+                    lines.append(
+                        f"- {aid} ({a['model'] or '?'}) died: {a.get('death_kind') or 'other'}: "
+                        + one_line(a.get("error") or "", 60)
+                    )
         if self.state["tool_results"]:
             lines += ["", "Tool results returned into the main context (bytes; the conductor paid to read every one):", ""]
             for name, size in sorted(self.state["tool_results"].items(), key=lambda kv: -kv[1])[:8]:
@@ -582,7 +735,8 @@ class Ledger:
         if self.state["spawns"]:
             lines += ["", "Spawns:", ""]
             for s in self.state["spawns"][-12:]:
-                lines.append(f"- {s['type']} → {s['model'] or '?'} ({s['action']})")
+                dest = s.get("routed_to") or s["model"] or "?"
+                lines.append(f"- {s['type']} → {dest} ({s['action']})")
         return "\n".join(lines)
 
 
@@ -713,8 +867,14 @@ def declared_model(subagent_type: str, cfg: Dict[str, Any], project_dir: Optiona
             model = agent_model_from_file(d / f"{short}.md")
             if model and model != "inherit":
                 return model
+    # A namespaced type names one plugin's agent and nothing else: a bare
+    # "worker.md" in the project, the user's directory or this plugin's own
+    # must not answer for "other:worker". Before this guard the governor's
+    # own worker.md answered for any unknown plugin's "worker", and the spawn
+    # went through unpinned (found in the review of roadmap#115).
+    names = (subagent_type,) if ":" in subagent_type else (subagent_type, short)
     for d in agent_dirs(project_dir):
-        for name in (subagent_type, short):
+        for name in names:
             model = agent_model_from_file(d / f"{name}.md")
             if model and model != "inherit":
                 return model
@@ -732,6 +892,32 @@ def brief_problems(prompt: str, cfg: Dict[str, Any]) -> List[str]:
     if len(prompt) > int(cfg["brief_max_chars"]):
         problems.append(f"brief is {len(prompt)} chars, limit {cfg['brief_max_chars']}: point at files instead of pasting them")
     return problems
+
+
+def quota_denial(model: Optional[str], ledger: Ledger, cfg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """A deny for a spawn onto a model whose usage limit this session already
+    hit, or None. Families are compared through the pricing table, so the
+    alias a spawn uses ("opus") matches the id a transcript carries
+    ("claude-opus-5"); an unknown id normalises to the top-rate family, which
+    denies rather than lets through."""
+    hits = ledger.state.get("quota_hit") or {}
+    if not model or not hits:
+        return None
+    key, _ = ledger.pricing.priced_key(model)
+    for hit_model, info in hits.items():
+        if ledger.pricing.priced_key(hit_model)[0] != key:
+            continue
+        head = one_line((info or {}).get("error") or "", 60)
+        return {
+            "action": "deny",
+            "model": model,
+            "reason": (
+                f"governor: the {model} usage limit was hit this session ({head});"
+                " a spawn onto it would die the same way. Use governor:implementer (sonnet)"
+                " or governor:senior-implementer (opus), or wait for the reset."
+            ),
+        }
+    return None
 
 
 def agent_policy(tool_input: Dict[str, Any], cfg: Dict[str, Any], ledger: Ledger, project_dir: Optional[str]) -> Dict[str, Any]:
@@ -762,8 +948,30 @@ def agent_policy(tool_input: Dict[str, Any], cfg: Dict[str, Any], ledger: Ledger
 
     if model is None:
         if cfg["always_pin_workers"] or session_expensive or session_model is None:
+            denial = quota_denial(cfg["worker_model"], ledger, cfg)
+            if denial is not None:
+                return denial
             updated = dict(tool_input)
             updated["model"] = cfg["worker_model"]
+            # A bare "general-purpose" spawn has nowhere to put an effort
+            # level: the Agent tool has no effort field, so a model-only pin
+            # still inherits the session's effort. Routing it to
+            # governor:worker fixes effort too, not just model.
+            route = sub == "general-purpose" and cfg["route_general_purpose"]
+            if route:
+                updated["subagent_type"] = "governor:worker"
+                result: Dict[str, Any] = {
+                    "action": "rewrite",
+                    "model": cfg["worker_model"],
+                    "updated_input": updated,
+                    "routed_to": "governor:worker",
+                    "reason": (
+                        f"governor: '{sub}' named no model and would inherit {session_model or 'the session model'}"
+                        f" and its effort; routed to governor:worker ({cfg['worker_model']}, medium effort)."
+                        " Name a governor agent to choose otherwise."
+                    ),
+                }
+                return result
             return {
                 "action": "rewrite",
                 "model": cfg["worker_model"],
@@ -773,7 +981,14 @@ def agent_policy(tool_input: Dict[str, Any], cfg: Dict[str, Any], ledger: Ledger
                     f" pinned to {cfg['worker_model']}. Pass model explicitly to choose otherwise."
                 ),
             }
+        denial = quota_denial(session_model, ledger, cfg)
+        if denial is not None:
+            return denial
         return {"action": "allow", "model": session_model, "reason": ""}
+
+    denial = quota_denial(model, ledger, cfg)
+    if denial is not None:
+        return denial
 
     if is_expensive(model, cfg):
         problems = brief_problems(prompt, cfg)
@@ -1199,7 +1414,12 @@ def h_pre_tool_use(hook: Dict[str, Any], cfg: Dict[str, Any], ledger: Ledger, pr
     decision: Optional[Dict[str, Any]] = None
     if tool == "Agent":
         decision = agent_policy(tool_input, cfg, ledger, project_dir)
-        ledger.record_spawn(str(tool_input.get("subagent_type") or "general-purpose"), decision.get("model"), decision["action"] if cfg.get("mode") != "observe" else f"observed:{decision['action']}")
+        ledger.record_spawn(
+            str(tool_input.get("subagent_type") or "general-purpose"),
+            decision.get("model"),
+            decision["action"] if cfg.get("mode") != "observe" else f"observed:{decision['action']}",
+            routed_to=decision.get("routed_to"),
+        )
     if cfg.get("mode") == "observe":
         return {}
 
@@ -1259,6 +1479,54 @@ def h_pre_tool_use(hook: Dict[str, Any], cfg: Dict[str, Any], ledger: Ledger, pr
     if len(out["hookSpecificOutput"]) == 1 and "systemMessage" not in out:
         return {}
     return out
+
+
+def h_post_tool_use(hook: Dict[str, Any], cfg: Dict[str, Any], ledger: Ledger) -> Dict[str, Any]:
+    """A spawn that died: name it in the ledger and tell the conductor, in the
+    same turn, whether to retry once or change tier. The ``tool_response`` of
+    a failed foreground Agent call is not field-verified, so any shape that
+    does not carry DEATH_RE's phrase is a no-op rather than a guess."""
+    ledger.note_hook_context(hook)
+    ledger.update(hook.get("transcript_path"))
+    if hook.get("tool_name") != "Agent":
+        return {}
+    text = response_text(hook.get("tool_response")).strip()
+    if not text or len(text) > DEATH_MAX_CHARS or not DEATH_RE.match(text):
+        return {}
+    tool_input = hook.get("tool_input") or {}
+    sub = str(tool_input.get("subagent_type") or "general-purpose")
+    explicit = tool_input.get("model")
+    model = explicit if explicit and explicit != "inherit" else declared_model(sub, cfg, hook.get("cwd"))
+    model = clean_label(model or ledger.main_model() or "unknown")
+    sub = clean_label(sub)
+    kind = death_kind(text)
+    display = text
+    head = one_line(display, 120)
+    ledger.state["deaths"].append({"type": sub, "model": model, "kind": kind, "error": head, "ts": time.time()})
+    if kind == "quota":
+        ledger.note_quota_hit(model, head)
+    if cfg.get("mode") == "observe":
+        return {}
+    short = one_line(display, 80)
+    if kind == "transient":
+        msg = (
+            f"governor: worker '{sub}' died on a transient API error ({short})."
+            " Wait about 60 s, then re-spawn it once with the same spec; if it dies again,"
+            " stop and record the state on the driving issue. Do not finish the slice inline."
+        )
+    elif kind == "quota":
+        msg = (
+            f"governor: worker '{sub}' died because the {model} usage limit is hit ({short})."
+            f" Spawns onto {model} are now denied for this session. Delegate to another tier"
+            " (governor:implementer on sonnet, governor:senior-implementer on opus) or wait"
+            f" for the reset. Do not retry on {model}."
+        )
+    else:
+        msg = (
+            f"governor: worker '{sub}' died ({short})."
+            " Read what it left on disk before deciding; do not finish the slice inline."
+        )
+    return {"systemMessage": msg}
 
 
 def h_subagent_stop(hook: Dict[str, Any], cfg: Dict[str, Any], ledger: Ledger) -> Dict[str, Any]:
@@ -1397,7 +1665,7 @@ def cmd_mode(args: List[str], cfg: Dict[str, Any], project_dir: Optional[str]) -
 
 def cmd_budget(args: List[str], cfg: Dict[str, Any], project_dir: Optional[str]) -> int:
     if not args or args[0] == "show":
-        print(f"budget_usd: {cfg['budget_usd']}  worker_model: {cfg['worker_model']}  allow_fork: {cfg['allow_fork']}  max_expensive_spawns: {cfg['max_expensive_spawns']}")
+        print(f"budget_usd: {cfg['budget_usd']}  worker_model: {cfg['worker_model']}  allow_fork: {cfg['allow_fork']}  route_general_purpose: {cfg['route_general_purpose']}  max_expensive_spawns: {cfg['max_expensive_spawns']}")
         print("config files (low to high precedence): " + ", ".join(str(p) for p in config_paths(project_dir)))
         print("project files may only tighten: " + ", ".join(sorted(TIGHTEN_ONLY)))
         for note in cfg.get("_ignored", []):
@@ -1667,7 +1935,27 @@ LEVEL_BACKOFF_S = 15.0
 # What a worker's death looks like when the cause is the API, not the work:
 # the CLI's own error categories and the usual HTTP words. Anything else is
 # not retried, because a retry would spend the budget on the same failure.
-TRANSIENT_RE = re.compile(r"overloaded|rate.?limit|\b529\b|\b503\b|\b502\b|server_error|connection (?:reset|error)|ECONNRESET", re.I)
+# 500 is in the list because one of the 13 worker deaths measured on
+# 2026-09-04 was "API Error: 500 Internal server error", which the API's own
+# message calls temporary.
+TRANSIENT_RE = re.compile(r"overloaded|rate.?limit|\b529\b|\b503\b|\b502\b|\b500\b|internal server error|server_error|connection (?:reset|error)|ECONNRESET", re.I)
+# A usage limit, which is the opposite of transient: waiting a minute and
+# re-spawning burns the next worker the same way, so it is classified first
+# and denies the model for the session. The wordings are the ones seen on
+# this machine: "You've reached your Fable 5 limit. Run /usage-credits to
+# continue or switch models with /model." and "You've hit your session limit
+# · resets 1:50pm (America/New_York)".
+QUOTA_RE = re.compile(r"reached your .{0,40}limit|hit your session limit|usage limit|/usage-credits|resets \d", re.I)
+# What the Agent tool returns when a spawned worker did not finish because
+# the API failed under it: the phrase seen in conductor transcripts on
+# 2026-08-29 and 2026-09-03, on its own or behind the notification prefix
+# 'Agent "<description>" failed: '. It must open the response: a worker that
+# finished and merely quotes the phrase in its report (a worker writing about
+# this very feature did) must not be told to retry work that completed.
+DEATH_RE = re.compile(r'(?:Agent\s+"[^"\n]{0,200}"\s+failed:\s*)?Agent terminated early due to an API error', re.I)
+# A death message is one line; the longest seen is under 200 characters. A
+# response longer than this is a report, whatever it quotes.
+DEATH_MAX_CHARS = 600
 VERDICTS = ("DONE", "PARTIAL", "BLOCKED", "NONCOMPLIANT", "FAILED")
 
 
@@ -2332,7 +2620,7 @@ def debug_dump(event: str, hook: Dict[str, Any]) -> None:
 # guardrail must never lock a session. Every other verb is a CLI that a skill
 # or a person is reading, where a silent exit 0 would pass what was not
 # checked; those exit 1 with the error on stderr (see ``run``).
-HOOK_EVENTS = frozenset({"session-start", "user-prompt", "pre-tool-use", "subagent-stop", "session-end"})
+HOOK_EVENTS = frozenset({"session-start", "user-prompt", "pre-tool-use", "post-tool-use", "subagent-stop", "session-end"})
 
 
 def main(argv: List[str]) -> int:
@@ -2388,6 +2676,7 @@ def main(argv: List[str]) -> int:
         "session-start": lambda: h_session_start(hook, cfg, ledger),
         "user-prompt": lambda: h_user_prompt(hook, cfg, ledger),
         "pre-tool-use": lambda: h_pre_tool_use(hook, cfg, ledger, project_dir),
+        "post-tool-use": lambda: h_post_tool_use(hook, cfg, ledger),
         "subagent-stop": lambda: h_subagent_stop(hook, cfg, ledger),
         "session-end": lambda: h_session_end(hook, cfg, ledger),
     }

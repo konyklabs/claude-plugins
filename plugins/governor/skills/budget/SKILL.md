@@ -81,6 +81,10 @@ repository is the runbook.
 - **Headless workers**: `run-worker` and `run-level` are their own sessions,
   so their dollars are not in the tables above; the line and the readout's
   `workers $` figure sum the run indexes under `.governor/runs`.
+- **`ended` column, and `Dead workers:`**: each subagent row's `ended` is
+  `completed`, `working`, or `died: transient|quota|other` — the same split
+  the death hook uses to say whether to retry once or switch tier. Any
+  `died` rows are also summed on their own `Dead workers:` line.
 - **Tool results by name**: the bytes the conductor read at the expensive
   rate. A large `Read` or `Bash` number is the signal to route look-ups
   through `governor:scout`.

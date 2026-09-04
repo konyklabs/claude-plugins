@@ -1,6 +1,6 @@
 {
   "name": "prod-readiness",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "description": "Production-readiness and security-scanning checks for API sample apps and developer portals: one deterministic scan emits a categorized report (secret and identifier leakage, debug and observability surfaces, HTML-string sinks, denial-of-service surface, correctness traps, CI and supply chain, documentation drift), external scanners are summarized to counts, and a cheap auditor judges what needs judgment.",
   "author": {
     "name": "Oleg Konyk",

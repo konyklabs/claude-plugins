@@ -22,6 +22,14 @@
         ]
       }
     ],
+    "PostToolUse": [
+      {
+        "matcher": "Agent",
+        "hooks": [
+          {"type": "command", "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/bin/governor.py\" post-tool-use --state-dir \"${CLAUDE_PLUGIN_DATA}\"", "timeout": 10}
+        ]
+      }
+    ],
     "SubagentStop": [
       {
         "hooks": [

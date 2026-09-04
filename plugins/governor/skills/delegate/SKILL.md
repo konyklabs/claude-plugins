@@ -55,6 +55,7 @@ From the triage tier:
 | execution | `governor:implementer` | Sonnet, medium effort |
 | hard slice | `governor:senior-implementer` | Opus, high effort |
 | review | `governor:reviewer` | Opus, medium; findings JSON |
+| general | `governor:worker` | Sonnet, medium; anything else, no evidence contract |
 
 Spawn with `subagent_type` set to the agent and **no `model` argument**; the
 agent pins its own model and effort. For slices that run in parallel, pass
@@ -137,3 +138,12 @@ unless the reviewer's findings contradict the evidence.
 One line per slice somewhere durable (the driving issue, a plan file, a
 commit message): slice, worker, result, evidence command. A session is
 scratch; the record is what survives it.
+
+## 6. When a worker dies
+
+The hook says which kind. Transient (an API overload): wait about a minute,
+re-spawn once with the same spec, then stop and record if it dies again.
+Usage limit: the hook denies spawns onto that tier — delegate elsewhere or
+wait, never retry into it. Read what the worker left on disk (worktree,
+`.governor/runs/`) first, and never finish the slice inline; `run-level`
+already retries headless workers with backoff on its own.

@@ -4,9 +4,11 @@
 
 ## What the governor does to a session
 
-You run the session on the expensive model and it conducts. Five hooks make that cheap enough to be a habit:
+You run the session on the expensive model and it conducts. Six hooks make that cheap enough to be a habit:
 
 - **Spawns are pinned.** An agent whose definition pins no model, such as a bare `general-purpose` spawn, runs on Sonnet instead of inheriting the session's model. The plugin agents pin their own, listed in the tier table below. A `fork` is denied outright.
+- **A bare spawn gets a worker, not just a pin.** `general-purpose` with no other agent named routes to `governor:worker` (Sonnet, medium effort, every tool, no report contract), so it does not inherit the session's effort the way a pinned-model-only spawn would.
+- **A dead worker is not silent.** The hook that reports the death says which kind: retry once on a transient overload, never on a usage limit — the hook denies further spawns onto that model for the session instead.
 - **Expensive spawns need a brief.** Sending a question to `governor:architect` (Fable) works only with `## Question`, `## Context` and `## Definition of done` in the prompt, and at most three times per session.
 - **Spend is priced and gated.** Every turn, from the transcript, at API list price. At 15 USD of expensive-tier spend, tool calls are denied until you switch model or raise the budget. Cheap spawns stay allowed.
 - **Workers cannot stop without evidence.** A report missing its result, changed files or pasted command output is sent back, twice at most.
@@ -17,7 +19,7 @@ The rest is skills. They do not fire on their own; you name them in the brief an
 
 ```
 claude plugin list                 # governor, py-testing, prod-readiness: enabled
-claude plugin details governor     # 7 skills, 5 agents, 5 hooks
+claude plugin details governor     # 7 skills, 6 agents, 6 hooks
 ```
 
 Optional, in `~/.claude/governor.json`. Leave it out and the defaults apply: enforce mode, 15 USD budget, a one-line spend readout per turn.
