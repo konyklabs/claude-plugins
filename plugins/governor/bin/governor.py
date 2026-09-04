@@ -621,6 +621,10 @@ class Ledger:
             if a["death_kind"] == "quota":
                 self.note_quota_hit(a.get("model"), head)
             return
+        if isinstance(content, str):
+            if content.strip():
+                a["ended"] = "completed"
+            return
         last = content[-1] if isinstance(content, list) and content else None
         if isinstance(last, dict):
             if last.get("type") == "text" and str(last.get("text") or "").strip():
@@ -728,6 +732,12 @@ class Ledger:
                         f"- {aid} ({a['model'] or '?'}) died: {a.get('death_kind') or 'other'}: "
                         + one_line(a.get("error") or "", 60)
                     )
+        if self.state.get("deaths"):
+            # The Agent tool's own report of a death, which exists even when the
+            # worker died before writing a transcript line the table could show.
+            lines += ["", "Deaths reported by the Agent tool (spawn, model, kind):", ""]
+            for d in self.state["deaths"][-12:]:
+                lines.append(f"- {d.get('type')} ({d.get('model') or '?'}) {d.get('kind')}: " + one_line(d.get("error") or "", 60))
         if self.state["tool_results"]:
             lines += ["", "Tool results returned into the main context (bytes; the conductor paid to read every one):", ""]
             for name, size in sorted(self.state["tool_results"].items(), key=lambda kv: -kv[1])[:8]:
@@ -875,9 +885,15 @@ def declared_model(subagent_type: str, cfg: Dict[str, Any], project_dir: Optiona
     names = (subagent_type,) if ":" in subagent_type else (subagent_type, short)
     for d in agent_dirs(project_dir):
         for name in names:
-            model = agent_model_from_file(d / f"{name}.md")
+            path = d / f"{name}.md"
+            model = agent_model_from_file(path)
             if model and model != "inherit":
                 return model
+            if path.exists() and d != PLUGIN_ROOT / "agents":
+                # The project's or the user's file is the agent that will run.
+                # It pins nothing, so it inherits: stop here rather than let a
+                # same-named plugin file answer for it (review of roadmap#115).
+                return None
     # Claude Code's own resolution order puts this env var after frontmatter
     # and before the session model, so a spawn that reaches here inherits it.
     env = os.environ.get("CLAUDE_CODE_SUBAGENT_MODEL")
@@ -903,18 +919,19 @@ def quota_denial(model: Optional[str], ledger: Ledger, cfg: Dict[str, Any]) -> O
     hits = ledger.state.get("quota_hit") or {}
     if not model or not hits:
         return None
-    key, _ = ledger.pricing.priced_key(model)
+    key, known = ledger.pricing.priced_key(model)
     for hit_model, info in hits.items():
         if ledger.pricing.priced_key(hit_model)[0] != key:
             continue
         head = one_line((info or {}).get("error") or "", 60)
+        note = "" if known else f" ({model} is not in pricing.json and is treated as the {key} family; add it there to spawn it)"
         return {
             "action": "deny",
             "model": model,
             "reason": (
                 f"governor: the {model} usage limit was hit this session ({head});"
                 " a spawn onto it would die the same way. Use governor:implementer (sonnet)"
-                " or governor:senior-implementer (opus), or wait for the reset."
+                " or governor:senior-implementer (opus), or wait for the reset." + note
             ),
         }
     return None
@@ -1481,7 +1498,7 @@ def h_pre_tool_use(hook: Dict[str, Any], cfg: Dict[str, Any], ledger: Ledger, pr
     return out
 
 
-def h_post_tool_use(hook: Dict[str, Any], cfg: Dict[str, Any], ledger: Ledger) -> Dict[str, Any]:
+def h_post_tool_use(hook: Dict[str, Any], cfg: Dict[str, Any], ledger: Ledger, project_dir: Optional[str] = None) -> Dict[str, Any]:
     """A spawn that died: name it in the ledger and tell the conductor, in the
     same turn, whether to retry once or change tier. The ``tool_response`` of
     a failed foreground Agent call is not field-verified, so any shape that
@@ -1496,10 +1513,22 @@ def h_post_tool_use(hook: Dict[str, Any], cfg: Dict[str, Any], ledger: Ledger) -
     tool_input = hook.get("tool_input") or {}
     sub = str(tool_input.get("subagent_type") or "general-purpose")
     explicit = tool_input.get("model")
-    model = explicit if explicit and explicit != "inherit" else declared_model(sub, cfg, hook.get("cwd"))
-    model = clean_label(model or ledger.main_model() or "unknown")
+    model = explicit if explicit and explicit != "inherit" else declared_model(sub, cfg, project_dir)
+    if model is None:
+        # The same resolution agent_policy applied when it let the spawn
+        # through: pinned to the worker model, or inherited. That is the
+        # model the worker ran on, not a guess at the conductor's tier.
+        session_model = ledger.main_model()
+        if cfg["always_pin_workers"] or is_expensive(session_model, cfg) or session_model is None:
+            model = cfg["worker_model"]
+        else:
+            model = session_model
+    model = clean_label(model or "unknown")
     sub = clean_label(sub)
     kind = death_kind(text)
+    # A plan-wide session limit names no model and takes every tier with it;
+    # advising another tier there would spawn the next death.
+    plan_wide = kind == "quota" and re.search(r"session limit", text, re.I) is not None
     display = text
     head = one_line(display, 120)
     ledger.state["deaths"].append({"type": sub, "model": model, "kind": kind, "error": head, "ts": time.time()})
@@ -1514,6 +1543,12 @@ def h_post_tool_use(hook: Dict[str, Any], cfg: Dict[str, Any], ledger: Ledger) -
             " Wait about 60 s, then re-spawn it once with the same spec; if it dies again,"
             " stop and record the state on the driving issue. Do not finish the slice inline."
         )
+    elif plan_wide:
+        msg = (
+            f"governor: worker '{sub}' died because the plan's session limit is hit ({short})."
+            " Every tier is out until the reset, this session's own calls included. Write the"
+            f" state down and wait for the reset; spawns onto {model} are denied meanwhile."
+        )
     elif kind == "quota":
         msg = (
             f"governor: worker '{sub}' died because the {model} usage limit is hit ({short})."
@@ -1526,7 +1561,13 @@ def h_post_tool_use(hook: Dict[str, Any], cfg: Dict[str, Any], ledger: Ledger) -
             f"governor: worker '{sub}' died ({short})."
             " Read what it left on disk before deciding; do not finish the slice inline."
         )
-    return {"systemMessage": msg}
+    # additionalContext is the channel the model reads (PostToolUse: "added to
+    # Claude's context alongside the tool result", hooks reference, checked
+    # 2026-09-04); systemMessage is shown to the person. Both get the advice.
+    return {
+        "systemMessage": msg,
+        "hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": msg},
+    }
 
 
 def h_subagent_stop(hook: Dict[str, Any], cfg: Dict[str, Any], ledger: Ledger) -> Dict[str, Any]:
@@ -2676,7 +2717,7 @@ def main(argv: List[str]) -> int:
         "session-start": lambda: h_session_start(hook, cfg, ledger),
         "user-prompt": lambda: h_user_prompt(hook, cfg, ledger),
         "pre-tool-use": lambda: h_pre_tool_use(hook, cfg, ledger, project_dir),
-        "post-tool-use": lambda: h_post_tool_use(hook, cfg, ledger),
+        "post-tool-use": lambda: h_post_tool_use(hook, cfg, ledger, project_dir),
         "subagent-stop": lambda: h_subagent_stop(hook, cfg, ledger),
         "session-end": lambda: h_session_end(hook, cfg, ledger),
     }

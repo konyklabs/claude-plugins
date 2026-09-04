@@ -285,6 +285,8 @@ Field-verified 2026-09-04 on Claude Code 2.1.260: a `PreToolUse`
 ran as `governor:scout` on Haiku, shown by both `subagent_stats.by_type` and
 the subagent's own transcript.
 
+The advice goes out on both channels a PostToolUse hook has: `hookSpecificOutput.additionalContext`, which the hooks reference describes as "added to Claude's context alongside the tool result" (checked 2026-09-04), and `systemMessage`, which is shown to the person. The first review round of this change had it on `systemMessage` alone, which the model never reads.
+
 Not verified: the `tool_response` shape of a failed foreground `Agent` call.
 The hook matches the exact phrase above, only when it opens the response and
 the response is one message long, and is a no-op on anything else: a worker
