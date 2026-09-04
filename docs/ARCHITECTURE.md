@@ -286,7 +286,15 @@ ran as `governor:scout` on Haiku, shown by both `subagent_stats.by_type` and
 the subagent's own transcript.
 
 Not verified: the `tool_response` shape of a failed foreground `Agent` call.
-The hook matches the exact phrase above and is a no-op on anything else.
+The hook matches the exact phrase above, only when it opens the response and
+the response is one message long, and is a no-op on anything else: a worker
+that finished and merely quotes the phrase in its report is not a death.
+
+Known limit: a plan-wide session limit is recorded against the model that was
+running, so only that family is denied. When the plan itself is out, the
+conductor's own calls fail the same way and the wall is visible without the
+guard; recording it against every family would deny the cheap tiers on a
+per-model limit, which is the common case.
 
 ## py-testing: what it is and is not
 
