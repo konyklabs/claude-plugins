@@ -104,6 +104,10 @@ The conductor merges a level, runs the full test command once, and for a test su
 
 The plan file, the decisions and one line per slice go somewhere that outlives the session: a PR description, a plan file committed with the branch, an issue. A session is scratch.
 
+For a run with a concrete outcome and a plan that is mostly final, the
+prompt sequence is written out once in `recipes/e2e-enabling-pr.md`: the
+first end-to-end enabling PR, with the infrastructure as level 0.
+
 ## The tiers the triage sorts into
 
 | tier | agent | what goes here |
