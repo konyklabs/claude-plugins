@@ -7,3 +7,4 @@ evals/results/
 .DS_Store
 .local/
 dist/
+.wt-*/
