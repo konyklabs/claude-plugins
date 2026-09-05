@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.1.0](https://github.com/konyklabs/claude-plugins/compare/v2.0.0...v2.1.0) (2026-09-05)
+
+
+### Features
+
+* **signoff:** plugin skeleton, the tile, cases and report scripts, a fixture app with known gaps, evals (konyklabs/roadmap[#120](https://github.com/konyklabs/claude-plugins/issues/120)) ([#16](https://github.com/konyklabs/claude-plugins/issues/16)) ([9975800](https://github.com/konyklabs/claude-plugins/commit/99758003b932fc95a1f1cf63e1aa65e583d4df89))
+* **supervisor:** per-session budget, spend reset, and the budget CLI passes a closed gate (konyklabs/roadmap[#128](https://github.com/konyklabs/claude-plugins/issues/128)) ([#20](https://github.com/konyklabs/claude-plugins/issues/20)) ([839df83](https://github.com/konyklabs/claude-plugins/commit/839df83e17c3d004cbf10a5a4ab3445b670659bc))
+
 ## [2.0.0](https://github.com/konyklabs/claude-plugins/compare/v1.1.0...v2.0.0) (2026-09-05)
 
 
