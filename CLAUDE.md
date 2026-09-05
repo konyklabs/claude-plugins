@@ -1,6 +1,6 @@
 # claude-plugins
 
-Claude Code plugin marketplace (`konyklabs-plugins`): `governor` (token
+Claude Code plugin marketplace (`konyklabs-plugins`): `supervisor` (token
 guardrails for expensive-model sessions), `py-testing` (Python test
 engineering skills), `prod-readiness` (security and readiness scanning).
 `README.md` says how to install and use them; this file is for working on
@@ -30,7 +30,7 @@ Paste the output in the commit or PR; never say "tests pass" without it.
 - **Fail closed.** A tool that errors, times out or is missing is a
   `review` or `skip` row with its reason, never a `pass`. An unknown model
   is priced at the top rate. A budget of 0 is a closed gate.
-- **Project config may only tighten.** `.claude/governor.json` in a
+- **Project config may only tighten.** `.claude/supervisor.json` in a
   repository can lower a budget or forbid forks; it cannot loosen anything.
   Loosening lives in the user's own file.
 - **Deterministic first.** A step that can be a script is a script with a
@@ -57,7 +57,7 @@ Paste the output in the commit or PR; never say "tests pass" without it.
 - An installed plugin is a versioned copy: bump `version` in the plugin's
   `plugin.json` (and the release-please manifest keeps it in step) or
   develop with `claude --plugin-dir ./plugins/<name>`.
-- `GOVERNOR_DEBUG=1` writes redacted hook-input shapes to the state dir;
+- `SUPERVISOR_DEBUG=1` writes redacted hook-input shapes to the state dir;
   use it to verify a hook contract against a real session.
 - Zips for machines without git access come from `scripts/dist.sh` only
   (committed tree, tests excluded, archive-hygiene checked).
@@ -67,7 +67,7 @@ Paste the output in the commit or PR; never say "tests pass" without it.
 - Design and verification record: `docs/ARCHITECTURE.md`.
 - Cost runbook and supply-chain statement: `docs/COST-TRACKING.md`.
 - Operator playbook: `docs/PLAYBOOK.md`.
-- Hook engine: `plugins/governor/bin/governor.py` (one file); prices in
+- Hook engine: `plugins/supervisor/bin/supervisor.py` (one file); prices in
   `pricing.json` beside it, with the date checked.
 - Scanner: `plugins/prod-readiness/skills/readiness-review/scripts/readiness.py`.
 - Inventory: `plugins/py-testing/skills/untangling-test-suites/scripts/inventory.py`.

@@ -1,7 +1,7 @@
 __pycache__/
 .pytest_cache/
 *.pyc
-.governor/
+.supervisor/
 evals/results/
 **/evals/results/
 .DS_Store
