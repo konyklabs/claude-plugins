@@ -22,23 +22,37 @@ and any config values that were ignored):
 python3 "${CLAUDE_PLUGIN_ROOT}/bin/governor.py" status
 ```
 
-Current budget, mode, and where each setting comes from:
+Current budget, mode, and where each setting comes from — includes the
+named profiles, the ceiling (`none` or a number), and, when in force, the
+profile matching the budget or `→ effective <n> (ceiling)` when clamped:
 
 ```
 python3 "${CLAUDE_PLUGIN_ROOT}/bin/governor.py" budget show
 ```
 
-Raise or lower the expensive-tier budget for this project. Written to your
-own `~/.claude/governor.json` under `projects`, keyed by this project's
+Raise or lower the expensive-tier budget for this project, by number or by
+profile name (`small`, `medium`, `large`, from `budget_profiles`). Written to
+your own `~/.claude/governor.json` under `projects`, keyed by this project's
 path; that is the only place a raise can come from. `--user` sets your
 default for every project; `--project` writes `.claude/governor.json` here,
-which can only lower:
+which can only lower. A ceiling never changes what is written; it caps
+what is in force, and the reply says when the two differ:
 
 ```
 python3 "${CLAUDE_PLUGIN_ROOT}/bin/governor.py" budget set 25
+python3 "${CLAUDE_PLUGIN_ROOT}/bin/governor.py" budget set medium
 ```
 
 `budget set 0` closes the gate for the expensive tier; it does not disable it.
+
+Set or clear the personal ceiling that caps `budget_usd` from any source
+(writes to your user file's top level by default, not the per-project entry,
+because a ceiling is not a per-project raise):
+
+```
+python3 "${CLAUDE_PLUGIN_ROOT}/bin/governor.py" budget ceiling 60
+python3 "${CLAUDE_PLUGIN_ROOT}/bin/governor.py" budget ceiling off
+```
 
 Past sessions:
 
@@ -106,4 +120,6 @@ preserving the session's context:
 1. `/model opus` (or `sonnet`): the ledger sees the new model on the next
    message and the gate lifts. Cheaper models cannot read the expensive
    model's thinking blocks, which is fine; write the state down first.
-2. `budget set <usd>` above, then continue. Say why in the same turn.
+2. `budget set <usd|profile>` above, then continue. Say why in the same turn.
+   The deny reason names the next profile under the ceiling, or the
+   ceiling command when none fits.

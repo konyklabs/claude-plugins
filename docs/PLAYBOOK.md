@@ -55,7 +55,7 @@ report contracts off, the budget a one-time checkpoint instead of a wall),
 frames the question in three lines in `.governor/explore.md`, and lets you
 read, try and edit loosely on a throwaway branch. At the checkpoint, or when
 the question is answered, it asks: ship, spike or drop. Ship runs
-`/governor:brief`, which returns to enforce and starts the sequence below;
+`/governor:start`, which returns to enforce and starts the sequence below;
 spike leaves a five-line note; drop leaves one line saying why.
 
 ## Driving a task
@@ -70,17 +70,39 @@ The first thing in context is the governor's policy text and a spend line, unles
 
 The model reads `unknown` until the first reply has been priced; from then on it names the session model.
 
-### 2. Run `/governor:brief <the task in one sentence>` **(your turn)**
+### 2. Run `/governor:start <the task in one sentence>` **(your turn, two stops)**
 
-The skill asks at most five questions, each with a recommended answer first ("whatever you think" takes it), and writes `.governor/brief.md`: the task in one line, a definition of done a script or a glance can confirm, the command whose output proves it, what is out of scope, the decisions already made, and every gap it did not ask about as an assumption you can strike. A script lints the file before you see it; the turn runs on Sonnet, and the next prompt is back on the session model. The brief is the one piece of writing the whole run depends on, and it stays in context for the next step. A worked one is below.
+One skill runs the brief, the triage and the cut, and stops exactly twice. The
+first stop is one screen of up to four questions, each with a recommended
+answer first ("whatever you think" takes them all). The second is the plan
+card: the task line and its definition of done, the tier table (each slice,
+its tier, its agent, why), the plan levels when the work was cut, and the
+budget profile it picked with the reason. You answer go, adjust, or explore
+instead. On go it sets the budget to the profile and starts delegating in the
+same turn; nothing else is typed.
 
-### 3. Read the triage table **(your turn)**
+The budget is a profile, not a number: `small`, `medium` and `large` by
+default, chosen from the table (Sonnet-only and three slices at most is
+small; an Opus row, four to eight slices, or a written decision is medium;
+more than eight slices, a consult or an unattended run is large). A personal ceiling caps every
+profile: `governor.py budget ceiling 60`. When spend reaches the budget, the deny reason names the next profile
+under the ceiling, so raising it is one command with a name in it; when
+none fits, it says so and names the ceiling command instead.
 
-`/governor:triage` makes the model write a table before any tool call: each slice, its tier, its agent, and why. This is where a veto costs nothing. After it, everything is delegation.
+The parts are still there for anyone who wants them one at a time:
+`/governor:brief` (the interview on Sonnet, five questions at most),
+`/governor:triage` (the table before any work), `/governor:decompose` (the
+cut into slices and levels). A worked brief is below.
 
-### 4. Let it inventory, decide, and cut
+### 3. Read the plan card **(your turn)**
 
-Scouts on Haiku return `path:line` facts. For a test suite, the inventory script returns fixtures, duplicates, shadowing and markers as a table with no model in the loop. The model writes its decisions down as one paragraph each with the rejected option, then `/governor:decompose` turns the work into slices and levels, checked by a script that refuses cycles and same-level file collisions.
+The table is written before any tool call that would start the work. This is
+where a veto costs nothing: strike a row, move a slice up a tier, or answer
+"adjust" and say what changes. After go, everything is delegation.
+
+### 4. What happened between the two stops
+
+Scouts on Haiku returned `path:line` facts; the model did not read the tree itself. For a test suite, the inventory script returns fixtures, duplicates, shadowing and markers as a table with no model in the loop. The model wrote its decisions down as one paragraph each with the rejected option, and when the work was large, cut it into slices and levels, checked by a script that refuses cycles and same-level file collisions. `/governor:decompose` is that cut on its own, for a branch or a suite that arrives already built.
 
 ### 5. Let it delegate, slice by slice
 

@@ -60,6 +60,11 @@ DEFAULTS: Dict[str, Any] = {
     # is roughly 250k Fable output tokens: a full design session, not a full
     # implementation loop, which is the point.
     "budget_usd": 15.0,
+    # Named budgets so a task picks a size, not a number. USD at API list price.
+    "budget_profiles": {"small": 5.0, "medium": 25.0, "large": 100.0},
+    # Hard cap on budget_usd from any source. None means no cap. A user-level
+    # setting: a project file may only lower it.
+    "budget_ceiling_usd": None,
     # Fraction of the budget at which a warning is injected once.
     "warn_at": 0.7,
     # Fork subagents copy the whole context onto the parent model, the most
@@ -132,6 +137,8 @@ DEFAULTS: Dict[str, Any] = {
 # user's decision, made in ~/.claude/governor.json or $GOVERNOR_CONFIG.
 TIGHTEN_ONLY = {
     "budget_usd": "lower",
+    "budget_profiles": "profiles-lower",
+    "budget_ceiling_usd": "ceiling-lower",
     "warn_at": "lower",
     "max_expensive_spawns": "lower",
     "brief_max_chars": "lower",
@@ -170,6 +177,11 @@ def _finite_number(v: Any, kind: type) -> Optional[float]:
 
 
 def _would_loosen(key: str, new: Any, cur: Any) -> bool:
+    """Whether a project's value for ``key`` would loosen the user's. For
+    ``budget_profiles``: a project may lower an existing profile; adding a
+    name or raising a value is ignored with a note. Dropping a profile is
+    not a thing a project file can do either way, because dict keys merge
+    over the defaults (``cfg[k].update(v)``) rather than replacing them."""
     rule = TIGHTEN_ONLY[key]
     if rule == "lower":
         return new > cur
@@ -181,6 +193,18 @@ def _would_loosen(key: str, new: Any, cur: Any) -> bool:
         return not set(cur) <= set(new)
     if rule == "enforce":
         return new != "enforce" and cur == "enforce"
+    if rule == "profiles-lower":
+        # A project may lower an existing profile; adding a name or raising a
+        # value is loosening and is ignored with a note. Dropping a profile
+        # is not a thing a project file can do: dict keys merge over the
+        # defaults, they are never replaced wholesale.
+        return any(name not in cur or val > cur[name] for name, val in new.items())
+    if rule == "ceiling-lower":
+        if cur is None:
+            return False
+        if new is None:
+            return True
+        return new > cur
     return False
 
 
@@ -220,7 +244,30 @@ def load_config(project_dir: Optional[str]) -> Dict[str, Any]:
             if k not in DEFAULTS:
                 ignored.append(f"{p}: unknown key {k!r}")
                 continue
-            if k in NUMERIC_KEYS:
+            if k == "budget_ceiling_usd":
+                if v is not None:
+                    num = _finite_number(v, float)
+                    if num is None or num < 0:
+                        ignored.append(f"{p}: budget_ceiling_usd must be null or a finite number >= 0, got {v!r}")
+                        continue
+                    v = num
+            elif k == "budget_profiles":
+                if not isinstance(v, dict):
+                    ignored.append(f"{p}: budget_profiles must be an object")
+                    continue
+                cleaned: Dict[str, float] = {}
+                for name, val in v.items():
+                    num = _finite_number(val, float)
+                    # A repo-controlled name is bounded before it reaches a note: a
+                    # 200-char key in someone's .claude/governor.json must not blow
+                    # up the readout it gets pasted into.
+                    tname = name[:40] if isinstance(name, str) else name
+                    if not isinstance(name, str) or num is None or num < 0:
+                        ignored.append(f"{p}: budget_profiles.{tname!r}={val!r} must be a finite number >= 0")
+                        continue
+                    cleaned[name] = num
+                v = cleaned
+            elif k in NUMERIC_KEYS:
                 num = _finite_number(v, NUMERIC_KEYS[k])
                 if num is None:
                     ignored.append(f"{p}: {k} must be a finite number, got {v!r}")
@@ -256,6 +303,62 @@ def load_config(project_dir: Optional[str]) -> Dict[str, Any]:
         cfg["worker_model"] = DEFAULTS["worker_model"]
     cfg["_ignored"] = ignored
     return cfg
+
+
+def effective_budget(cfg: Dict[str, Any]) -> float:
+    """budget_usd, capped by budget_ceiling_usd when one is set."""
+    budget = float(cfg["budget_usd"])
+    ceiling = cfg.get("budget_ceiling_usd")
+    if ceiling is not None:
+        return min(budget, float(ceiling))
+    return budget
+
+
+def profile_name(cfg: Dict[str, Any]) -> Optional[str]:
+    """The profile whose value equals the effective budget, else None."""
+    eb = round(effective_budget(cfg), 2)
+    for name, val in (cfg.get("budget_profiles") or {}).items():
+        if round(float(val), 2) == eb:
+            return name
+    return None
+
+
+def next_profile(cfg: Dict[str, Any]) -> Optional[Tuple[str, float]]:
+    """The lowest-valued profile strictly above the effective budget, capped
+    at the ceiling when one is set. None when there is no such profile."""
+    eb = effective_budget(cfg)
+    ceiling = cfg.get("budget_ceiling_usd")
+    candidates = [
+        (name, float(val)) for name, val in (cfg.get("budget_profiles") or {}).items()
+        if float(val) > eb and (ceiling is None or float(val) <= ceiling)
+    ]
+    if not candidates:
+        return None
+    return min(candidates, key=lambda nv: nv[1])
+
+
+def raise_advice(cfg: Dict[str, Any]) -> str:
+    """The clause telling a denied session how to raise its budget, chosen by
+    which raise is actually available: a named profile above the budget (and
+    under the ceiling, when one is set), a numeric raise up to the ceiling, a
+    ceiling raise when the budget is already pinned to it, or a bare numeric
+    raise when nothing bounds it at all. Every branch ends the same way so a
+    caller can always find "/model opus" in the reason."""
+    tail = " /model opus keeps the context."
+    nxt = next_profile(cfg)
+    if nxt is not None:
+        name, value = nxt
+        return f"step up with /governor:budget set {name} (${value:.2f})." + tail
+    ceiling = cfg.get("budget_ceiling_usd")
+    if ceiling is not None:
+        ceiling = float(ceiling)
+        if round(effective_budget(cfg), 2) >= round(ceiling, 2):
+            return f"the budget is at its ceiling ${ceiling:.2f}; raise it with /governor:budget ceiling <usd>." + tail
+        return (
+            f"no profile fits under the ceiling ${ceiling:.2f}; set a number up to it with"
+            " /governor:budget set <usd>, or raise the ceiling with /governor:budget ceiling <usd>." + tail
+        )
+    return "no profile is above this budget; set a number with /governor:budget set <usd>." + tail
 
 
 def state_dir() -> Path:
@@ -675,7 +778,8 @@ class Ledger:
     def readout(self, cfg: Dict[str, Any], project_dir: Optional[str] = None) -> str:
         """One line for the per-turn context injection."""
         exp = self.expensive_spend(cfg)
-        budget = float(cfg["budget_usd"])
+        budget = effective_budget(cfg)
+        profile = profile_name(cfg)
         exp_models = {m: t for m, t in self.state["models"].items() if is_expensive(m, cfg)}
         out_tok = sum(t["output"] for t in exp_models.values())
         cread = sum(t["cache_read"] for t in exp_models.values())
@@ -687,7 +791,8 @@ class Ledger:
         spawn_txt = ", ".join(f"{m} {n}" for m, n in sorted(by_model.items())) or "none"
         model = self.main_model() or "unknown"
         line = (
-            f"[governor] expensive-tier ${exp:.2f} of ${budget:.2f} "
+            f"[governor] expensive-tier ${exp:.2f} of ${budget:.2f}"
+            f"{f' ({profile})' if profile is not None else ''} "
             f"(out {_k(out_tok)} tok, cache-read {_k(cread)}) · total ${self.total_spend():.2f} "
             f"· session model {model} · spawns: {spawn_txt}"
         )
@@ -708,7 +813,7 @@ class Ledger:
     def report(self, cfg: Dict[str, Any], project_dir: Optional[str] = None) -> str:
         """Markdown for `governor.py status`."""
         lines = [f"# governor: session {self.session_id}", ""]
-        lines.append(f"Budget (expensive tier): ${float(cfg['budget_usd']):.2f}  ·  spent: ${self.expensive_spend(cfg):.2f}  ·  all models: ${self.total_spend():.2f}")
+        lines.append(f"Budget (expensive tier): ${effective_budget(cfg):.2f}  ·  spent: ${self.expensive_spend(cfg):.2f}  ·  all models: ${self.total_spend():.2f}")
         workers = worker_spend(project_dir)
         if workers >= 0.005:
             lines.append(f"Headless workers (run-worker / run-level, every run recorded under .governor/runs, all sessions): ${workers:.2f}, not in the figures above")
@@ -1381,7 +1486,7 @@ EXPLORE_TEXT = (
     "governor is in explore mode, for a loosely defined question. Workers are pinned to cheap models and\n"
     "forks are denied; report contracts are off, prose answers are fine; the budget is a checkpoint, not a\n"
     "wall: at the number, one tool call is denied with the question ship, spike or drop, then work continues\n"
-    "with the user's answer. When something is worth keeping, run /governor:brief, which returns to enforce.\n"
+    "with the user's answer. When something is worth keeping, run /governor:start, which returns to enforce.\n"
     "Write what was learned to .governor/explore.md before the session ends."
 )
 
@@ -1446,7 +1551,7 @@ def h_pre_tool_use(hook: Dict[str, Any], cfg: Dict[str, Any], ledger: Ledger, pr
     # spawn that hands work to a cheap worker, which is the one action that
     # reduces spend. A budget of zero or less is a closed gate, not no gate.
     spend = ledger.expensive_spend(cfg)
-    budget = float(cfg["budget_usd"])
+    budget = effective_budget(cfg)
     gated = cfg["enforce_budget"] and is_expensive(caller_model, cfg)
     cheap_delegation = decision is not None and decision["action"] in ("rewrite", "allow") and not is_expensive(decision.get("model"), cfg)
     if cfg.get("mode") == "explore" and gated and spend >= budget and not cheap_delegation:
@@ -1461,20 +1566,21 @@ def h_pre_tool_use(hook: Dict[str, Any], cfg: Dict[str, Any], ledger: Ledger, pr
                     "permissionDecision": "deny",
                     "permissionDecisionReason": (
                         f"governor explore checkpoint: expensive-tier ${spend:.2f} of ${budget:.2f} reached."
-                        " Stop and ask the user: ship (run /governor:brief), spike (write .governor/explore.md and stop),"
+                        " Stop and ask the user: ship (run /governor:start), spike (write .governor/explore.md and stop),"
                         " or drop. Further tool calls are allowed; continue only with their answer."
                     ),
                 }
             }
     elif gated and spend >= budget and not cheap_delegation:
+        raise_clause = " Context is preserved: " + raise_advice(cfg)
         return {
             "hookSpecificOutput": {
                 "hookEventName": "PreToolUse",
                 "permissionDecision": "deny",
                 "permissionDecisionReason": (
                     f"governor: expensive-tier spend ${spend:.2f} has reached the session budget ${budget:.2f}."
-                    " Context is preserved: switch with /model opus (or sonnet) and continue, or raise the budget"
-                    " with /governor:budget set <usd>. Spawning cheap workers (governor:implementer, governor:scout)"
+                    + raise_clause
+                    + " Spawning cheap workers (governor:implementer, governor:scout)"
                     " is still allowed. Write down the state first if the next step is a decision."
                 ),
             }
@@ -1708,29 +1814,82 @@ def cmd_mode(args: List[str], cfg: Dict[str, Any], project_dir: Optional[str]) -
 
 def cmd_budget(args: List[str], cfg: Dict[str, Any], project_dir: Optional[str]) -> int:
     if not args or args[0] == "show":
-        print(f"budget_usd: {cfg['budget_usd']}  worker_model: {cfg['worker_model']}  allow_fork: {cfg['allow_fork']}  route_general_purpose: {cfg['route_general_purpose']}  max_expensive_spawns: {cfg['max_expensive_spawns']}")
+        raw = cfg["budget_usd"]
+        eff = effective_budget(cfg)
+        ceiling = cfg.get("budget_ceiling_usd")
+        if ceiling is not None and eff < float(raw):
+            budget_str = f"budget_usd: {raw} → effective {eff} (ceiling)"
+        else:
+            pname = profile_name(cfg)
+            budget_str = f"budget_usd: {raw}" + (f" ({pname})" if pname else "")
+        print(f"{budget_str}  worker_model: {cfg['worker_model']}  allow_fork: {cfg['allow_fork']}  route_general_purpose: {cfg['route_general_purpose']}  max_expensive_spawns: {cfg['max_expensive_spawns']}")
+        profiles_txt = " ".join(f"{name}={val}" for name, val in (cfg.get("budget_profiles") or {}).items())
+        print(f"profiles: {profiles_txt}")
+        print(f"ceiling: {'none' if ceiling is None else ceiling}")
         print("config files (low to high precedence): " + ", ".join(str(p) for p in config_paths(project_dir)))
         print("project files may only tighten: " + ", ".join(sorted(TIGHTEN_ONLY)))
         for note in cfg.get("_ignored", []):
             print(f"ignored: {note}")
         return 0
     if args[0] == "set" and len(args) >= 2:
+        word = args[1]
+        profiles = cfg.get("budget_profiles") or {}
+        # A number is tried first: a profile table that happens to use a
+        # numeral as a name (e.g. a project's own "5") must never shadow the
+        # number itself.
         try:
-            value = float(args[1])
+            value: Optional[float] = float(word)
         except ValueError:
-            value = float("nan")
+            value = None
+        if value is None:
+            value = float(profiles[word]) if word in profiles else float("nan")
         if not math.isfinite(value) or value < 0:
-            print("usage: governor.py budget set <usd> [--user|--project] — a finite number, 0 or more (0 closes the gate)")
+            names = ", ".join(sorted(profiles))
+            print(f"usage: governor.py budget set <usd|profile> [--user|--project] — a finite number, 0 or more"
+                  f" (0 closes the gate), or one of the named profiles: {names}")
             return 2
         # Default: this project's entry in the user's own file, which is the
         # only place a raise can come from (a project file may only tighten).
+        # The value written is always the one asked for: a ceiling narrows
+        # what takes effect (effective_budget), it never rewrites budget_usd.
         target = write_setting("budget_usd", value, project_dir, _scope(args))
         effective = load_config(project_dir)
         if float(effective["budget_usd"]) != value:
             print(f"budget_usd={value} written to {target}, but the effective budget is {effective['budget_usd']}:"
                   " another config file wins (see 'budget show'). " + "; ".join(effective.get("_ignored", [])[-2:]))
             return 1
-        print(f"budget_usd={value} written to {target}. Applies from the next tool call.")
+        pname = profile_name(dict(effective, budget_usd=value, budget_ceiling_usd=None))
+        suffix = f" ({pname})" if pname else ""
+        eff_budget = effective_budget(effective)
+        if eff_budget < value:
+            print(f"budget_usd={value}{suffix} written to {target}; effective budget is {eff_budget} (ceiling)."
+                  " Applies from the next tool call.")
+            return 0
+        print(f"budget_usd={value}{suffix} written to {target}. Applies from the next tool call.")
+        return 0
+    if args[0] == "ceiling" and len(args) >= 2:
+        word = args[1]
+        if word == "off":
+            value = None
+        else:
+            try:
+                value = float(word)
+            except ValueError:
+                value = float("nan")
+            if not math.isfinite(value) or value < 0:
+                print("usage: governor.py budget ceiling <usd|off> [--user|--project] — a finite number, 0 or more, or 'off'")
+                return 2
+        # A ceiling is a personal cap: default to the user's top level, not
+        # this project's entry, so --user is the implied scope.
+        scope = _scope(args) or "user"
+        target = write_setting("budget_ceiling_usd", value, project_dir, scope)
+        effective = load_config(project_dir)
+        if effective.get("budget_ceiling_usd") != value:
+            print(f"budget_ceiling_usd={value} written to {target}, but the effective ceiling is"
+                  f" {effective.get('budget_ceiling_usd')}: another config file wins (see 'budget show')."
+                  " " + "; ".join(effective.get("_ignored", [])[-2:]))
+            return 1
+        print(f"budget_ceiling_usd={value} written to {target}. Applies from the next tool call.")
         return 0
     if args[0] == "history":
         hist = state_dir() / "history.jsonl"
@@ -1746,7 +1905,7 @@ def cmd_budget(args: List[str], cfg: Dict[str, Any], project_dir: Optional[str])
         for r in rows[-20:]:
             print(f"| {r['ts']} | {r['session_id'][:8]} | {r.get('main_model')} | {r['expensive_usd']:.2f} | {r['total_usd']:.2f} | {r['spawns']} |")
         return 0
-    print("usage: governor.py budget [show|set <usd> [--user|--project]|history]")
+    print("usage: governor.py budget [show|set <usd|profile> [--user|--project]|ceiling <usd|off> [--user|--project]|history]")
     return 2
 
 
@@ -1766,7 +1925,7 @@ def cmd_statusline(cfg: Dict[str, Any]) -> int:
     if sid:
         led = Ledger(sid, Pricing.load())
         exp = led.expensive_spend(cfg)
-        budget = float(cfg["budget_usd"])
+        budget = effective_budget(cfg)
         state = "CLOSED" if cfg["enforce_budget"] and exp >= budget and is_expensive(led.main_model(), cfg) else f"${exp:.2f}/${budget:.0f}"
         parts.append(f"fable {state}")
         parts.append(f"total ${led.total_spend():.2f}")

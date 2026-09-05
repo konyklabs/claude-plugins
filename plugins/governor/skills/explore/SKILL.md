@@ -55,7 +55,7 @@ question is answered, one `AskUserQuestion`: **ship**, **spike** or
 **drop**, recommended option first, chosen from what was learned.
 
 - **ship**: `python3 "${CLAUDE_PLUGIN_ROOT}/bin/governor.py" mode enforce`,
-  then `/governor:brief <the task in one sentence>`. The interview is short
+  then `/governor:start <the task in one sentence>`. The interview is short
   because the exploration answered it; the brief is the first durable act.
 - **spike**: append to `.governor/explore.md`, five lines: what was learned,
   what was rejected and why, the open question. That is the issue body if

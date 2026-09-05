@@ -1197,6 +1197,185 @@ def test_budget_set_still_writes_through_the_shared_helper(env, capsys):
     assert governor.load_config(proj)["budget_usd"] == 10.0
 
 
+def test_budget_set_profile_name(env, capsys):
+    proj = str(env["project"])
+    assert governor.main(["budget", "set", "medium"]) == 0
+    out = capsys.readouterr().out
+    data = json.loads((env["tmp"] / "home" / ".claude" / "governor.json").read_text())
+    assert data["projects"][str(Path(proj).resolve())]["budget_usd"] == 25.0
+    assert "(medium)" in out
+
+
+def test_budget_set_unknown_word_is_usage(env, capsys):
+    assert governor.main(["budget", "set", "huge"]) == 2
+    out = capsys.readouterr().out
+    assert "small" in out and "medium" in out and "large" in out
+
+
+def test_budget_set_reports_ceiling(env, capsys):
+    (env["tmp"] / "home" / ".claude" / "governor.json").write_text(json.dumps({"budget_ceiling_usd": 60}))
+    assert governor.main(["budget", "set", "large"]) == 0
+    out = capsys.readouterr().out
+    proj = str(env["project"])
+    data = json.loads((env["tmp"] / "home" / ".claude" / "governor.json").read_text())
+    # written value is the one asked for, never the ceiling
+    assert data["projects"][str(Path(proj).resolve())]["budget_usd"] == 100.0
+    assert "effective budget is 60.0 (ceiling)" in out
+    assert governor.main(["budget", "show"]) == 0
+    show_out = capsys.readouterr().out
+    assert "budget_usd: 100.0 → effective 60.0 (ceiling)" in show_out
+    assert "ceiling: 60.0" in show_out
+
+
+def test_budget_set_user_scope_ignores_project_ceiling(env):
+    (env["tmp"] / "home" / ".claude" / "governor.json").write_text(json.dumps({"budget_usd": 10}))
+    (env["project"] / ".claude" / "governor.json").write_text(json.dumps({"budget_ceiling_usd": 5}))
+    assert governor.main(["budget", "set", "large", "--user"]) == 0
+    user_data = json.loads((env["tmp"] / "home" / ".claude" / "governor.json").read_text())
+    assert user_data["budget_usd"] == 100.0
+
+
+def test_budget_set_number_beats_profile_name(env):
+    (env["tmp"] / "home" / ".claude" / "governor.json").write_text(json.dumps({"budget_profiles": {"5": 100.0}}))
+    proj = str(env["project"])
+    assert governor.main(["budget", "set", "5"]) == 0
+    data = json.loads((env["tmp"] / "home" / ".claude" / "governor.json").read_text())
+    assert data["projects"][str(Path(proj).resolve())]["budget_usd"] == 5.0
+
+
+def test_budget_ceiling_verb(env, capsys):
+    assert governor.main(["budget", "ceiling", "40"]) == 0
+    capsys.readouterr()
+    user_data = json.loads((env["tmp"] / "home" / ".claude" / "governor.json").read_text())
+    assert user_data["budget_ceiling_usd"] == 40.0
+    assert governor.main(["budget", "ceiling", "off"]) == 0
+    capsys.readouterr()
+    user_data = json.loads((env["tmp"] / "home" / ".claude" / "governor.json").read_text())
+    assert user_data["budget_ceiling_usd"] is None
+    assert governor.main(["budget", "ceiling", "-1"]) == 2
+
+
+def test_project_profiles_only_tighten(env):
+    proj = str(env["project"])
+    (env["project"] / ".claude" / "governor.json").write_text(json.dumps({"budget_profiles": {"large": 500}}))
+    cfg = governor.load_config(proj)
+    assert cfg["budget_profiles"]["large"] == 100.0
+    assert any("loosen" in n for n in cfg["_ignored"])
+    (env["project"] / ".claude" / "governor.json").write_text(json.dumps({"budget_profiles": {"huge": 200}}))
+    cfg = governor.load_config(proj)
+    assert "huge" not in cfg["budget_profiles"]
+    assert any("loosen" in n for n in cfg["_ignored"])
+    (env["project"] / ".claude" / "governor.json").write_text(json.dumps({"budget_profiles": {"large": 50}}))
+    cfg = governor.load_config(proj)
+    assert cfg["budget_profiles"]["large"] == 50.0
+
+
+def test_project_ceiling_only_lowers(env):
+    proj = str(env["project"])
+    (env["tmp"] / "home" / ".claude" / "governor.json").write_text(json.dumps({"budget_ceiling_usd": 60}))
+    (env["project"] / ".claude" / "governor.json").write_text(json.dumps({"budget_ceiling_usd": 30}))
+    cfg = governor.load_config(proj)
+    assert cfg["budget_ceiling_usd"] == 30.0
+    (env["project"] / ".claude" / "governor.json").write_text(json.dumps({"budget_ceiling_usd": None}))
+    cfg = governor.load_config(proj)
+    assert cfg["budget_ceiling_usd"] == 60.0
+    assert any("loosen" in n for n in cfg["_ignored"])
+
+
+def test_budget_deny_names_next_profile(env):
+    tp = make_session(env["tmp"], main_lines=assistant_lines("m1", "claude-fable-5-1", usage(out=550_000), blocks=1))
+    cfg = dict(governor.DEFAULTS, budget_usd=25.0)
+    led = governor.Ledger("sess1", governor.Pricing.load())
+    out = governor.h_pre_tool_use(dict(hook_base(tp), tool_name="Read", tool_input={}), cfg, led, str(env["project"]))
+    reason = out["hookSpecificOutput"]["permissionDecisionReason"]
+    assert "set large" in reason and "$100" in reason
+
+    cfg2 = dict(governor.DEFAULTS, budget_usd=25.0, budget_ceiling_usd=25.0)
+    led2 = governor.Ledger("sess1", governor.Pricing.load())
+    out2 = governor.h_pre_tool_use(dict(hook_base(tp), tool_name="Read", tool_input={}), cfg2, led2, str(env["project"]))
+    reason2 = out2["hookSpecificOutput"]["permissionDecisionReason"]
+    assert "ceiling" in reason2 and "set large" not in reason2
+
+
+def test_ceiling_caps_the_gate(env):
+    # ~$30 of Fable spend (600k output tokens at $0.00005/tok) against a
+    # $100 budget the ceiling pins to $25: the gate must still fire at the
+    # ceiling, not the unclamped budget_usd.
+    tp = make_session(env["tmp"], main_lines=assistant_lines("m1", "claude-fable-5-1", usage(out=600_000), blocks=1))
+    cfg = dict(governor.DEFAULTS, budget_usd=100.0, budget_ceiling_usd=25.0)
+    led = governor.Ledger("sess1", governor.Pricing.load())
+    out = governor.h_pre_tool_use(dict(hook_base(tp), tool_name="Read", tool_input={}), cfg, led, str(env["project"]))
+    reason = out["hookSpecificOutput"]["permissionDecisionReason"]
+    assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "$25.00" in reason
+    assert "of $25.00" in led.readout(cfg)
+
+
+def test_raise_advice_branches():
+    # 1. a next profile exists (and fits under any ceiling)
+    cfg = dict(governor.DEFAULTS, budget_usd=15.0)
+    r = governor.raise_advice(cfg)
+    assert "step up with /governor:budget set medium ($25.00)." in r
+    assert r.endswith("/model opus keeps the context.")
+
+    # 2. a ceiling is set, no profile fits under it, budget below ceiling
+    cfg = dict(governor.DEFAULTS, budget_usd=10.0, budget_ceiling_usd=20.0)
+    r = governor.raise_advice(cfg)
+    assert "no profile fits under the ceiling $20.00" in r
+    assert "/governor:budget set <usd>" in r and "/governor:budget ceiling <usd>" in r
+    assert r.endswith("/model opus keeps the context.")
+
+    # 3. the budget equals the ceiling
+    cfg = dict(governor.DEFAULTS, budget_usd=25.0, budget_ceiling_usd=25.0)
+    r = governor.raise_advice(cfg)
+    assert "the budget is at its ceiling $25.00; raise it with /governor:budget ceiling <usd>." in r
+    assert r.endswith("/model opus keeps the context.")
+
+    # 4. no ceiling, no profile above the budget
+    cfg = dict(governor.DEFAULTS, budget_usd=150.0)
+    r = governor.raise_advice(cfg)
+    assert "no profile is above this budget; set a number with /governor:budget set <usd>." in r
+    assert r.endswith("/model opus keeps the context.")
+
+
+def test_readout_names_profile(env):
+    tp = make_session(env["tmp"], main_lines=[])
+    led = ledger_for(tp)
+    cfg25 = dict(governor.DEFAULTS, budget_usd=25.0)
+    assert "of $25.00 (medium)" in led.readout(cfg25)
+    cfg26 = dict(governor.DEFAULTS, budget_usd=26.0)
+    r26 = led.readout(cfg26)
+    assert "of $26.00 (out" in r26 and "(medium)" not in r26
+
+
+def test_user_profiles_merge_over_defaults(env):
+    proj = str(env["project"])
+    (env["tmp"] / "home" / ".claude" / "governor.json").write_text(json.dumps({"budget_profiles": {"medium": 30.0}}))
+    cfg = governor.load_config(proj)
+    assert cfg["budget_profiles"] == {"small": 5.0, "medium": 30.0, "large": 100.0}
+
+
+def test_bad_profile_entries_dropped(env):
+    proj = str(env["project"])
+    (env["tmp"] / "home" / ".claude" / "governor.json").write_text(json.dumps({"budget_profiles": {"small": "x", "medium": 25}}))
+    cfg = governor.load_config(proj)
+    # the default survives: the bad user value for "small" was never applied
+    assert cfg["budget_profiles"]["small"] == 5.0
+    assert cfg["budget_profiles"]["medium"] == 25.0
+    ignored = [n for n in cfg["_ignored"] if "small" in n]
+    assert len(ignored) == 1
+
+
+def test_bad_profile_name_is_truncated_in_the_ignored_note(env):
+    proj = str(env["project"])
+    long_name = "n" * 200
+    (env["tmp"] / "home" / ".claude" / "governor.json").write_text(json.dumps({"budget_profiles": {long_name: "x"}}))
+    cfg = governor.load_config(proj)
+    note = next(n for n in cfg["_ignored"] if "budget_profiles" in n)
+    message = note.split(": ", 1)[1]  # drop the file path, which is test-machine-specific
+    assert len(message) < 200
+
+
 # --------------------------------------------------------------------------- supervised levels (governor.py run-level)
 
 FAKE_CLAUDE = """#!/bin/sh

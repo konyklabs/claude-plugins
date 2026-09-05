@@ -59,6 +59,7 @@ Start `claude` in any project. The governor's SessionStart hook prints its
 policy and a spend line; every turn starts with one line of spend. Then:
 
 ```
+/governor:start <task>    the one entry point: interview, brief, triage, cut, budget profile, plan card
 /governor:budget          spend so far per model and subagent, and the budget
 /governor:triage          sort the task in front of you into tiers
 /governor:explore <q>     a question that is not yet a task: explore mode, then ship, spike or drop
@@ -87,13 +88,14 @@ Everything an agent needs to operate the plugins without reading the code.
 
 | skill | use it when |
 |---|---|
-| `/governor:brief` | a task is about to start and the prompt is a sentence; five questions at most, then `.governor/brief.md` |
+| `/governor:start` | a task arrives as a sentence; one batched question round, brief, tier table, cut, budget profile, one plan card with go / adjust / explore |
+| `/governor:brief` | the interview alone: five questions at most, then `.governor/brief.md` |
 | `/governor:explore` | a question is not yet a task; switches to explore mode, frames it in three lines, and ends in ship, spike or drop |
 | `/governor:triage` | a non-trivial task starts; it writes the tier table before any work |
 | `/governor:delegate` | implementation, test writing or a look-up is about to happen; spec first, worker second, evidence third |
 | `/governor:decompose` | a change touches more than about five files or a branch is too big to review |
 | `/governor:consult` | a session on a cheaper model needs one decision from Fable, with a brief |
-| `/governor:budget` | spend, budget, modes, status line |
+| `/governor:budget` | spend, budget by number or profile, ceiling, modes, status line |
 | `/py-testing:testing-pytest-projects`, `testing-playwright-api`, `testing-playwright-browser`, `testing-sqlalchemy` | writing or fixing tests in that part of the stack |
 | `/py-testing:untangling-test-suites` | a large or unmerged test suite nobody can review |
 | `/prod-readiness:readiness-review` | before a release or a publish; runs the scan, judges the review rows, writes the report |
@@ -123,7 +125,7 @@ is sent back (twice at most).
 
 | command | does |
 |---|---|
-| `governor.py status` / `budget show|set|history` | the ledger and the budget |
+| `governor.py status` / `budget show|set|ceiling|history` | the ledger, the budget by number or profile, the ceiling |
 | `governor.py check-report FILE --contract worker` | the contract check as a command |
 | `governor.py brief check FILE` / `brief template` | the task-brief lint (headings, one-line task, checkable done items, evidence command, procedure) and the format it fills; the brief skill runs both |
 | `governor.py mode [show\|explore\|enforce\|observe] [--user\|--project]` | the mode, per project in the user's file; a project file may only set enforce |
@@ -155,9 +157,10 @@ per-session ledgers, `history.jsonl`, `errors.log`; the scanner writes
 
 ## governor in one minute
 
-- A task starts with `/governor:brief`: at most five questions, then
-  `.governor/brief.md` in one fixed format, linted by a script before it is
-  handed off; the triage that follows works from it.
+- A task starts with `/governor:start`: one batched round of at most four
+  questions, then `.governor/brief.md` in one fixed format, linted by a
+  script, the tier table, the cut when the work is large, a budget profile,
+  and one plan card: go, adjust, or explore instead.
 - A spawn that names no model is pinned to `sonnet` (configurable) instead
   of inheriting Fable; the session's own permission rules still apply. A
   `fork` is denied. A spawn *onto* Fable is allowed only with a brief
@@ -166,7 +169,7 @@ per-session ledgers, `history.jsonl`, `errors.log`; the scanner writes
 - When expensive-tier spend reaches the budget (default 15 USD at API list
   price, subagents included), tool calls are denied with a reason; spawning
   a cheap worker stays allowed. `/model opus` keeps the context and lifts
-  the gate; `/governor:budget set 25` raises it. A budget of 0 is a closed
+  the gate; `/governor:budget set 25` or `set medium` raises it, capped by `budget ceiling`. A budget of 0 is a closed
   gate, never an open one.
 - Three modes. `enforce` (default) as above. `observe` prices everything
   and refuses nothing. `explore`, for a question that is not yet a task:
