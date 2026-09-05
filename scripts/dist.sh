@@ -19,4 +19,4 @@ for p in plugins/*/; do
   fi
   printf '%s  %s  %s\n' "$(shasum -a 256 "$out" | cut -c1-16)" "$(du -h "$out" | cut -f1)" "$out"
 done
-echo "install on any machine, no git needed:  claude --plugin-dir dist/governor.zip --plugin-dir dist/py-testing.zip --plugin-dir dist/prod-readiness.zip"
+echo "install on any machine, no git needed:  claude --plugin-dir dist/supervisor.zip --plugin-dir dist/py-testing.zip --plugin-dir dist/prod-readiness.zip"

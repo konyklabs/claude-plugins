@@ -5,11 +5,11 @@
     "name": "Oleg Konyk",
     "url": "https://olegkonyk.com"
   },
-  "description": "Claude Code plugins for expensive-model sessions on a budget: the governor harness, and domain skills for Python test engineering.",
+  "description": "Claude Code plugins for expensive-model sessions on a budget: the supervisor harness, and domain skills for Python test engineering.",
   "plugins": [
     {
-      "name": "governor",
-      "source": "./plugins/governor",
+      "name": "supervisor",
+      "source": "./plugins/supervisor",
       "description": "Token guardrails for sessions on Fable-tier models: writes the task brief from a short interview, pins spawns to cheap workers, denies forks, requires a brief for expensive spawns, prices a per-session budget from the transcript, and holds workers to an evidence contract.",
       "category": "productivity"
     },

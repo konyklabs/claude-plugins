@@ -1,6 +1,6 @@
 {
   "name": "py-testing",
-  "version": "1.6.0",
+  "version": "2.0.0",
   "description": "Python test engineering: pytest project structure, Playwright API and browser tests, SQLAlchemy test fixtures, and the workflow for untangling a large unmerged test suite into slices cheap workers can implement.",
   "author": {
     "name": "Oleg Konyk",

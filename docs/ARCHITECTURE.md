@@ -31,16 +31,16 @@ here, from the hook events that do exist.
 
 ## Two plugins, not one
 
-`governor` is generic: it knows about models, spend and contracts, nothing
+`supervisor` is generic: it knows about models, spend and contracts, nothing
 about Python. `py-testing` is a domain: it knows about pytest, Playwright and
-SQLAlchemy, and reuses the governor's report contract for its worker. The
+SQLAlchemy, and reuses the supervisor's report contract for its worker. The
 next domain (TypeScript, a framework, a vendor API) becomes a third plugin
-beside `py-testing` without touching the governor. Each installs on its own.
+beside `py-testing` without touching the supervisor. Each installs on its own.
 
-## governor: what is enforced, and how
+## supervisor: what is enforced, and how
 
 Everything below is a hook in `hooks/hooks.json` calling one stdlib Python
-file, `bin/governor.py`, with the hook's JSON on stdin. Python because the
+file, `bin/supervisor.py`, with the hook's JSON on stdin. Python because the
 decisions need JSON, regexes and a small state file, and because a bash
 implementation of the same logic would not be testable. Stdlib only so the
 plugin has no install step.
@@ -56,18 +56,18 @@ plugin has no install step.
 | Session history | `SessionEnd` | append to `history.jsonl` | unit tests |
 
 Agent definitions carry `model:` and `effort:`; both fields are documented
-and effort was verified in a real session (`governor:implementer` ran on
+and effort was verified in a real session (`supervisor:implementer` ran on
 `claude-sonnet-5` at `medium` while the session default was `xhigh`).
 
 ### Configuration is tighten-only from a project
 
-Three files: the user's `~/.claude/governor.json` (with per-project entries
-under `projects`), the project's `.claude/governor.json`, and
-`$GOVERNOR_CONFIG`. A project file may only tighten the guardrail keys
+Three files: the user's `~/.claude/supervisor.json` (with per-project entries
+under `projects`), the project's `.claude/supervisor.json`, and
+`$SUPERVISOR_CONFIG`. A project file may only tighten the guardrail keys
 (lower the budget, forbid forks, add expensive models, keep enforcement
 on); a loosening is ignored and reported in the readout and in
 `budget show`. The reason is the obvious attack: a cloned repository ships
-a config that turns the governor off for whoever opens it. Every value is
+a config that turns the supervisor off for whoever opens it. Every value is
 type-checked, and a bad value falls back to the previous one rather than
 crashing the hook into silence. `mode: observe` and `readout: off` exist for
 tracking without interference and are user-level decisions for the same
@@ -99,9 +99,9 @@ closed, because a broken guardrail must not lock the user out of their own
 session. Errors go to `errors.log` in the state dir.
 
 State lives in `${CLAUDE_PLUGIN_DATA}` (survives plugin updates; documented),
-passed as `--state-dir` from `hooks.json`, with `~/.cache/governor` as the
+passed as `--state-dir` from `hooks.json`, with `~/.cache/supervisor` as the
 fallback. Verified: a `--plugin-dir` session wrote to
-`~/.claude/plugins/data/governor-inline/`.
+`~/.claude/plugins/data/supervisor-inline/`.
 
 ### Prices
 
@@ -125,12 +125,12 @@ policy arrives through the SessionStart hook as context, and it is short.
 ### The brief: interview, then lint
 
 The flow above is only as good as the brief it starts from, and a
-one-sentence prompt is not a brief. `/governor:brief` closes the gap in one
+one-sentence prompt is not a brief. `/supervisor:brief` closes the gap in one
 turn: at most five structured questions (`AskUserQuestion`, one round at a
-time, the recommended option first), then `.governor/brief.md` in the one
+time, the recommended option first), then `.supervisor/brief.md` in the one
 format the rest of the flow reads (`skills/brief/references/brief-template.md`:
 task, definition of done, evidence command, out of scope, decisions already
-made, assumptions, procedure), then `governor.py brief check` on the file.
+made, assumptions, procedure), then `supervisor.py brief check` on the file.
 
 Design choices, each with its reason:
 
@@ -154,7 +154,7 @@ Design choices, each with its reason:
   "zero", "listed"); no vague words ("better", "properly", "as needed") in
   the task or the done items; at least one `$` command under `## Evidence`,
   the same contract the worker report uses; a procedure that runs
-  `/governor:triage` and never names `general-purpose` (pinned to Sonnet but
+  `/supervisor:triage` and never names `general-purpose` (pinned to Sonnet but
   inheriting the session's effort, observed 2026-09-02); and the same
   8000-character cap as the consult brief. The template does not pass its
   own check, so an unfilled brief cannot be handed off.
@@ -169,14 +169,14 @@ worker; the user reads the printed brief for the rest.
 - **Fable conducts.** The session is Fable; the hooks stop it from doing the
   cheap work. Right for design sessions where the value is in the thinking
   and the tool output is small.
-- **Fable consults.** The session is Opus or Sonnet; `governor:architect` is
+- **Fable consults.** The session is Opus or Sonnet; `supervisor:architect` is
   Fable with `Read`, `Grep`, `Glob` and a brief. Right for long
   implementation runs. This is the cheaper mode by construction: the
   expensive model sees a brief instead of a transcript. The `consult` skill
   and the brief enforcement exist for it.
 
 For unattended runs, Claude Code's own `--max-budget-usd` (print mode only,
-documented) is the hard cap; the governor's gate is the interactive
+documented) is the hard cap; the supervisor's gate is the interactive
 equivalent and the ledger works in both. In the consult mode the gate still
 binds: the architect's own spend is expensive-tier spend, and its tool calls
 are gated on its own model, so a runaway consult closes on itself.
@@ -189,10 +189,10 @@ produces), and turns the budget gate into a checkpoint: at the number the
 hook denies exactly one tool call, with "ship, spike or drop" in the reason,
 sets `explore_checkpoint` in the ledger, and does not deny again. A wall had
 blocked its own escape hatch in the field; a checkpoint hands the decision to
-the human and gets out of the way. `governor.py mode` writes the mode the
+the human and gets out of the way. `supervisor.py mode` writes the mode the
 way `budget set` writes a budget: per project in the user's file, or at the
-user's top level; a project file may only set `enforce`. `/governor:explore`
-frames the question and routes the exit; `/governor:brief` switches back to
+user's top level; a project file may only set `enforce`. `/supervisor:explore`
+frames the question and routes the exit; `/supervisor:brief` switches back to
 `enforce` as its first step, because a brief is the first durable act.
 
 ### Supervised headless workers
@@ -205,7 +205,7 @@ events; fan-out is documented as a loop over `claude -p` with
 passes lightweight references back to the orchestrator and resumes from
 checkpoints rather than restarting. `run-level` is that shape in one
 command: one `run-worker` per slice of a plan level, in its own worktree
-(`.governor/wt/<plan>/<id>`, branch `<plan>/<id>`; namespaced by plan so two
+(`.supervisor/wt/<plan>/<id>`, branch `<plan>/<id>`; namespaced by plan so two
 plans that reuse a slice id never share a checkout, and an existing directory
 is reused only when it is on that branch), at most `LEVEL_PARALLEL` at
 once, up to `LEVEL_RETRIES` outer retries with doubling backoff when the
@@ -219,11 +219,11 @@ under and marked `cost_assumed`, except a transient death, which happens
 before the work and is charged nothing so it can be retried; the allowance
 and the cap are per invocation,
 the index keeps the cumulative count. Every attempt updates the index under
-`.governor/runs/<plan>/level-N.json` and writes its own report file; a rerun
+`.supervisor/runs/<plan>/level-N.json` and writes its own report file; a rerun
 skips a DONE slice only while the digest of its spec is unchanged, and `runs`
 prints the table, naming an unreadable index rather than hiding it. An
 exception inside one slice fails that slice and the level goes on. The first
-worktree add appends `.governor/` to the repository's `.git/info/exclude`,
+worktree add appends `.supervisor/` to the repository's `.git/info/exclude`,
 so the checkouts never appear as untracked content in the parent. The worker runs with `--output-format json`, so
 cost and session id are recorded per slice and a PARTIAL worker can be
 continued with `run-worker --resume <session>`. Not `--bare`: bare mode
@@ -251,7 +251,7 @@ catches the common wordings, not every phrasing), has more than six done
 items or five files, or asks the worker to find a value is warned about, by `spec check` itself and by `run-worker` and
 `run-level` before they spawn. Headless workers are their own sessions, so
 the ledger never sees them; `worker_spend` sums the run indexes under
-`.governor/runs`; the readout and the status line show it as `workers $`,
+`.supervisor/runs`; the readout and the status line show it as `workers $`,
 and `status` as a `Headless workers` line. `run-level --setup` runs one command in each new worktree,
 because a worker without the project's environment fights the editor's
 type checker instead of doing the slice.
@@ -268,7 +268,7 @@ for `effort`. The `SubagentStop` report-contract send-back, by contrast, is
 not where the spend goes: 3 in total.
 
 Two changes follow from those numbers. A bare `general-purpose` spawn now
-routes to a new agent, `governor:worker` (Sonnet, medium effort, every tool,
+routes to a new agent, `supervisor:worker` (Sonnet, medium effort, every tool,
 no report contract), closing the effort gap the 61 workers above show for a
 spawn that carries no spec to hold a report contract against. And a worker's
 death is now read by the hook and reported to the conductor in the same
@@ -277,12 +277,12 @@ the same spec), a usage-limit death is a switch-tier signal (the hook denies
 further spawns onto that model for the rest of the session). No hook runs
 on a background task notification, so a death that arrives that way is
 covered by the policy text instead: the conductor treats the same phrase,
-"Agent terminated early due to an API error", the same way. `governor.py
+"Agent terminated early due to an API error", the same way. `supervisor.py
 status` lists the dead workers.
 
 Field-verified 2026-09-04 on Claude Code 2.1.260: a `PreToolUse`
 `updatedInput.subagent_type` rewrite is honoured — a `general-purpose` spawn
-ran as `governor:scout` on Haiku, shown by both `subagent_stats.by_type` and
+ran as `supervisor:scout` on Haiku, shown by both `subagent_stats.by_type` and
 the subagent's own transcript.
 
 The advice goes out on both channels a PostToolUse hook has: `hookSpecificOutput.additionalContext`, which the hooks reference describes as "added to Claude's context alongside the tool result" (checked 2026-09-04), and `systemMessage`, which is shown to the person. The first review round of this change had it on `systemMessage` alone, which the model never reads.
@@ -318,11 +318,11 @@ a first cut of slices with one command each).
 
 `test-implementer` preloads the four stack skills so a Sonnet worker knows
 the recipes without the conductor explaining them, and it is held to the
-governor's report contract by the same hook.
+supervisor's report contract by the same hook.
 
 ## prod-readiness: the same shape, applied to security
 
-The third plugin follows the governor's economics. The expensive part of a
+The third plugin follows the supervisor's economics. The expensive part of a
 security review is reading code, so `readiness.py` reads it once and emits
 a table: nineteen checks, each `pass`, `fail`, `review` or `skip`, with
 `path:line` and a rule name and never the matched text. A Sonnet `scanner`
@@ -344,14 +344,14 @@ dependency audit still passes.
 
 ## What was verified in the field, and what was not
 
-Captured with `GOVERNOR_DEBUG=1` (the engine appends every raw hook input to
+Captured with `SUPERVISOR_DEBUG=1` (the engine appends every raw hook input to
 `hook-inputs.jsonl` in the state dir) on 2.1.258:
 
 - `transcript_path` is always the session transcript, also on events fired
   inside a subagent; the subagent's own file arrives only as
   `agent_transcript_path` on `SubagentStop`. The engine maps either form to
   the session file regardless.
-- `agent_type` for a plugin agent is namespaced: `governor:scout`. The
+- `agent_type` for a plugin agent is namespaced: `supervisor:scout`. The
   contract lookup strips the prefix.
 - `SubagentStop` carries `last_assistant_message` and `stop_hook_active`;
   the engine prefers the message over re-reading the transcript.
@@ -359,9 +359,9 @@ Captured with `GOVERNOR_DEBUG=1` (the engine appends every raw hook input to
   docs list them. The engine takes both from the transcript instead
   (`effort` is recorded on each assistant line; `message.model` on each
   message) and only uses the hook fields when present.
-- A `governor:scout` report in a real session met its contract
+- A `supervisor:scout` report in a real session met its contract
   (`## Findings` with path:line) and passed `SubagentStop` without a block; a
-  `governor:implementer` report met the worker contract the same way.
+  `supervisor:implementer` report met the worker contract the same way.
 - `agent_id` in hook input equals the suffix of the subagent's transcript
   filename (`agent-<id>.jsonl`), which the budget gate relies on to look up
   a worker's own model.
@@ -408,10 +408,10 @@ Not verified:
   records what it did.
 - **Bash hooks.** Not testable at the granularity the budget and contract
   logic needs.
-- **One plugin.** Would couple the Python skills to the governor's release
+- **One plugin.** Would couple the Python skills to the supervisor's release
   cadence and make the next domain a fork instead of a sibling.
 - **Enforcing the report contract on every agent.** Foreign agents (org
   roles, project agents) have their own contracts. Plugin agents arrive
-  namespaced (`governor:scout`, verified) and are governed when their
+  namespaced (`supervisor:scout`, verified) and are governed when their
   namespace is in `contract_namespaces`; a bare agent type is a project or
   user agent and is governed only if listed in `govern_bare_agents`.
