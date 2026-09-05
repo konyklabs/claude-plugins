@@ -10,6 +10,7 @@ step that can be a script is a script.
 | **supervisor** | Guardrails in code for Fable-tier sessions: spawns are pinned to cheap workers (a bare one to its own `worker` agent), forks are denied, an expensive spawn needs a written brief, a priced per-session budget is enforced from the transcript, workers cannot stop without evidence, and a dead worker is named with what to do about it — retry once, or switch tier. Agents with pinned model and effort, skills for triage, delegation, decomposition and consultation, a ledger, a status line, and headless worker runs under a hard dollar cap. | `supervisor@konyklabs-plugins` |
 | **py-testing** | Python test engineering: pytest project layout, Playwright API and browser tests, SQLAlchemy test fixtures, and the workflow for untangling a large unmerged test suite, with a deterministic inventory script and a Sonnet worker that has the stack skills preloaded. | `py-testing@konyklabs-plugins` |
 | **prod-readiness** | Production-readiness and security scanning for API sample apps and developer portals: one deterministic scan emits a categorized report, external scanners are summarized to counts and never installed, an Opus auditor judges only the rows that need judgment. Twenty-five check classes from a real hardening pass, nineteen settled by the scanner. | `prod-readiness@konyklabs-plugins` |
+| **signoff** | Reconciles an application's end-to-end coverage against what it does: explore, mine, tile, fill, report, human-readable test cases. Tiling coverage, recording test cases and the sign-off report are built and script-driven; explore and mine have no agent yet, so nothing yet writes `.qa/map.json` or `.qa/rules.json` on its own. | `signoff@konyklabs-plugins` |
 
 Requirements: Claude Code 2.1.255 or later, `python3` 3.9 or later on PATH.
 Nothing else: no pip, no npm, no network calls, no installs at run time
@@ -120,6 +121,10 @@ Everything an agent needs to operate the plugins without reading the code.
 | `/py-testing:untangling-test-suites` | a large or unmerged test suite nobody can review |
 | `/prod-readiness:readiness-review` | before a release or a publish; runs the scan, judges the review rows, writes the report |
 | `/prod-readiness:security-scanning`, `hardening-checks` | the detail, fix and false-positive note for one row of the scan |
+| `/signoff:exploring-app` | validating `.qa/map.json` against the id and file formats before anything downstream trusts it |
+| `/signoff:tiling-coverage` | building or refreshing `.qa/tiles.json` once the map and the mined rules exist, or on every later cycle |
+| `/signoff:recording-test-cases` | writing a case to close a coverage gap, before a commit that touches `testcases/`, or exporting cases to Azure, Gherkin or Markdown |
+| `/signoff:signoff-report` | writing `testcases/coverage.md` and the coverage section of a pull request |
 
 **Agents** (spawn by `subagent_type`; never pass `model`, the definition pins it):
 
@@ -266,6 +271,7 @@ once the feature is enabled for the account.
 plugins/supervisor/                      bin/supervisor.py, hooks/hooks.json, agents/, skills/, tests/, evals/
 plugins/py-testing/                    skills/ (5, with references and scripts/inventory.py), agents/, tests/, evals/
 plugins/prod-readiness/                skills/ (3, with references and scripts/readiness.py), agents/, tests/, evals/
+plugins/signoff/                       formats.md, skills/ (4: exploring-app, tiling-coverage, recording-test-cases, signoff-report), tests/, evals/; no agents yet
 scripts/                               validate.sh, audit-deps.sh, dist.sh
 docs/                                  ARCHITECTURE.md, COST-TRACKING.md, PLAYBOOK.md
 .github/workflows/                     validate (manifests, audit, hooks on 3.9 and 3.13) plus the org callers
@@ -274,4 +280,8 @@ docs/                                  ARCHITECTURE.md, COST-TRACKING.md, PLAYBO
 ## Status
 
 0.1.0, the first set. Driving tasks: konyklabs/roadmap#60 (supervisor,
-py-testing) and #61 (prod-readiness, deterministic helpers).
+py-testing) and #61 (prod-readiness, deterministic helpers). `signoff` build
+A — the tile, cases and report scripts and skills, no agents — is in,
+driven by konyklabs/roadmap#120; build B (the explore and mine agents) and
+build C (filling the gaps through workers, with a TypeScript Playwright
+skill) follow, #121 and #122.

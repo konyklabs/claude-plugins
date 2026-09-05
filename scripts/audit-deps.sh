@@ -9,7 +9,7 @@ import ast, sys, pathlib
 files = sorted(p for p in pathlib.Path("plugins").rglob("*.py") if "tests" not in p.parts)
 stdlib = getattr(sys, "stdlib_module_names", None)
 if stdlib is None:  # Python < 3.10: a conservative allowlist of what the plugins use
-    stdlib = {"argparse", "ast", "configparser", "collections", "fcntl", "fnmatch", "json", "math", "os", "pathlib", "re",
+    stdlib = {"argparse", "ast", "configparser", "collections", "csv", "fcntl", "fnmatch", "json", "math", "os", "pathlib", "re",
               "shutil", "subprocess", "sys", "tarfile", "tempfile", "time", "typing", "zipfile", "__future__", "hashlib", "threading", "concurrent"}
 bad = []
 for f in files:

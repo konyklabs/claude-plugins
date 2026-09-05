@@ -19,6 +19,11 @@
           "type": "json",
           "path": "plugins/prod-readiness/.claude-plugin/plugin.json",
           "jsonpath": "$.version"
+        },
+        {
+          "type": "json",
+          "path": "plugins/signoff/.claude-plugin/plugin.json",
+          "jsonpath": "$.version"
         }
       ]
     }

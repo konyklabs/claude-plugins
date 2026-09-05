@@ -342,6 +342,58 @@ run covers what mattered most. External scanners run only if already on
 PATH and are summarized to counts; the plugin installs nothing and the
 dependency audit still passes.
 
+## signoff: reconciling coverage against what the app does
+
+The seam is a Playwright JSON report on one side — `--list --reporter=json`
+for what the suite claims to test, a run's `--reporter=json` for what
+passed — and a `@tile:` claim on the other: a tag in a test's title, a
+`tag:` list entry, or a static `{type: "tile", description: "<id>"}`
+annotation passed to `test()`. Each claim is matched to a tile: a mined
+rule, a screen rendered for a role, or an error state. `plugins/signoff/formats.md`
+is the one home for every id and file format the plugin reads or writes,
+decided in konyklabs/roadmap D-009; nothing else restates it.
+
+Two artifact homes, not one. `.qa/*.json` (`map.json`, `routes.json`,
+`rules.json`, `tests.json`, `tiles.json`) is working state a script writes
+and reads and a person never hand-edits, gitignored the way `.readiness/`
+is. `testcases/` is durable, human-authored Markdown, committed the way
+source is. The tile is the unit the whole plugin reconciles on: the map,
+the mined rules and the listed tests each reduce to tile ids upstream, and
+a case, a coverage row and a gap each name one downstream.
+
+Field-tested against Playwright 1.5.x (`plugins/signoff/tests/fixtures/playwright-list.json`
+and `playwright-run.json`, captured 2026-09-04): `--list --reporter=json`
+emits the run report's shape with every test `skipped` and `results: []`;
+`tags` carry no leading `@` (`tile:auth.sign-in.valid-password`, not
+`@tile:...`), so a tag matched from `tag:` has to be compared without the
+`@` while a tag given in the test's title keeps it, because it never leaves
+the title string; `file` is relative to `config.rootDir`, not to the
+working directory or the config file's own location; an annotation pushed
+at run time (`test.info().annotations.push`) appears only in a run report,
+never in a list, so a claim that must be visible before any test has run
+has to be a tag or a static annotation, never a runtime one.
+
+Test cases are Markdown, not YAML: the standard library carries no YAML
+parser and this plugin adds no dependency to get one, so the fixed skeleton
+in `formats.md` is read line by line instead of parsed as structured data.
+
+### What is not yet built
+
+`tiling-coverage` (`tests.py`, `tile.py`), `recording-test-cases`
+(`cases.py`) and `signoff-report` (`report.py`) are deterministic scripts
+with no judgment call in them, and are fully built — this is signoff build
+A, konyklabs/roadmap#120. Three things are not: nothing writes
+`.qa/map.json` (`exploring-app`'s `mapcheck.py` validates a map, it does not
+produce one), nothing writes `.qa/rules.json` (there is no `mine` skill
+directory at all yet, not even a placeholder), and nothing writes test-case
+prose from a tile on its own (`recording-test-cases` lints and exports
+cases the conductor wrote from a tile). Explore and mine are one build
+(build B, konyklabs/roadmap#121). Filling the gaps is the next (build C,
+konyklabs/roadmap#122): a spec per uncovered tile handed to a cheap worker
+under the supervisor's delegate flow, a TypeScript Playwright skill so the
+worker is competent on either stack, and the new test tagged with its tile;
+the cases stay with the conductor. The plugin carries no agents yet.
+
 ## What was verified in the field, and what was not
 
 Captured with `SUPERVISOR_DEBUG=1` (the engine appends every raw hook input to

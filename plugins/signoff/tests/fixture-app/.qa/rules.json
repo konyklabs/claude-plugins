@@ -1,0 +1,105 @@
+{
+  "mined_at": "2026-09-04T12:10:00Z",
+  "rules": [
+    {
+      "id": "auth.sign-in.valid-password",
+      "area": "auth",
+      "flow": "auth.sign-in",
+      "kind": "transition",
+      "risk": "high",
+      "statement": "A valid email and password sign the user in and land on the organisation home page",
+      "source": "tests/fixture-app/app.py:128",
+      "screens": ["auth.login", "org.home"]
+    },
+    {
+      "id": "auth.sign-in.wrong-password",
+      "area": "auth",
+      "flow": "auth.sign-in",
+      "kind": "error",
+      "risk": "medium",
+      "statement": "An unknown email or a wrong password re-shows the sign-in form with an error, without a session",
+      "source": "tests/fixture-app/app.py:123",
+      "screens": ["auth.login"]
+    },
+    {
+      "id": "auth.sign-out.clears-session",
+      "area": "auth",
+      "flow": "auth.sign-out",
+      "kind": "transition",
+      "risk": "medium",
+      "statement": "Signing out clears the session token and returns to the sign-in page",
+      "source": "tests/fixture-app/app.py:136",
+      "screens": ["org.home", "auth.login"]
+    },
+    {
+      "id": "auth.session.required-for-app",
+      "area": "auth",
+      "flow": "auth.sign-in",
+      "kind": "guard",
+      "risk": "high",
+      "statement": "Every screen except the sign-in form and the public docs redirects an unauthenticated visitor to sign in",
+      "source": "tests/fixture-app/app.py:91",
+      "screens": ["org.home", "org.members", "credentials.list", "credentials.new", "admin.settings"]
+    },
+    {
+      "id": "org.members.remove.requires-admin",
+      "area": "org",
+      "flow": "org.members.remove",
+      "kind": "guard",
+      "risk": "high",
+      "statement": "Only an admin may remove a member; a member gets a forbidden page",
+      "source": "tests/fixture-app/app.py:168",
+      "screens": ["org.members"]
+    },
+    {
+      "id": "credentials.create.name-validation",
+      "area": "credentials",
+      "flow": "credentials.create",
+      "kind": "validation",
+      "risk": "medium",
+      "statement": "A credential name must be 3 to 40 letters, digits or dashes; an invalid name re-shows the form with an error",
+      "source": "tests/fixture-app/app.py:226",
+      "screens": ["credentials.new"]
+    },
+    {
+      "id": "credentials.create.shows-secret-once",
+      "area": "credentials",
+      "flow": "credentials.create",
+      "kind": "transition",
+      "risk": "high",
+      "statement": "A valid credential name creates the credential and shows its secret exactly once, then the list",
+      "source": "tests/fixture-app/app.py:235",
+      "screens": ["credentials.new", "credentials.list"]
+    },
+    {
+      "id": "credentials.revoke.requires-owner-or-admin",
+      "area": "credentials",
+      "flow": "credentials.revoke",
+      "kind": "guard",
+      "risk": "high",
+      "statement": "Only the credential's owner or an admin may revoke it; anyone else gets a forbidden page",
+      "source": "tests/fixture-app/app.py:250",
+      "screens": ["credentials.list"]
+    },
+    {
+      "id": "docs.home.public",
+      "area": "docs",
+      "flow": "docs.read",
+      "kind": "guard",
+      "risk": "low",
+      "statement": "The docs page is reachable without a session, unlike every other screen but sign-in",
+      "source": "tests/fixture-app/app.py:263",
+      "screens": ["docs.home"]
+    },
+    {
+      "id": "admin.settings.requires-admin",
+      "area": "admin",
+      "flow": "admin.settings",
+      "kind": "guard",
+      "risk": "high",
+      "statement": "Only an admin may open the admin settings page; a member gets a forbidden page",
+      "source": "tests/fixture-app/app.py:271",
+      "screens": ["admin.settings"]
+    }
+  ]
+}

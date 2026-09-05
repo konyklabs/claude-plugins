@@ -1,0 +1,19 @@
+{
+  "name": "signoff",
+  "version": "2.0.0",
+  "description": "Reconciles an application's end-to-end coverage against what it does: explore, mine, tile, fill, report, human-readable test cases.",
+  "author": {
+    "name": "Oleg Konyk",
+    "url": "https://olegkonyk.com"
+  },
+  "homepage": "https://github.com/konyklabs/claude-plugins",
+  "repository": "https://github.com/konyklabs/claude-plugins",
+  "license": "MIT",
+  "keywords": [
+    "playwright",
+    "coverage",
+    "test-cases",
+    "e2e",
+    "signoff"
+  ]
+}
