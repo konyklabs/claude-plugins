@@ -50,18 +50,20 @@ until `version` in its `plugin.json` changes, so use `--plugin-dir` while
 developing.
 
 Verify: `claude plugin list` shows the three as enabled; `claude plugin
-details supervisor` shows 7 skills, 6 agents, 6 hooks and about 1,500
+details supervisor` shows 10 skills, 6 agents, 6 hooks and about 1,500
 always-on tokens per session.
 
 ## Upgrading from 1.x (the plugin was called governor)
 
 The plugin, its namespace, its script, its config file, its env vars and
 its work directory are all `supervisor` now, and a session starts dormant.
-Once, after updating:
+Once, after updating the marketplace:
 
 ```
+claude plugin uninstall governor@konyklabs-plugins && claude plugin install supervisor@konyklabs-plugins
 mv ~/.claude/governor.json ~/.claude/supervisor.json          # or let the first `budget set` / `mode` write rename it
 mv ~/.claude/plugins/data/governor-konyklabs-plugins ~/.claude/plugins/data/supervisor-konyklabs-plugins   # keeps the spend history
+[ -d ~/.cache/governor ] && mv ~/.cache/governor ~/.cache/supervisor                                        # only if you ran the script outside a plugin
 ```
 
 `GOVERNOR_STATE_DIR`, `GOVERNOR_CONFIG` and `GOVERNOR_DEBUG` became
@@ -70,11 +72,13 @@ session with `/supervisor:start <task>` or `/supervisor:on`.
 
 ## First session
 
-Start `claude` in any project. The supervisor's SessionStart hook prints its
-policy and a spend line; every turn starts with one line of spend. Then:
+Start `claude` in any project. The supervisor's SessionStart hook prints one
+line: it is installed and dormant, and how to arm it. Nothing is pinned,
+denied or injected until you do. Then:
 
 ```
-/supervisor:start <task>    the one entry point: interview, brief, triage, cut, budget profile, plan card
+/supervisor:start <task>    the one entry point: arms the session, then interview, brief, triage, cut, budget profile, plan card
+/supervisor:on              arm the session without a brief; /supervisor:off stands it down
 /supervisor:budget          spend so far per model and subagent, and the budget
 /supervisor:triage          sort the task in front of you into tiers
 /supervisor:explore <q>     a question that is not yet a task: explore mode, then ship, spike or drop
@@ -104,6 +108,7 @@ Everything an agent needs to operate the plugins without reading the code.
 | skill | use it when |
 |---|---|
 | `/supervisor:start` | a task arrives as a sentence; one batched question round, brief, tier table, cut, budget profile, one plan card with go / adjust / explore |
+| `/supervisor:on` | you want the guardrails now, without a brief; `/supervisor:off` stands the session down |
 | `/supervisor:brief` | the interview alone: five questions at most, then `.supervisor/brief.md` |
 | `/supervisor:explore` | a question is not yet a task; switches to explore mode, frames it in three lines, and ends in ship, spike or drop |
 | `/supervisor:triage` | a non-trivial task starts; it writes the tier table before any work |

@@ -47,7 +47,12 @@ budget you set is one you have measured.
 Guardrails on, the policy injected once at session start, no per-turn
 line. The status line carries the spend.
 
-**Enforce** (default): guardrails on, one spend line per turn.
+**Off** (default): dormant. Spend is tracked; nothing is pinned, denied or
+injected until the session is armed with `/supervisor:start`, `/supervisor:on`
+or `/supervisor:explore`.
+
+**Enforce**: guardrails on, one spend line per turn. What an armed session
+runs in, and what a project file can make the default.
 
 A project's `.claude/supervisor.json` may only tighten these settings; a
 repository you clone cannot switch the supervisor to observe or raise your

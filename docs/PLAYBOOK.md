@@ -19,10 +19,10 @@ The rest is skills. They do not fire on their own; you name them in the brief an
 
 ```
 claude plugin list                 # supervisor, py-testing, prod-readiness: enabled
-claude plugin details supervisor     # 7 skills, 6 agents, 6 hooks
+claude plugin details supervisor     # 10 skills, 6 agents, 6 hooks
 ```
 
-Optional, in `~/.claude/supervisor.json`. Leave it out and the defaults apply: enforce mode, 15 USD budget, a one-line spend readout per turn.
+Optional, in `~/.claude/supervisor.json`. Leave it out and the defaults apply: dormant until you arm the session, then a 15 USD budget and a one-line spend readout per turn.
 
 A higher default budget for every project:
 

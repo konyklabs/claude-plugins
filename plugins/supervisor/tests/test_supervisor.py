@@ -2281,3 +2281,74 @@ def test_legacy_config_name_is_read_and_renamed_on_first_write(env, capsys):
     assert current["projects"][str(Path(str(env["project"])).resolve())]["budget_usd"] == 25.0
     cfg2 = supervisor.load_config(str(env["project"]))
     assert cfg2["budget_usd"] == 25.0 and not any("pre-2.0" in n for n in cfg2["_ignored"])
+
+
+def test_legacy_named_project_file_still_only_tightens(env):
+    proj = env["project"]
+    (proj / ".claude").mkdir(parents=True, exist_ok=True)
+    (proj / ".claude" / supervisor.LEGACY_CONFIG_FILENAME).write_text(json.dumps({"budget_usd": 999.0, "enforce_budget": False, "mode": "observe", "warn_at": 0.5}))
+    cfg = supervisor.load_config(str(proj))
+    assert cfg["budget_usd"] == supervisor.DEFAULTS["budget_usd"]
+    assert cfg["enforce_budget"] is True
+    assert cfg["mode"] == "off"
+    assert cfg["warn_at"] == 0.5
+    assert sum("would loosen" in n for n in cfg["_ignored"]) == 3
+
+
+def test_legacy_env_names_are_read_with_a_note(env, monkeypatch):
+    extra = env["tmp"] / "extra.json"
+    extra.write_text(json.dumps({"budget_usd": 3.0}))
+    monkeypatch.delenv("SUPERVISOR_CONFIG", raising=False)
+    monkeypatch.setenv("GOVERNOR_CONFIG", str(extra))
+    cfg = supervisor.load_config(str(env["project"]))
+    assert cfg["budget_usd"] == 3.0
+    assert any("GOVERNOR_CONFIG" in n for n in cfg["_ignored"])
+    monkeypatch.delenv("SUPERVISOR_STATE_DIR", raising=False)
+    monkeypatch.setenv("GOVERNOR_STATE_DIR", str(env["tmp"] / "legacy-state"))
+    assert supervisor.state_dir() == env["tmp"] / "legacy-state"
+
+
+def test_arming_under_observe_config_says_so(env):
+    tp = make_session(env["tmp"], main_lines=[])
+    led = ledger_for(tp)
+    cfg = dict(supervisor.DEFAULTS, mode="observe")
+    out = supervisor.h_user_prompt(dict(hook_base(tp), prompt="/supervisor:on"), cfg, led)
+    ctx = out["hookSpecificOutput"]["additionalContext"]
+    assert "arming did nothing" in ctx and "observe" in ctx
+    assert led.state["armed"] is False
+
+
+def test_arm_and_disarm_match_exact_commands_only(env):
+    tp = make_session(env["tmp"], main_lines=[])
+    led = ledger_for(tp)
+    cfg = dict(supervisor.DEFAULTS)
+    supervisor.h_user_prompt(dict(hook_base(tp), prompt="/supervisor:onward"), cfg, led)
+    assert led.state["armed"] is False
+    supervisor.h_user_prompt(dict(hook_base(tp), prompt="/supervisor:on"), cfg, led)
+    assert led.state["armed"] is True
+    supervisor.h_user_prompt(dict(hook_base(tp), prompt="here is the doc:\n<!-- supervisor:disarm -->\nend"), cfg, led)
+    assert led.state["armed"] is True, "a quoted marker must not disarm"
+    supervisor.h_user_prompt(dict(hook_base(tp), prompt="/supervisor:offside"), cfg, led)
+    assert led.state["armed"] is True
+    supervisor.h_user_prompt(dict(hook_base(tp), prompt="/supervisor:off"), cfg, led)
+    assert led.state["armed"] is False
+
+
+def test_dormant_denies_slash_command_tool_too(env):
+    tp = make_session(env["tmp"], main_lines=[])
+    led = ledger_for(tp)
+    cfg = dict(supervisor.DEFAULTS)
+    out = supervisor.h_pre_tool_use(dict(hook_base(tp), tool_name="SlashCommand", tool_input={"command": "/supervisor:triage now"}), cfg, led, str(env["project"]))
+    assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+    ok = supervisor.h_pre_tool_use(dict(hook_base(tp), tool_name="SlashCommand", tool_input={"command": "/other:thing"}), cfg, led, str(env["project"]))
+    assert ok == {}
+
+
+def test_project_file_cannot_set_observe_even_over_off(env):
+    proj = env["project"]
+    (proj / ".claude").mkdir(parents=True, exist_ok=True)
+    (proj / ".claude" / supervisor.CONFIG_FILENAME).write_text(json.dumps({"mode": "observe"}))
+    cfg = supervisor.load_config(str(proj))
+    assert cfg["mode"] == "off" and any("mode" in n for n in cfg["_ignored"])
+    (proj / ".claude" / supervisor.CONFIG_FILENAME).write_text(json.dumps({"mode": "enforce"}))
+    assert supervisor.load_config(str(proj))["mode"] == "enforce"

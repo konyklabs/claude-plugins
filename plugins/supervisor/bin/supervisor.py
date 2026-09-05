@@ -183,8 +183,9 @@ def config_paths(project_dir: Optional[str]) -> List[Path]:
     paths = [_config_file(Path.home() / ".claude")]
     if project_dir:
         paths.append(_config_file(Path(project_dir) / ".claude"))
-    if os.environ.get("SUPERVISOR_CONFIG"):
-        paths.append(Path(os.environ["SUPERVISOR_CONFIG"]))
+    extra = os.environ.get("SUPERVISOR_CONFIG") or os.environ.get("GOVERNOR_CONFIG")
+    if extra:
+        paths.append(Path(extra))
     return paths
 
 
@@ -212,7 +213,10 @@ def _would_loosen(key: str, new: Any, cur: Any) -> bool:
     if rule == "superset":
         return not set(cur) <= set(new)
     if rule == "enforce":
-        return new != "enforce" and cur == "enforce"
+        # A project may only make a session stricter: enforce is the one
+        # value it may set. With off as the default, "not looser than cur"
+        # would let a repository pick observe or explore.
+        return new != "enforce"
     if rule == "profiles-lower":
         # A project may lower an existing profile; adding a name or raising a
         # value is loosening and is ignored with a note. Dropping a profile
@@ -238,7 +242,7 @@ def load_config(project_dir: Optional[str]) -> Dict[str, Any]:
     cfg = json.loads(json.dumps(DEFAULTS))
     ignored: List[str] = []
     paths = config_paths(project_dir)
-    project_path = Path(project_dir) / ".claude" / CONFIG_FILENAME if project_dir else None
+    project_path = _config_file(Path(project_dir) / ".claude") if project_dir else None
     user_path = paths[0]
     for p in paths:
         try:
@@ -321,6 +325,8 @@ def load_config(project_dir: Optional[str]) -> Dict[str, Any]:
     if is_expensive(cfg["worker_model"], cfg):
         ignored.append(f"worker_model={cfg['worker_model']!r} is an expensive model; using {DEFAULTS['worker_model']!r}")
         cfg["worker_model"] = DEFAULTS["worker_model"]
+    if os.environ.get("GOVERNOR_CONFIG") and not os.environ.get("SUPERVISOR_CONFIG"):
+        ignored.append("GOVERNOR_CONFIG: read under its pre-2.0 name; export SUPERVISOR_CONFIG instead")
     for p in paths:
         if p.name == LEGACY_CONFIG_FILENAME:
             ignored.append(f"{p}: read under its pre-2.0 name; rename it to {CONFIG_FILENAME} (the next write does it)")
@@ -388,7 +394,7 @@ def state_dir() -> Path:
     """Where ledgers live. In order: $SUPERVISOR_STATE_DIR, the --state-dir the
     hook passed (Claude Code substitutes ${CLAUDE_PLUGIN_DATA}, which survives
     plugin updates), $CLAUDE_PLUGIN_DATA if exported, then ~/.cache/supervisor."""
-    for d in (os.environ.get("SUPERVISOR_STATE_DIR"), STATE_DIR_ARG, os.environ.get("CLAUDE_PLUGIN_DATA")):
+    for d in (os.environ.get("SUPERVISOR_STATE_DIR"), os.environ.get("GOVERNOR_STATE_DIR"), STATE_DIR_ARG, os.environ.get("CLAUDE_PLUGIN_DATA")):
         if d and not d.startswith("${"):
             return Path(d)
     xdg = os.environ.get("XDG_CACHE_HOME")
@@ -1558,6 +1564,13 @@ def h_session_start(hook: Dict[str, Any], cfg: Dict[str, Any], ledger: Ledger) -
     }
 
 
+def _ns_command(stripped: str) -> Optional[str]:
+    """The plugin command a prompt starts with (`/supervisor:on`, `/supervisor:on args`),
+    or None. Exact: `/supervisor:onward` is not `on`."""
+    m = re.match(rf"^/{re.escape(NS)}:([a-z-]+)(?:\s|$)", stripped)
+    return m.group(1) if m else None
+
+
 def h_user_prompt(hook: Dict[str, Any], cfg: Dict[str, Any], ledger: Ledger) -> Dict[str, Any]:
     """Arming and disarming live here: a slash command a user typed, or a
     skill's own marker line expanded into the prompt, are the only ways this
@@ -1568,9 +1581,10 @@ def h_user_prompt(hook: Dict[str, Any], cfg: Dict[str, Any], ledger: Ledger) -> 
     prompt = str(hook.get("prompt") or "")
     stripped = prompt.strip()
     arm_mode: Optional[str] = None
-    if stripped.startswith(f"/{NS}:start") or stripped.startswith(f"/{NS}:brief") or stripped.startswith(f"/{NS}:on"):
+    cmd = _ns_command(stripped)
+    if cmd in ("start", "brief", "on"):
         arm_mode = "enforce"
-    elif stripped.startswith(f"/{NS}:explore"):
+    elif cmd == "explore":
         arm_mode = "explore"
     elif f"<!-- {NS}:arm enforce -->" in prompt:
         arm_mode = "enforce"
@@ -1579,6 +1593,16 @@ def h_user_prompt(hook: Dict[str, Any], cfg: Dict[str, Any], ledger: Ledger) -> 
 
     # Arming when the config mode is already enforce is a no-op: the session
     # was never dormant, so there is nothing to flip and no banner to add.
+    if arm_mode is not None and cfg.get("mode") not in ("off", "enforce", None):
+        # observe or explore in config: the config wins over the session, so
+        # an arm would inject a policy the hooks never apply. Say so instead.
+        return {
+            "hookSpecificOutput": {
+                "hookEventName": "UserPromptSubmit",
+                "additionalContext": f"{NS}: config mode is {cfg.get('mode')}, which the session cannot override; arming did nothing."
+                                     f" Change it with {NS}.py mode enforce (or off) and arm again.",
+            }
+        }
     if arm_mode is not None and not (cfg.get("mode") == "enforce" and arm_mode == "enforce"):
         ledger.state["armed"] = True
         ledger.state["armed_mode"] = arm_mode
@@ -1591,7 +1615,9 @@ def h_user_prompt(hook: Dict[str, Any], cfg: Dict[str, Any], ledger: Ledger) -> 
             }
         }
 
-    if arm_mode is None and (stripped.startswith(f"/{NS}:off") or f"<!-- {NS}:disarm -->" in prompt):
+    # Disarm only by the typed command: a marker can be quoted in a pasted
+    # document, and disarming is the direction that must not happen by accident.
+    if arm_mode is None and cmd == "off":
         ledger.state["armed"] = False
         ledger.save()
         if cfg.get("mode") != "off":
@@ -1626,8 +1652,12 @@ def h_pre_tool_use(hook: Dict[str, Any], cfg: Dict[str, Any], ledger: Ledger, pr
         # Dormant: the only thing this hook still does is refuse the model
         # arming itself. A spawn is recorded (dormant:<action>) so the ledger
         # and the readout stay honest, but nothing about it is changed.
+        skill = ""
         if tool == "Skill":
             skill = str(tool_input.get("skill") or "")
+        elif tool == "SlashCommand":
+            skill = str(tool_input.get("command") or "").strip().lstrip("/").split(" ", 1)[0]
+        if skill:
             if skill.startswith(f"{NS}:") and skill.split(":", 1)[1] not in DORMANT_SKILLS:
                 return {
                     "hookSpecificOutput": {
@@ -1850,7 +1880,7 @@ def h_session_end(hook: Dict[str, Any], cfg: Dict[str, Any], ledger: Ledger) -> 
                 "cwd": hook.get("cwd"),
                 "reason": hook.get("reason"),
                 "main_model": ledger.main_model(),
-                "mode": cfg.get("mode"),
+                "mode": effective_mode(cfg, ledger),
                 "expensive_usd": round(ledger.expensive_spend(cfg), 4),
                 "total_usd": round(ledger.total_spend(), 4),
                 "models": ledger.state["models"],
