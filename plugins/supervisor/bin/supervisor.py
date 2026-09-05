@@ -343,6 +343,40 @@ def effective_budget(cfg: Dict[str, Any]) -> float:
     return budget
 
 
+def session_cfg(cfg: Dict[str, Any], ledger: Optional["Ledger"]) -> Dict[str, Any]:
+    """cfg with this session's own budget in place of the configured one, when
+    the session set one (/supervisor:on <usd|profile>, or `budget session`).
+    The ceiling still applies through effective_budget: a session may pick
+    its number, never exceed the personal cap. `_session_budget` marks it."""
+    if ledger is None:
+        return cfg
+    sb = ledger.state.get("session_budget_usd")
+    if sb is None:
+        return cfg
+    try:
+        value = float(sb)
+    except (TypeError, ValueError):
+        return cfg
+    if not math.isfinite(value) or value < 0:
+        return cfg
+    return dict(cfg, budget_usd=value, _session_budget=True)
+
+
+def parse_budget_word(word: str, cfg: Dict[str, Any]) -> Optional[float]:
+    """A budget as typed: a number first (a profile named "5" must never
+    shadow the number itself), else a profile name. None when neither."""
+    profiles = cfg.get("budget_profiles") or {}
+    try:
+        value = float(word)
+    except ValueError:
+        if word not in profiles:
+            return None
+        value = float(profiles[word])
+    if not math.isfinite(value) or value < 0:
+        return None
+    return value
+
+
 def profile_name(cfg: Dict[str, Any]) -> Optional[str]:
     """The profile whose value equals the effective budget, else None."""
     eb = round(effective_budget(cfg), 2)
@@ -377,7 +411,10 @@ def raise_advice(cfg: Dict[str, Any]) -> str:
     nxt = next_profile(cfg)
     if nxt is not None:
         name, value = nxt
-        return f"step up with /supervisor:budget set {name} (${value:.2f})." + tail
+        return (
+            f"step up with /supervisor:on {name} (${value:.2f}), typed by the user, this session only;"
+            f" /supervisor:budget set {name} makes it this project's default." + tail
+        )
     ceiling = cfg.get("budget_ceiling_usd")
     if ceiling is not None:
         ceiling = float(ceiling)
@@ -385,9 +422,9 @@ def raise_advice(cfg: Dict[str, Any]) -> str:
             return f"the budget is at its ceiling ${ceiling:.2f}; raise it with /supervisor:budget ceiling <usd>." + tail
         return (
             f"no profile fits under the ceiling ${ceiling:.2f}; set a number up to it with"
-            " /supervisor:budget set <usd>, or raise the ceiling with /supervisor:budget ceiling <usd>." + tail
+            " /supervisor:on <usd>, or raise the ceiling with /supervisor:budget ceiling <usd>." + tail
         )
-    return "no profile is above this budget; set a number with /supervisor:budget set <usd>." + tail
+    return "no profile is above this budget; set a number with /supervisor:on <usd> (this session) or /supervisor:budget set <usd> (this project)." + tail
 
 
 def state_dir() -> Path:
@@ -591,6 +628,9 @@ class Ledger:
             "start_model": None,
             "armed": False,  # this session was armed by /supervisor:start, :on or :explore
             "armed_mode": "enforce",  # the mode armed_mode carries, "enforce" or "explore"
+            "session_budget_usd": None,  # this session's own budget (/supervisor:on <usd|profile>); None = config
+            "baseline": {},  # model id -> cost_usd at the last `budget reset`; spend counts from there
+            "reset_ts": None,
         }
         try:
             self.state.update(json.loads(self.path.read_text()))
@@ -782,8 +822,24 @@ class Ledger:
         error, newest state, in the order the ledger recorded them."""
         return [(aid, a) for aid, a in self.state["agents"].items() if a.get("ended") == "died"]
 
-    def expensive_spend(self, cfg: Dict[str, Any]) -> float:
-        return sum(t["cost_usd"] for m, t in self.state["models"].items() if is_expensive(m, cfg))
+    def expensive_spend(self, cfg: Dict[str, Any], since_reset: bool = True) -> float:
+        """Expensive-tier dollars since the last `budget reset` (the whole
+        session when none, or when since_reset is False): the number the
+        gate compares to the budget."""
+        base = (self.state.get("baseline") or {}) if since_reset else {}
+        return sum(
+            max(0.0, t["cost_usd"] - float(base.get(m, 0.0)))
+            for m, t in self.state["models"].items() if is_expensive(m, cfg)
+        )
+
+    def reset_spend(self) -> None:
+        """Count spend from now: snapshot every model's cost as the baseline,
+        and re-arm the one-shot warning and explore checkpoint. The totals
+        and the history keep the whole session; only the gate's view moves."""
+        self.state["baseline"] = {m: t["cost_usd"] for m, t in self.state["models"].items()}
+        self.state["reset_ts"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        self.state["warned"] = False
+        self.state["explore_checkpoint"] = False
 
     def total_spend(self) -> float:
         return sum(t["cost_usd"] for t in self.state["models"].values())
@@ -808,9 +864,12 @@ class Ledger:
 
     def readout(self, cfg: Dict[str, Any], project_dir: Optional[str] = None) -> str:
         """One line for the per-turn context injection."""
+        cfg = session_cfg(cfg, self)
         exp = self.expensive_spend(cfg)
         budget = effective_budget(cfg)
         profile = profile_name(cfg)
+        tags = [t for t in (profile, "session" if cfg.get("_session_budget") else None,
+                            "since reset" if self.state.get("reset_ts") else None) if t]
         exp_models = {m: t for m, t in self.state["models"].items() if is_expensive(m, cfg)}
         out_tok = sum(t["output"] for t in exp_models.values())
         cread = sum(t["cache_read"] for t in exp_models.values())
@@ -823,7 +882,7 @@ class Ledger:
         model = self.main_model() or "unknown"
         line = (
             f"[supervisor] expensive-tier ${exp:.2f} of ${budget:.2f}"
-            f"{f' ({profile})' if profile is not None else ''} "
+            f"{' (' + ', '.join(tags) + ')' if tags else ''} "
             f"(out {_k(out_tok)} tok, cache-read {_k(cread)}) · total ${self.total_spend():.2f} "
             f"· session model {model} · spawns: {spawn_txt}"
         )
@@ -843,8 +902,11 @@ class Ledger:
 
     def report(self, cfg: Dict[str, Any], project_dir: Optional[str] = None) -> str:
         """Markdown for `supervisor.py status`."""
+        cfg = session_cfg(cfg, self)
         lines = [f"# supervisor: session {self.session_id}", ""]
-        lines.append(f"Budget (expensive tier): ${effective_budget(cfg):.2f}  ·  spent: ${self.expensive_spend(cfg):.2f}  ·  all models: ${self.total_spend():.2f}")
+        src = "session, /supervisor:on" if cfg.get("_session_budget") else "config"
+        since = f" since reset at {self.state['reset_ts']}" if self.state.get("reset_ts") else ""
+        lines.append(f"Budget (expensive tier): ${effective_budget(cfg):.2f} ({src})  ·  spent: ${self.expensive_spend(cfg):.2f}{since}  ·  all models: ${self.total_spend():.2f}")
         workers = worker_spend(project_dir)
         if workers >= 0.005:
             lines.append(f"Headless workers (run-worker / run-level, every run recorded under .supervisor/runs, all sessions): ${workers:.2f}, not in the figures above")
@@ -1571,6 +1633,39 @@ def _ns_command(stripped: str) -> Optional[str]:
     return m.group(1) if m else None
 
 
+def arm_budget_words(stripped: str, cmd: Optional[str], cfg: Dict[str, Any], ledger: Ledger) -> List[str]:
+    """The words after `/supervisor:on` or `/supervisor:explore`: a number or
+    a profile name sets this session's own budget, `reset` counts spend from
+    now, anything else is named as ignored. Returns the notes for the banner.
+    Only the typed command carries a budget; a skill's marker never does."""
+    if cmd not in ("on", "explore"):
+        return []
+    words = stripped.split()[1:]
+    notes: List[str] = []
+    used = 0
+    # Leading words only: the first word that is neither ends the parse, so
+    # a number or the word "reset" inside an explore question is text.
+    for w in words:
+        if w == "reset":
+            ledger.reset_spend()
+            notes.append("Spend counts from now.")
+            used += 1
+            continue
+        value = parse_budget_word(w, cfg)
+        if value is None:
+            break
+        used += 1
+        ledger.state["session_budget_usd"] = value
+        eff = effective_budget(session_cfg(cfg, ledger))
+        pname = profile_name(dict(cfg, budget_usd=value, budget_ceiling_usd=None))
+        label = f"${value:.2f}" + (f" ({pname})" if pname else "")
+        notes.append(f"Session budget {label}" + (f", capped to ${eff:.2f} by the ceiling." if eff < value else "."))
+    if cmd == "on" and used < len(words):
+        rest = " ".join(words[used:])
+        notes.append(f"'{rest}' is neither a budget nor a profile ({', '.join(sorted(cfg.get('budget_profiles') or {}))}) and was ignored.")
+    return notes
+
+
 def h_user_prompt(hook: Dict[str, Any], cfg: Dict[str, Any], ledger: Ledger) -> Dict[str, Any]:
     """Arming and disarming live here: a slash command a user typed, or a
     skill's own marker line expanded into the prompt, are the only ways this
@@ -1593,25 +1688,43 @@ def h_user_prompt(hook: Dict[str, Any], cfg: Dict[str, Any], ledger: Ledger) -> 
 
     # Arming when the config mode is already enforce is a no-op: the session
     # was never dormant, so there is nothing to flip and no banner to add.
+    # The words after a typed /supervisor:on or :explore apply whether or
+    # not the arm itself is a no-op: an always-on or config-explore project
+    # still gets its session budget and its reset from the same command.
+    notes = arm_budget_words(stripped, cmd, cfg, ledger) if arm_mode is not None else []
     if arm_mode is not None and cfg.get("mode") not in ("off", "enforce", None):
         # observe or explore in config: the config wins over the session, so
         # an arm would inject a policy the hooks never apply. Say so instead.
+        if notes:
+            ledger.save()
         return {
             "hookSpecificOutput": {
                 "hookEventName": "UserPromptSubmit",
                 "additionalContext": f"{NS}: config mode is {cfg.get('mode')}, which the session cannot override; arming did nothing."
-                                     f" Change it with {NS}.py mode enforce (or off) and arm again.",
+                                     f" Change it with {NS}.py mode enforce (or off) and arm again." + "".join(" " + n for n in notes),
             }
         }
-    if arm_mode is not None and not (cfg.get("mode") == "enforce" and arm_mode == "enforce"):
+    if arm_mode is not None and cfg.get("mode") == "enforce" and arm_mode == "enforce":
+        if not notes:
+            return {}
+        ledger.save()
+        return {
+            "hookSpecificOutput": {
+                "hookEventName": "UserPromptSubmit",
+                "additionalContext": f"{NS} is on for this project (config)." + "".join(" " + n for n in notes)
+                                     + "\n" + ledger.readout(cfg, hook.get("cwd")),
+            }
+        }
+    if arm_mode is not None:
         ledger.state["armed"] = True
         ledger.state["armed_mode"] = arm_mode
         ledger.save()
         body = (EXPLORE_TEXT + "\n" + ledger.readout(cfg, hook.get("cwd"))) if arm_mode == "explore" else policy_text(ledger, cfg, hook.get("cwd"))
+        head = f"{NS} armed for this session ({arm_mode})." + "".join(" " + n for n in notes)
         return {
             "hookSpecificOutput": {
                 "hookEventName": "UserPromptSubmit",
-                "additionalContext": f"{NS} armed for this session ({arm_mode}).\n" + body,
+                "additionalContext": head + "\n" + body,
             }
         }
 
@@ -1640,13 +1753,79 @@ def h_user_prompt(hook: Dict[str, Any], cfg: Dict[str, Any], ledger: Ledger) -> 
 
 DORMANT_SKILLS = ("on", "start", "explore", "brief", "off")
 
+# The plugin's own CLI, as a Bash tool call: `python3 "<...>/supervisor.py" budget ...`.
+# One plain command on one line, no shell operators, so a chain cannot ride
+# through the exemption (a `#` would hide the appended session from the
+# shell); the script is this plugin's own (resolved path, or
+# the ${CLAUDE_PLUGIN_ROOT} form the skills print); and only the verbs a
+# closed gate must still let through: the read-only ones and the two that
+# write this session's ledger. Nothing that writes a config file: `mode
+# off` or `budget set` from a gated model would be the gate lifting itself.
+OWN_CLI_RE = re.compile(
+    r'^(?:python3?\s+)?"?(?P<path>[^"\s;&|<>`()#\n\r]+)"?\s+(?P<verb>[a-z-]+)(?P<rest>[^\n\r;&|<>`$()#]*)$'
+)
+OWN_CLI_VERBS: Dict[str, Tuple[str, ...]] = {
+    "status": (),
+    "statusline": (),
+    "budget": ("show", "session", "reset", "history"),
+    "mode": ("show",),
+}
+OWN_CLI_ENV_FORMS = ("${CLAUDE_PLUGIN_ROOT}/bin/supervisor.py", "$CLAUDE_PLUGIN_ROOT/bin/supervisor.py")
+
+
+def own_cli_call(tool: Optional[str], tool_input: Dict[str, Any]) -> Optional["re.Match[str]"]:
+    """The match when this tool call is the plugin's own read-only or
+    session-scoped CLI run through Bash, else None."""
+    if tool != "Bash":
+        return None
+    cmd = str(tool_input.get("command") or "").strip()
+    m = OWN_CLI_RE.match(cmd)
+    if m is None:
+        return None
+    path = m.group("path")
+    if path not in OWN_CLI_ENV_FORMS:
+        if not path.startswith("/"):
+            return None
+        try:
+            if Path(path).resolve() != (PLUGIN_ROOT / "bin" / "supervisor.py").resolve():
+                return None
+        except OSError:
+            return None
+    verb = m.group("verb")
+    if verb not in OWN_CLI_VERBS:
+        return None
+    words = [w for w in m.group("rest").split() if not w.startswith("--")]
+    if verb in ("budget", "mode"):
+        if words and words[0] not in OWN_CLI_VERBS[verb]:
+            return None
+    elif words:
+        return None
+    return m
+
+
+def pin_session_arg(hook: Dict[str, Any], tool: Optional[str], tool_input: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """updatedInput that appends `--session <id>` to the plugin's own CLI
+    call when it names none: a Bash command has no way to know which
+    session it runs in, and the newest ledger is the wrong one exactly when
+    two sessions share a directory. The hook knows; it says. A subagent's
+    call is pinned the same way: its hook carries the parent session's id,
+    and the parent's ledger is the one its budget lives in."""
+    m = own_cli_call(tool, tool_input)
+    sid = clean_label(str(hook.get("session_id") or ""))
+    if m is None or not sid or "--session" in m.group("rest"):
+        return None
+    cmd = str(tool_input.get("command") or "").rstrip()
+    return dict(tool_input, command=f"{cmd} --session {sid}")
+
 
 def h_pre_tool_use(hook: Dict[str, Any], cfg: Dict[str, Any], ledger: Ledger, project_dir: Optional[str]) -> Dict[str, Any]:
     ledger.note_hook_context(hook)
     ledger.update(hook.get("transcript_path"))
     tool = hook.get("tool_name")
     tool_input = hook.get("tool_input") or {}
+    cfg = session_cfg(cfg, ledger)
     mode = effective_mode(cfg, ledger)
+    pinned = pin_session_arg(hook, tool, tool_input)
 
     if mode == "off":
         # Dormant: the only thing this hook still does is refuse the model
@@ -1677,6 +1856,8 @@ def h_pre_tool_use(hook: Dict[str, Any], cfg: Dict[str, Any], ledger: Ledger, pr
                 f"dormant:{decision['action']}",
                 routed_to=decision.get("routed_to"),
             )
+        if pinned is not None:
+            return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "updatedInput": pinned}}
         return {}
 
     # Whose tool call is this? A subagent's calls are gated on the subagent's
@@ -1697,15 +1878,23 @@ def h_pre_tool_use(hook: Dict[str, Any], cfg: Dict[str, Any], ledger: Ledger, pr
             routed_to=decision.get("routed_to"),
         )
     if mode == "observe":
+        if pinned is not None:
+            return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "updatedInput": pinned}}
         return {}
 
     # Budget gate: every tool call from an expensive-tier caller, except a
     # spawn that hands work to a cheap worker, which is the one action that
-    # reduces spend. A budget of zero or less is a closed gate, not no gate.
+    # reduces spend, and the plugin's own budget CLI, which is the escape
+    # hatch: a wall that blocks `budget set` blocks its own key. A budget of
+    # zero or less is a closed gate, not no gate.
     spend = ledger.expensive_spend(cfg)
     budget = effective_budget(cfg)
     gated = cfg["enforce_budget"] and is_expensive(caller_model, cfg)
     cheap_delegation = decision is not None and decision["action"] in ("rewrite", "allow") and not is_expensive(decision.get("model"), cfg)
+    if own_cli_call(tool, tool_input) is not None:
+        if pinned is not None:
+            return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "updatedInput": pinned}}
+        return {}
     if mode == "explore" and gated and spend >= budget and not cheap_delegation:
         # Explore: the budget is a checkpoint. Deny exactly once, with the
         # question, then get out of the way; a wall blocked its own escape
@@ -1881,7 +2070,7 @@ def h_session_end(hook: Dict[str, Any], cfg: Dict[str, Any], ledger: Ledger) -> 
                 "reason": hook.get("reason"),
                 "main_model": ledger.main_model(),
                 "mode": effective_mode(cfg, ledger),
-                "expensive_usd": round(ledger.expensive_spend(cfg), 4),
+                "expensive_usd": round(ledger.expensive_spend(cfg, since_reset=False), 4),
                 "total_usd": round(ledger.total_spend(), 4),
                 "models": ledger.state["models"],
                 "spawns": len(ledger.state["spawns"]),
@@ -1895,7 +2084,7 @@ def h_session_end(hook: Dict[str, Any], cfg: Dict[str, Any], ledger: Ledger) -> 
 
 
 def cmd_status(args: List[str], cfg: Dict[str, Any]) -> int:
-    sid = _arg(args, "--session") or os.environ.get("CLAUDE_SESSION_ID") or _latest_session_id()
+    sid = _cli_session(args)
     if not sid:
         print("supervisor: no session ledger yet (hooks have not run in this session).")
         return 0
@@ -1948,10 +2137,10 @@ def write_setting(key: str, value: Any, project_dir: Optional[str], scope: Optio
 def cmd_mode(args: List[str], cfg: Dict[str, Any], project_dir: Optional[str]) -> int:
     """Show or set the supervisor mode. Usage: supervisor.py mode [show|explore|enforce|observe|off] [--user|--project]"""
     usage = "usage: supervisor.py mode [show|explore|enforce|observe|off] [--user|--project]"
-    verb = next((a for a in args if not a.startswith("--")), "show")
+    verb = next((a for a in _without_flag(args, "--session") if not a.startswith("--")), "show")
     if verb == "show":
         print(f"mode: {cfg['mode']} (config)")
-        sid = os.environ.get("CLAUDE_SESSION_ID") or _latest_session_id()
+        sid = _cli_session(args)
         eff = effective_mode(cfg, Ledger(sid, Pricing.load())) if sid else cfg["mode"]
         print("session: dormant" if eff == "off" else f"session: armed {eff}")
         print("config files (low to high precedence): " + ", ".join(str(p) for p in config_paths(project_dir)))
@@ -1977,8 +2166,43 @@ def cmd_mode(args: List[str], cfg: Dict[str, Any], project_dir: Optional[str]) -
     return 0
 
 
+def _cli_session(args: List[str]) -> Optional[str]:
+    """The session a CLI verb acts on: --session (the hook appends it to the
+    plugin's own calls), else $CLAUDE_SESSION_ID, else the newest ledger."""
+    return _arg(args, "--session") or os.environ.get("CLAUDE_SESSION_ID") or _latest_session_id()
+
+
+def _without_flag(args: List[str], flag: str) -> List[str]:
+    """args minus `flag <value>`, so a verb dispatch on args[0] is not
+    thrown by the `--session <id>` the hook appends."""
+    out: List[str] = []
+    skip = False
+    for a in args:
+        if skip:
+            skip = False
+            continue
+        if a == flag:
+            skip = True
+            continue
+        out.append(a)
+    return out
+
+
 def cmd_budget(args: List[str], cfg: Dict[str, Any], project_dir: Optional[str]) -> int:
+    session_args = args
+    args = _without_flag(args, "--session")
     if not args or args[0] == "show":
+        sid = _cli_session(session_args)
+        led = Ledger(sid, Pricing.load()) if sid else None
+        if led is not None:
+            sb = led.state.get("session_budget_usd")
+            scfg = session_cfg(cfg, led)
+            if sb is not None:
+                print(f"session {sid[:8]}: budget ${float(sb):.2f} (session-scoped, /supervisor:on), effective ${effective_budget(scfg):.2f};"
+                      f" spent ${led.expensive_spend(scfg):.2f}" + (f" since reset at {led.state['reset_ts']}" if led.state.get("reset_ts") else ""))
+            else:
+                print(f"session {sid[:8]}: no session budget, config applies; spent ${led.expensive_spend(cfg):.2f}"
+                      + (f" since reset at {led.state['reset_ts']}" if led.state.get("reset_ts") else ""))
         raw = cfg["budget_usd"]
         eff = effective_budget(cfg)
         ceiling = cfg.get("budget_ceiling_usd")
@@ -2056,6 +2280,52 @@ def cmd_budget(args: List[str], cfg: Dict[str, Any], project_dir: Optional[str])
             return 1
         print(f"budget_ceiling_usd={value} written to {target}. Applies from the next tool call.")
         return 0
+    if args[0] in ("session", "reset"):
+        sid = _cli_session(session_args)
+        if not sid:
+            print("supervisor: no session ledger yet (hooks have not run in this session).")
+            return 1
+        if args[0] == "session":
+            word = args[1] if len(args) >= 2 and not args[1].startswith("--") else None
+            value: Optional[float] = None
+            if word is None:
+                names = ", ".join(sorted(cfg.get("budget_profiles") or {}))
+                print(f"usage: supervisor.py budget session <usd|profile|off> [--session ID] — a finite number, 0 or more, one of: {names}, or off")
+                return 2
+            if word != "off":
+                value = parse_budget_word(word, cfg)
+                if value is None:
+                    names = ", ".join(sorted(cfg.get("budget_profiles") or {}))
+                    print(f"usage: supervisor.py budget session <usd|profile|off> [--session ID] — a finite number, 0 or more, one of: {names}, or off")
+                    return 2
+        lock = session_lock(sid)
+        if lock is None:
+            print(f"supervisor: session {sid[:8]} ledger is locked; try again.")
+            return 1
+        try:
+            led = Ledger(sid, Pricing.load())
+            for tp in list(led.state.get("files") or {}):
+                led.update(tp)
+            if args[0] == "reset":
+                led.reset_spend()
+                led.save()
+                print(f"session {sid[:8]}: spend counts from now (was ${led.expensive_spend(cfg, since_reset=False):.2f} expensive-tier)."
+                      " Applies from the next tool call.")
+                return 0
+            led.state["session_budget_usd"] = value
+            led.save()
+            if value is None:
+                print(f"session {sid[:8]}: session budget cleared, config applies (${effective_budget(cfg):.2f}). Applies from the next tool call.")
+                return 0
+            scfg = session_cfg(cfg, led)
+            pname = profile_name(dict(cfg, budget_usd=value, budget_ceiling_usd=None))
+            eff = effective_budget(scfg)
+            suffix = f" ({pname})" if pname else ""
+            capped = f"; effective ${eff:.2f} (ceiling)" if eff < value else ""
+            print(f"session {sid[:8]}: budget ${value:.2f}{suffix}, this session only{capped}. Applies from the next tool call.")
+            return 0
+        finally:
+            lock.close()
     if args[0] == "history":
         hist = state_dir() / "history.jsonl"
         try:
@@ -2070,7 +2340,7 @@ def cmd_budget(args: List[str], cfg: Dict[str, Any], project_dir: Optional[str])
         for r in rows[-20:]:
             print(f"| {r['ts']} | {r['session_id'][:8]} | {r.get('main_model')} | {r['expensive_usd']:.2f} | {r['total_usd']:.2f} | {r['spawns']} |")
         return 0
-    print("usage: supervisor.py budget [show|set <usd|profile> [--user|--project]|ceiling <usd|off> [--user|--project]|history]")
+    print("usage: supervisor.py budget [show|set <usd|profile> [--user|--project]|ceiling <usd|off> [--user|--project]|session <usd|profile|off>|reset|history]")
     return 2
 
 
@@ -2089,6 +2359,7 @@ def cmd_statusline(cfg: Dict[str, Any]) -> int:
     parts = [f"supervisor {model}"]
     if sid:
         led = Ledger(sid, Pricing.load())
+        cfg = session_cfg(cfg, led)
         mode = effective_mode(cfg, led)
         if mode == "off":
             state = "dormant"

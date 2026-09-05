@@ -1,6 +1,6 @@
 {
   "name": "supervisor",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "Token guardrails for Claude Code sessions on an expensive model: spawns are pinned to cheap workers, forks denied, expensive spawns need a brief, a priced budget gate reads the transcript, and workers must report evidence before they may stop.",
   "author": {
     "name": "Oleg Konyk",

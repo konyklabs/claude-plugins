@@ -45,6 +45,28 @@ python3 "${CLAUDE_PLUGIN_ROOT}/bin/supervisor.py" budget set medium
 
 `budget set 0` closes the gate for the expensive tier; it does not disable it.
 
+This session only, in the ledger rather than any config file, so two
+sessions in one directory can hold different budgets and no file is edited.
+`off` clears it and the config applies again. The hook appends
+`--session <id>` to these calls so they land on this session's ledger, never
+on the newest one:
+
+```
+python3 "${CLAUDE_PLUGIN_ROOT}/bin/supervisor.py" budget session 50
+python3 "${CLAUDE_PLUGIN_ROOT}/bin/supervisor.py" budget session medium
+python3 "${CLAUDE_PLUGIN_ROOT}/bin/supervisor.py" budget session off
+```
+
+Count expensive-tier spend from now, keeping the totals and the history for
+the whole session (the one-shot warning and the explore checkpoint re-arm):
+
+```
+python3 "${CLAUDE_PLUGIN_ROOT}/bin/supervisor.py" budget reset
+```
+
+The typed equivalents are `/supervisor:on <usd|profile>` and
+`/supervisor:on reset`; `budget show` prints the session line first.
+
 Set or clear the personal ceiling that caps `budget_usd` from any source
 (writes to your user file's top level by default, not the per-project entry,
 because a ceiling is not a per-project raise):
@@ -120,9 +142,18 @@ Tool calls are denied with a reason once expensive-tier spend reaches the
 budget. Spawning cheap workers is still allowed. Two ways on, both
 preserving the session's context:
 
-1. `/model opus` (or `sonnet`): the ledger sees the new model on the next
+1. The user types `/supervisor:on <next profile>` or `/supervisor:on <usd>`
+   (the deny reason names the next profile under the ceiling, or the
+   ceiling command when none fits): this session's budget, one command,
+   nothing restarted. `/supervisor:on reset` counts spend from now instead.
+2. `/model opus` (or `sonnet`): the ledger sees the new model on the next
    message and the gate lifts. Cheaper models cannot read the expensive
    model's thinking blocks, which is fine; write the state down first.
-2. `budget set <usd|profile>` above, then continue. Say why in the same turn.
-   The deny reason names the next profile under the ceiling, or the
-   ceiling command when none fits.
+3. When the user says so in this turn, run `budget session <usd|profile>`
+   or `budget reset` above: those two, plus the read-only `budget show`,
+   `budget history`, `mode show` and `status`, are the one Bash call the
+   closed gate lets through (this plugin's own script, one line, no shell
+   operators), so the escape hatch is never behind the wall. `budget set`,
+   `budget ceiling` and `mode <x>` write config files and stay gated. Say
+   why in the same turn. Never raise or reset on your own initiative; the
+   deny reason is for the user.

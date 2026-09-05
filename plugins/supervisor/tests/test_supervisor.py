@@ -1402,13 +1402,13 @@ def test_budget_deny_names_next_profile(env):
     led = supervisor.Ledger("sess1", supervisor.Pricing.load())
     out = supervisor.h_pre_tool_use(dict(hook_base(tp), tool_name="Read", tool_input={}), cfg, led, str(env["project"]))
     reason = out["hookSpecificOutput"]["permissionDecisionReason"]
-    assert "set large" in reason and "$100" in reason
+    assert "/supervisor:on large" in reason and "$100" in reason
 
     cfg2 = dict(ENFORCE, budget_usd=25.0, budget_ceiling_usd=25.0)
     led2 = supervisor.Ledger("sess1", supervisor.Pricing.load())
     out2 = supervisor.h_pre_tool_use(dict(hook_base(tp), tool_name="Read", tool_input={}), cfg2, led2, str(env["project"]))
     reason2 = out2["hookSpecificOutput"]["permissionDecisionReason"]
-    assert "ceiling" in reason2 and "set large" not in reason2
+    assert "ceiling" in reason2 and "on large" not in reason2
 
 
 def test_ceiling_caps_the_gate(env):
@@ -1429,14 +1429,15 @@ def test_raise_advice_branches():
     # 1. a next profile exists (and fits under any ceiling)
     cfg = dict(supervisor.DEFAULTS, budget_usd=15.0)
     r = supervisor.raise_advice(cfg)
-    assert "step up with /supervisor:budget set medium ($25.00)." in r
+    assert "step up with /supervisor:on medium ($25.00), typed by the user, this session only" in r
+    assert "/supervisor:budget set medium makes it this project's default" in r
     assert r.endswith("/model opus keeps the context.")
 
     # 2. a ceiling is set, no profile fits under it, budget below ceiling
     cfg = dict(supervisor.DEFAULTS, budget_usd=10.0, budget_ceiling_usd=20.0)
     r = supervisor.raise_advice(cfg)
     assert "no profile fits under the ceiling $20.00" in r
-    assert "/supervisor:budget set <usd>" in r and "/supervisor:budget ceiling <usd>" in r
+    assert "/supervisor:on <usd>" in r and "/supervisor:budget ceiling <usd>" in r
     assert r.endswith("/model opus keeps the context.")
 
     # 3. the budget equals the ceiling
@@ -1448,7 +1449,7 @@ def test_raise_advice_branches():
     # 4. no ceiling, no profile above the budget
     cfg = dict(supervisor.DEFAULTS, budget_usd=150.0)
     r = supervisor.raise_advice(cfg)
-    assert "no profile is above this budget; set a number with /supervisor:budget set <usd>." in r
+    assert "no profile is above this budget; set a number with /supervisor:on <usd> (this session) or /supervisor:budget set <usd> (this project)." in r
     assert r.endswith("/model opus keeps the context.")
 
 
@@ -2352,3 +2353,213 @@ def test_project_file_cannot_set_observe_even_over_off(env):
     assert cfg["mode"] == "off" and any("mode" in n for n in cfg["_ignored"])
     (proj / ".claude" / supervisor.CONFIG_FILENAME).write_text(json.dumps({"mode": "enforce"}))
     assert supervisor.load_config(str(proj))["mode"] == "enforce"
+
+
+# --------------------------------------------------------------------------- per-session budget (roadmap#128)
+
+FABLE_20 = usage(out=400_000)  # $20 of Fable output
+
+
+def test_two_sessions_in_one_directory_hold_different_budgets(env):
+    """The definition of done: two ledgers, one cfg, two budgets at once; the
+    config precedence is untouched for a session that set none."""
+    tp1 = make_session(env["tmp"], sid="s1", main_lines=assistant_lines("m1", "claude-fable-5-1", FABLE_20, blocks=1))
+    tp2 = make_session(env["tmp"], sid="s2", main_lines=assistant_lines("m2", "claude-fable-5-1", FABLE_20, blocks=1))
+    cfg = dict(ENFORCE, budget_usd=15.0)
+    l1 = supervisor.Ledger("s1", supervisor.Pricing.load())
+    l2 = supervisor.Ledger("s2", supervisor.Pricing.load())
+    supervisor.h_user_prompt({"session_id": "s1", "transcript_path": str(tp1), "prompt": "/supervisor:on 50"}, cfg, l1)
+    assert l1.state["session_budget_usd"] == 50.0
+    assert supervisor.Ledger("s1", supervisor.Pricing.load()).state["session_budget_usd"] == 50.0, "saved"
+    assert supervisor.Ledger("s2", supervisor.Pricing.load()).state["session_budget_usd"] is None
+    # s1 is under its own $50; s2 has no session budget and hits the config $15
+    h1 = dict(hook_base(tp1), session_id="s1", tool_name="Read", tool_input={"file_path": "x"})
+    h2 = dict(hook_base(tp2), session_id="s2", tool_name="Read", tool_input={"file_path": "x"})
+    assert supervisor.h_pre_tool_use(h1, cfg, l1, str(env["project"])) == {}
+    out2 = supervisor.h_pre_tool_use(h2, cfg, l2, str(env["project"]))
+    assert out2["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "$15.00" in out2["hookSpecificOutput"]["permissionDecisionReason"]
+    assert "of $50.00 (session)" in l1.readout(cfg)
+    assert "of $15.00 (out" in l2.readout(cfg)
+
+
+def test_session_budget_by_profile_and_ceiling(env):
+    tp = make_session(env["tmp"], main_lines=assistant_lines("m1", "claude-fable-5-1", FABLE_20, blocks=1))
+    led = ledger_for(tp)
+    cfg = dict(ENFORCE, budget_usd=15.0, budget_ceiling_usd=60.0)
+    out = supervisor.h_user_prompt(dict(hook_base(tp), prompt="/supervisor:on large"), cfg, led)
+    ctx = out["hookSpecificOutput"]["additionalContext"]
+    assert led.state["session_budget_usd"] == 100.0
+    assert "Session budget $100.00 (large), capped to $60.00 by the ceiling." in ctx
+    assert "of $60.00 (session)" in led.readout(cfg)
+    # a number below the ceiling is named with its profile when it matches one
+    out = supervisor.h_user_prompt(dict(hook_base(tp), prompt="/supervisor:on 25"), cfg, led)
+    assert "Session budget $25.00 (medium)." in out["hookSpecificOutput"]["additionalContext"]
+    assert "of $25.00 (medium, session)" in led.readout(cfg)
+
+
+def test_arm_with_unknown_word_arms_and_says_so(env):
+    tp = make_session(env["tmp"], main_lines=[])
+    led = ledger_for(tp)
+    out = supervisor.h_user_prompt(dict(hook_base(tp), prompt="/supervisor:on bigly"), supervisor.DEFAULTS, led)
+    ctx = out["hookSpecificOutput"]["additionalContext"]
+    assert led.state["armed"] is True and led.state["session_budget_usd"] is None
+    assert "'bigly' is neither a budget nor a profile (large, medium, small) and was ignored." in ctx
+
+
+def test_explore_takes_a_session_budget_and_a_marker_does_not(env):
+    tp = make_session(env["tmp"], main_lines=[])
+    led = ledger_for(tp)
+    supervisor.h_user_prompt(dict(hook_base(tp), prompt="/supervisor:explore 5 why is it slow"), supervisor.DEFAULTS, led)
+    assert led.state["armed_mode"] == "explore" and led.state["session_budget_usd"] == 5.0
+    # leading words only: a number or "reset" inside the question is text
+    led_q = supervisor.Ledger("sessq", supervisor.Pricing.load())
+    out = supervisor.h_user_prompt(dict(hook_base(tp), session_id="sessq", prompt="/supervisor:explore why does the 5 minute build reset the cache"), supervisor.DEFAULTS, led_q)
+    assert led_q.state["session_budget_usd"] is None and led_q.state["reset_ts"] is None
+    assert "ignored" not in out["hookSpecificOutput"]["additionalContext"]
+    led_o = supervisor.Ledger("sesso", supervisor.Pricing.load())
+    out = supervisor.h_user_prompt(dict(hook_base(tp), session_id="sesso", prompt="/supervisor:on 40 reset please 7"), supervisor.DEFAULTS, led_o)
+    assert led_o.state["session_budget_usd"] == 40.0 and led_o.state["reset_ts"]
+    assert "'please 7' is neither a budget nor a profile" in out["hookSpecificOutput"]["additionalContext"]
+    led2 = supervisor.Ledger("sess2", supervisor.Pricing.load())
+    supervisor.h_user_prompt(dict(hook_base(tp), session_id="sess2", prompt="<!-- supervisor:arm enforce -->\n# Start 50\n"), supervisor.DEFAULTS, led2)
+    assert led2.state["armed"] is True and led2.state["session_budget_usd"] is None
+
+
+def test_reset_counts_spend_from_now_and_reopens_the_gate(env):
+    tp = make_session(env["tmp"], main_lines=assistant_lines("m1", "claude-fable-5-1", FABLE_20, blocks=1))
+    led = supervisor.Ledger("sess1", supervisor.Pricing.load())
+    h = dict(hook_base(tp), tool_name="Read", tool_input={"file_path": "x"})
+    assert supervisor.h_pre_tool_use(h, ENFORCE, led, str(env["project"]))["hookSpecificOutput"]["permissionDecision"] == "deny"
+    out = supervisor.h_user_prompt(dict(hook_base(tp), prompt="/supervisor:on reset"), ENFORCE, led)
+    assert "Spend counts from now." in out["hookSpecificOutput"]["additionalContext"]
+    assert led.expensive_spend(ENFORCE) == pytest.approx(0.0)
+    assert led.expensive_spend(ENFORCE, since_reset=False) == pytest.approx(20.0)
+    assert led.state["warned"] is False
+    assert supervisor.h_pre_tool_use(h, ENFORCE, led, str(env["project"])) == {}
+    assert "since reset" in led.readout(ENFORCE)
+    # spend after the reset counts again
+    with open(tp, "a") as f:
+        f.write("\n".join(assistant_lines("m2", "claude-fable-5-1", FABLE_20, blocks=1)) + "\n")
+    assert supervisor.h_pre_tool_use(h, ENFORCE, led, str(env["project"]))["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+def test_closed_gate_lets_the_plugins_own_budget_cli_through(env):
+    tp = make_session(env["tmp"], main_lines=assistant_lines("m1", "claude-fable-5-1", FABLE_20, blocks=1))
+    led = supervisor.Ledger("sess1", supervisor.Pricing.load())
+    proj = str(env["project"])
+    script = str(supervisor.PLUGIN_ROOT / "bin" / "supervisor.py")
+    denied = supervisor.h_pre_tool_use(dict(hook_base(tp), tool_name="Bash", tool_input={"command": "ls"}), ENFORCE, led, proj)
+    assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"
+    for cmd in (f'python3 "{script}" budget session 50', f'python3 "{script}" budget reset', f"python3 {script} budget show", f'python3 "{script}" status',
+                f'python3 "{script}" budget', f'python3 "{script}" mode show', 'python3 "${CLAUDE_PLUGIN_ROOT}/bin/supervisor.py" budget session 50',
+                f'python3 "{script}" budget history --state-dir /x'):
+        out = supervisor.h_pre_tool_use(dict(hook_base(tp), tool_name="Bash", tool_input={"command": cmd}), ENFORCE, led, proj)
+        assert "permissionDecision" not in out.get("hookSpecificOutput", {}), cmd
+        # and the hook pins the call to this session, so a Bash command that
+        # cannot know its session never lands on a neighbour's ledger
+        assert out["hookSpecificOutput"]["updatedInput"]["command"] == cmd + " --session sess1", cmd
+    # no ride-along: an operator or a second line after the CLI is still the
+    # closed gate; so is another script with the same basename, and so is
+    # any verb that writes a config file (the gate must not lift itself)
+    for cmd in (f'python3 "{script}" budget show; rm -rf /', f'python3 "{script}" budget show && ls', f'python3 "{script}" run-worker --spec x', f'echo x | python3 "{script}" budget show',
+                f'python3 "{script}" budget show\nrm -rf /', f'python3 "{script}" budget show\r\nls', 'python3 /tmp/evil/supervisor.py budget show', './supervisor.py mode off',
+                f'python3 "{script}" mode off --user', f'python3 "{script}" mode enforce', f'python3 "{script}" budget set 999 --user', f'python3 "{script}" budget ceiling off',
+                f'python3 "{script}" brief template', 'python3 "$HOME/x/supervisor.py" budget show', f'X=1 python3 "{script}" budget show'):
+        out = supervisor.h_pre_tool_use(dict(hook_base(tp), tool_name="Bash", tool_input={"command": cmd}), ENFORCE, led, proj)
+        assert out["hookSpecificOutput"]["permissionDecision"] == "deny", cmd
+    # a call that already names a session is left alone
+    cmd = f'python3 "{script}" budget show --session other'
+    out = supervisor.h_pre_tool_use(dict(hook_base(tp), tool_name="Bash", tool_input={"command": cmd}), ENFORCE, led, proj)
+    assert out == {}
+    # dormant: the pin still happens, nothing else does
+    led_d = supervisor.Ledger("sessd", supervisor.Pricing.load())
+    out = supervisor.h_pre_tool_use(dict(hook_base(tp), session_id="sessd", tool_name="Bash", tool_input={"command": f'python3 "{script}" budget reset'}), supervisor.DEFAULTS, led_d, proj)
+    assert out["hookSpecificOutput"]["updatedInput"]["command"].endswith("--session sessd")
+
+
+def test_cli_budget_session_and_reset(env, capsys):
+    tp = make_session(env["tmp"], sid="cli1", main_lines=assistant_lines("m1", "claude-fable-5-1", FABLE_20, blocks=1))
+    led = ledger_for(tp, sid="cli1"); led.save()
+    cfg = dict(ENFORCE, budget_usd=15.0)
+    assert supervisor.cmd_budget(["session", "medium", "--session", "cli1"], cfg, str(env["project"])) == 0
+    out = capsys.readouterr().out
+    assert "session cli1: budget $25.00 (medium), this session only. Applies from the next tool call." in out
+    assert supervisor.Ledger("cli1", supervisor.Pricing.load()).state["session_budget_usd"] == 25.0
+    assert supervisor.cmd_budget(["show", "--session", "cli1"], cfg, str(env["project"])) == 0
+    out = capsys.readouterr().out
+    assert "session cli1: budget $25.00 (session-scoped, /supervisor:on), effective $25.00; spent $20.00" in out
+    assert supervisor.cmd_budget(["reset", "--session", "cli1"], cfg, str(env["project"])) == 0
+    assert "spend counts from now (was $20.00 expensive-tier)" in capsys.readouterr().out
+    led2 = supervisor.Ledger("cli1", supervisor.Pricing.load())
+    assert led2.expensive_spend(cfg) == pytest.approx(0.0) and led2.state["reset_ts"]
+    assert supervisor.cmd_budget(["session", "off", "--session", "cli1"], cfg, str(env["project"])) == 0
+    assert "session budget cleared, config applies ($15.00)" in capsys.readouterr().out
+    assert supervisor.Ledger("cli1", supervisor.Pricing.load()).state["session_budget_usd"] is None
+    assert supervisor.cmd_budget(["session", "nope", "--session", "cli1"], cfg, str(env["project"])) == 2
+    assert supervisor.cmd_budget(["session", "--session", "cli1"], cfg, str(env["project"])) == 2
+    # the CLI path via main(): --session is honoured end to end
+    assert supervisor.main(["budget", "session", "7", "--session", "cli1"]) == 0
+    assert supervisor.Ledger("cli1", supervisor.Pricing.load()).state["session_budget_usd"] == 7.0
+
+
+def test_status_report_names_the_session_budget_and_reset(env):
+    tp = make_session(env["tmp"], main_lines=assistant_lines("m1", "claude-fable-5-1", FABLE_20, blocks=1))
+    led = ledger_for(tp)
+    cfg = dict(ENFORCE, budget_usd=15.0)
+    assert "Budget (expensive tier): $15.00 (config)" in led.report(cfg)
+    led.state["session_budget_usd"] = 40.0
+    led.reset_spend()
+    rep = led.report(cfg)
+    assert "Budget (expensive tier): $40.00 (session, /supervisor:on)" in rep
+    assert "spent: $0.00 since reset at" in rep and "all models: $20.00" in rep
+
+
+def test_history_records_the_whole_session_not_since_reset(env):
+    tp = make_session(env["tmp"], main_lines=assistant_lines("m1", "claude-fable-5-1", FABLE_20, blocks=1))
+    led = ledger_for(tp)
+    led.reset_spend()
+    supervisor.h_session_end(dict(hook_base(tp)), ENFORCE, led)
+    row = json.loads((env["state"] / "history.jsonl").read_text().splitlines()[-1])
+    assert row["expensive_usd"] == pytest.approx(20.0)
+
+
+def test_review_round_minors_128(env, capsys):
+    """The local review round's minors: a trailing comment must not hide the
+    pin, a subagent's call is pinned to the parent session, the status line
+    reads the session budget, config observe/explore still take the typed
+    budget, and the bare verbs survive the appended --session."""
+    tp = make_session(env["tmp"], main_lines=assistant_lines("m1", "claude-fable-5-1", FABLE_20, blocks=1))
+    led = ledger_for(tp); led.save()
+    proj = str(env["project"])
+    script = str(supervisor.PLUGIN_ROOT / "bin" / "supervisor.py")
+    # a shell comment after the command: gated, never pinned into the comment
+    out = supervisor.h_pre_tool_use(dict(hook_base(tp), tool_name="Bash", tool_input={"command": f'python3 "{script}" budget session 50  # raise'}), ENFORCE, led, proj)
+    assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+    # a subagent's call carries the parent session id and is pinned to it
+    led.state["agents"]["a1"] = dict(supervisor.EMPTY_AGENT, model="claude-fable-5-1") if hasattr(supervisor, "EMPTY_AGENT") else {"model": "claude-fable-5-1"}
+    out = supervisor.h_pre_tool_use(dict(hook_base(tp), agent_id="a1", tool_name="Bash", tool_input={"command": f'python3 "{script}" budget show'}), ENFORCE, led, proj)
+    assert out["hookSpecificOutput"]["updatedInput"]["command"].endswith("--session sess1")
+    # status line: session budget open, not the config's CLOSED
+    led.state["session_budget_usd"] = 100.0; led.save()
+    import io
+    monkey_stdin = io.StringIO(json.dumps({"session_id": "sess1"}))
+    real_stdin = sys.stdin
+    sys.stdin = monkey_stdin
+    try:
+        supervisor.cmd_statusline(dict(ENFORCE, budget_usd=15.0))
+    finally:
+        sys.stdin = real_stdin
+    line = capsys.readouterr().out
+    assert "CLOSED" not in line and "$20.00/$100" in line
+    # config explore: the typed budget and reset still land
+    led_x = supervisor.Ledger("sessx", supervisor.Pricing.load())
+    out = supervisor.h_user_prompt(dict(hook_base(tp), session_id="sessx", prompt="/supervisor:explore 5 reset why"), dict(supervisor.DEFAULTS, mode="explore"), led_x)
+    ctx = out["hookSpecificOutput"]["additionalContext"]
+    assert "arming did nothing" in ctx and "Session budget $5.00" in ctx and "Spend counts from now." in ctx
+    assert supervisor.Ledger("sessx", supervisor.Pricing.load()).state["session_budget_usd"] == 5.0
+    # bare verbs with the appended flag
+    assert supervisor.cmd_budget(["--session", "sess1"], ENFORCE, proj) == 0
+    assert "session sess1: budget $100.00" in capsys.readouterr().out
+    assert supervisor.cmd_mode(["--session", "sess1"], ENFORCE, proj) == 0
+    assert "mode:" in capsys.readouterr().out
