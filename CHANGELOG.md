@@ -1,5 +1,18 @@
 # Changelog
 
+## [2.0.0](https://github.com/konyklabs/claude-plugins/compare/v1.1.0...v2.0.0) (2026-09-05)
+
+
+### ⚠ BREAKING CHANGES
+
+* **supervisor:** rename governor to supervisor; dormant until armed per session (konyklabs/roadmap#126) ([#18](https://github.com/konyklabs/claude-plugins/issues/18))
+
+### Features
+
+* **governor:** /governor:start chains brief, triage and the cut with two stops; budget by profile with a ceiling (konyklabs/roadmap[#125](https://github.com/konyklabs/claude-plugins/issues/125)) ([#17](https://github.com/konyklabs/claude-plugins/issues/17)) ([75688a9](https://github.com/konyklabs/claude-plugins/commit/75688a997abd982b512058a2d4a56919a75eb402))
+* **governor:** name dead workers, advise retry or tier switch, guard limit-hit models, route bare spawns to worker (konyklabs/roadmap[#115](https://github.com/konyklabs/claude-plugins/issues/115)) ([#14](https://github.com/konyklabs/claude-plugins/issues/14)) ([1d4e015](https://github.com/konyklabs/claude-plugins/commit/1d4e015c5ddc50b2ae166c3d650ff48d47be9b43))
+* **supervisor:** rename governor to supervisor; dormant until armed per session (konyklabs/roadmap[#126](https://github.com/konyklabs/claude-plugins/issues/126)) ([#18](https://github.com/konyklabs/claude-plugins/issues/18)) ([b6e5f47](https://github.com/konyklabs/claude-plugins/commit/b6e5f4730504582e34a1be4ffe14205542052556))
+
 ## [1.1.0](https://github.com/konyklabs/claude-plugins/compare/v1.0.0...v1.1.0) (2026-09-03)
 
 

@@ -7,7 +7,7 @@
       "extra-files": [
         {
           "type": "json",
-          "path": "plugins/governor/.claude-plugin/plugin.json",
+          "path": "plugins/supervisor/.claude-plugin/plugin.json",
           "jsonpath": "$.version"
         },
         {
@@ -18,6 +18,11 @@
         {
           "type": "json",
           "path": "plugins/prod-readiness/.claude-plugin/plugin.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "json",
+          "path": "plugins/signoff/.claude-plugin/plugin.json",
           "jsonpath": "$.version"
         }
       ]

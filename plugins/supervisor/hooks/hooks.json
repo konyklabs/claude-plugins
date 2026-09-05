@@ -1,0 +1,48 @@
+{
+  "description": "supervisor: token guardrails for expensive-model sessions — model pinning for spawns, fork denial, brief enforcement, a priced budget gate, and worker report contracts.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {"type": "command", "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/bin/supervisor.py\" session-start --state-dir \"${CLAUDE_PLUGIN_DATA}\"", "timeout": 10}
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {"type": "command", "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/bin/supervisor.py\" user-prompt --state-dir \"${CLAUDE_PLUGIN_DATA}\"", "timeout": 10}
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {"type": "command", "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/bin/supervisor.py\" pre-tool-use --state-dir \"${CLAUDE_PLUGIN_DATA}\"", "timeout": 10}
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Agent",
+        "hooks": [
+          {"type": "command", "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/bin/supervisor.py\" post-tool-use --state-dir \"${CLAUDE_PLUGIN_DATA}\"", "timeout": 10}
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {"type": "command", "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/bin/supervisor.py\" subagent-stop --state-dir \"${CLAUDE_PLUGIN_DATA}\"", "timeout": 10}
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {"type": "command", "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/bin/supervisor.py\" session-end --state-dir \"${CLAUDE_PLUGIN_DATA}\"", "timeout": 10}
+        ]
+      }
+    ]
+  }
+}

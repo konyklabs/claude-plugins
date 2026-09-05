@@ -1,6 +1,6 @@
 {
   "name": "signoff",
-  "version": "1.6.0",
+  "version": "2.0.0",
   "description": "Reconciles an application's end-to-end coverage against what it does: explore, mine, tile, fill, report, human-readable test cases.",
   "author": {
     "name": "Oleg Konyk",

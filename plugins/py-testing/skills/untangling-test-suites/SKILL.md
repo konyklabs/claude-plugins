@@ -32,7 +32,7 @@ than one file** (shadowing); **test names defined in more than one file**
 the largest files; a first cut of slices by directory with one command each;
 and the fixtures shared across slices, which are the level-0 candidates.
 
-Read the report, not the files. Ask `governor:scout` for the specific
+Read the report, not the files. Ask `supervisor:scout` for the specific
 path:line facts the report makes you want.
 
 ## 2. Classify
@@ -51,7 +51,7 @@ Write the table. It is the first deliverable, and it is short.
 ## 3. Decide, once
 
 These are the decisions the slices must not re-open. Make them here, or via
-`/governor:consult` if this session is not on the model that should make
+`/supervisor:consult` if this session is not on the model that should make
 them:
 
 - **Layout**: tiers as directories, from `testing-pytest-projects`.
@@ -81,18 +81,18 @@ merge group, each with:
 - "the suite stays green": the slice's command passes before and after;
   a test that was failing before is listed, not silently fixed or deleted
 
-Use `/governor:decompose` for the levels and `/governor:delegate` for the
+Use `/supervisor:decompose` for the levels and `/supervisor:delegate` for the
 specs; the worker is `py-testing:test-implementer`, which has the four stack
 skills preloaded.
 
 ## 5. Integrate
 
 Save the inventory before the work starts
-(`inventory.py tests --json > .governor/inventory-before.json`). Per level:
+(`inventory.py tests --json > .supervisor/inventory-before.json`). Per level:
 merge, run the full command, then let the script say what changed:
 
 ```
-python3 "${CLAUDE_SKILL_DIR}/scripts/inventory.py" tests --diff .governor/inventory-before.json
+python3 "${CLAUDE_SKILL_DIR}/scripts/inventory.py" tests --diff .supervisor/inventory-before.json
 ```
 
 Duplicates resolved, shadowed fixtures gone, unregistered markers at zero:

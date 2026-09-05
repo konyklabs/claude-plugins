@@ -38,7 +38,7 @@ command and their official source (`security-scanning` skill, `references/scanne
    summary in the worker report format. Do not run the scan in the
    conductor's context: the summary is bounded, tool output is not.
 2. **Read the table.** `fail` rows are defects with a location; they go to
-   an implementer as a spec (`/governor:delegate`) with the finding's
+   an implementer as a spec (`/supervisor:delegate`) with the finding's
    `command` as the test to run. `skip` rows say what was not checked and
    why; decide whether that is acceptable for this release and say so.
 3. **Judge the `review` rows.** Spawn `prod-readiness:auditor` (Opus) with
