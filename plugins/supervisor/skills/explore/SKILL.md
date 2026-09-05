@@ -1,7 +1,7 @@
 ---
 name: explore
 description: Puts the session into supervisor explore mode for a loosely defined question — workers pinned and forks denied, no report contracts, the budget a checkpoint — frames the question in three lines, and routes the outcome to ship, spike or drop. Use when asked to explore, look into, figure out, poke at or think through something that is not yet a task.
-argument-hint: [the question in one sentence]
+argument-hint: [usd|profile] [the question in one sentence]
 disable-model-invocation: true
 allowed-tools: AskUserQuestion Write Bash(python3 *) Bash(mkdir *)
 ---
@@ -32,9 +32,12 @@ your own `~/.claude/supervisor.json`; a project file may only set `enforce`.
 
 ## 2. Frame, in three lines
 
-- **Question**: `$ARGUMENTS`. If it is empty, one `AskUserQuestion` for it.
-- **Checkpoint**: the `budget_usd` from
-  `python3 "${CLAUDE_PLUGIN_ROOT}/bin/supervisor.py" budget show`.
+- **Question**: `$ARGUMENTS`, minus a leading budget word. If it is empty,
+  one `AskUserQuestion` for it.
+- **Checkpoint**: a leading number or profile name in the arguments
+  (`/supervisor:explore 5 why is the build slow`) is this session's own
+  budget, set by the hook when the command arrived; otherwise the
+  `budget_usd` from `python3 "${CLAUDE_PLUGIN_ROOT}/bin/supervisor.py" budget show`.
 - **Worth keeping if**: one sentence, what a result would have to look like
   to deserve a brief.
 

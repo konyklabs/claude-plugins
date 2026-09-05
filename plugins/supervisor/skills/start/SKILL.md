@@ -123,8 +123,10 @@ done from the brief; the tier table; the plan levels when there are any;
 files that will be written. Then ONE `AskUserQuestion` with three options:
 **go (recommended)**, **adjust**, **explore instead**.
 
-- **go**: run `python3 "${CLAUDE_PLUGIN_ROOT}/bin/supervisor.py" budget set <profile>`,
-  then continue in this turn: invoke the
+- **go**: run `python3 "${CLAUDE_PLUGIN_ROOT}/bin/supervisor.py" budget session <profile>`
+  (this session's own budget, in the ledger; the hook pins the call to the
+  session, and nothing in `~/.claude/supervisor.json` changes), then continue
+  in this turn: invoke the
   delegate skill for the first row that is not "this session". The plan is
   now the conductor's job.
 - **adjust**: the user types what changes (via "Other"). Revise the brief, the

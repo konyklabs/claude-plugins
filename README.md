@@ -79,6 +79,7 @@ denied or injected until you do. Then:
 
 ```
 /supervisor:start <task>    the one entry point: arms the session, then interview, brief, triage, cut, budget profile, plan card
+/supervisor:on [usd|profile] [reset]   arm without a brief; a number or profile is this session's own budget, reset counts spend from now
 /supervisor:on              arm the session without a brief; /supervisor:off stands it down
 /supervisor:budget          spend so far per model and subagent, and the budget
 /supervisor:triage          sort the task in front of you into tiers
@@ -199,9 +200,12 @@ per-session ledgers, `history.jsonl`, `errors.log`; the scanner writes
   three per session.
 - When expensive-tier spend reaches the budget (default 15 USD at API list
   price, subagents included), tool calls are denied with a reason; spawning
-  a cheap worker stays allowed. `/model opus` keeps the context and lifts
-  the gate; `/supervisor:budget set 25` or `set medium` raises it, capped by `budget ceiling`. A budget of 0 is a closed
-  gate, never an open one.
+  a cheap worker stays allowed. `/supervisor:on medium` or `/supervisor:on 50`,
+  typed, gives this session its own budget (two sessions in one directory
+  hold different ones; no file is edited) and `/supervisor:on reset` counts
+  spend from now; `/model opus` keeps the context and lifts the gate;
+  `/supervisor:budget set 25` raises the project default. All capped by
+  `budget ceiling`. A budget of 0 is a closed gate, never an open one.
 - Four modes. `off` (default): dormant until armed for the session.
   `enforce`: as above. `observe`: prices everything and refuses nothing.
   `explore`, for a question that is not yet a task: workers still pinned

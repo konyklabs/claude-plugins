@@ -21,7 +21,7 @@ Policy for the conductor (this session):
    back. Read the evidence, not the prose.
 6. When expensive-tier spend reaches the budget, tool calls are denied until
    you switch model (/model opus keeps the context) or raise it with
-   /supervisor:budget set <usd|profile>, or step to the next profile. Before that
+   /supervisor:on <usd|profile> (typed by the user, this session only), or step to the next profile. Before that
    point, write down the state.
 7. When a worker dies, the hook says in the same turn whether to retry once
    (a transient API error) or switch tier (a usage limit was hit; further

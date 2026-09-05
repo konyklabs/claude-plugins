@@ -80,8 +80,8 @@ answer first ("whatever you think" takes them all). The second is the plan
 card: the task line and its definition of done, the tier table (each slice,
 its tier, its agent, why), the plan levels when the work was cut, and the
 budget profile it picked with the reason. You answer go, adjust, or explore
-instead. On go it sets the budget to the profile and starts delegating in the
-same turn; nothing else is typed.
+instead. On go it sets this session's budget to the profile (in the ledger,
+not in a file) and starts delegating in the same turn; nothing else is typed.
 
 The budget is a profile, not a number: `small`, `medium` and `large` by
 default, chosen from the table (Sonnet-only and three slices at most is
@@ -190,7 +190,11 @@ The readout line is in context every turn. `/supervisor:budget` shows the full p
 >
 > `/model opus` lifts the gate on the next message. Write the state down first; a cheaper model cannot read the expensive one's thinking.
 >
+> `/supervisor:on large` (or `/supervisor:on 50`) gives this session its own budget, one typed command, nothing restarted; the deny reason names the next profile. `/supervisor:on reset` counts spend from now instead.
+>
 > `/supervisor:budget set 25` raises the budget for this project in your own user file. A project's `.claude/supervisor.json` can only lower it.
+>
+> The plugin's own `budget session`, `budget reset`, `budget show`, `budget history`, `mode show` and `status` are the one Bash call a closed gate lets through (its own script, one line, no shell operators), so the agent can raise or reset this session when you say so in the turn: the escape hatch is not behind the wall. Anything that writes a config file (`budget set`, `budget ceiling`, `mode <x>`) stays gated.
 
 Past sessions are in `supervisor.py budget history`; after a few runs that number, not a guess, sets the budget.
 
