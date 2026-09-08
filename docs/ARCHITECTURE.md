@@ -394,6 +394,63 @@ under the supervisor's delegate flow, a TypeScript Playwright skill so the
 worker is competent on either stack, and the new test tagged with its tile;
 the cases stay with the conductor. The plugin carries no agents yet.
 
+## terrain: infrastructure, the same shape (2026-09-08)
+
+The fifth plugin applies the pattern to OpenTofu on AWS, where the gap
+showed differently: review rounds on infrastructure changes kept finding
+rudimentary problems on the fourth and fifth pass. Two mechanisms, both
+addressed:
+
+1. The org's shared lens rules exclude anything a linter catches and tell
+   the lens not to run tools. Where nothing in the pipeline runs validate,
+   tflint, trivy or checkov, that class is nobody's. `preflight.py` runs
+   whichever of them are on PATH and reduces them to counts and
+   `path:line rule`; a missing or broken tool is a `skip` row.
+2. The traps that break at apply time or silently in production are caught
+   by no linter. `hcl_checks.py` covers twelve of them structurally (a mask
+   that blanks strings, comments and heredocs; top-level attribute lookups
+   only; no HCL evaluation, so an expression is left alone rather than
+   guessed). `plan_summary.py` turns `tofu show -json` into a table and
+   exits 2 on any destroy, replace or forget not named on an allow list
+   matched against the raw address.
+
+**The baseline the checklist order comes from.** A 284-line synthetic
+root module (Fargate service behind an ALB, SQS-triggered Lambda, two
+buckets, IAM) with 34 planted defects, kept as
+`plugins/terrain/tests/fixtures/planted-stack/` with its answer key.
+
+| check | catches, of 34 |
+|---|---|
+| `tofu validate -json` (1.12.6) | 0 errors; 3 deprecation warnings, `valid: true` |
+| tflint 0.64.0 + aws ruleset 0.44.0 | 5 |
+| trivy 0.74.0 config | about 5, among 23 findings |
+| checkov 3.3.16 | about 5, among 36 findings |
+| the four together | 12 |
+| `hcl_checks.py` | 14, pinned by test, zero on the corrected form |
+| Sonnet, no skill, a lens-shaped prompt with a required failure scenario | 20; missed the log group never created, `ignore_changes` with a pipeline deploying, `source_code_hash`, the ALB in private subnets |
+| Opus, same prompt | 45 findings, about 31 of 34 |
+
+The reading that shaped the skills: a model given a lens-shaped mandate
+already does well on this material; the rounds that miss rudimentary
+problems are missing the preflight and the mandate, not model knowledge.
+`reviewing-tofu` orders its nine classes by what the Sonnet baseline
+missed, and its "not findings" list is the trivy/checkov noise measured
+above. The real review comments from those rounds, read locally, are the
+input that would replace the guessed ordering; that has not happened yet.
+
+**References carry patterns, not catalogues** (Oleg, 2026-09-08): live
+argument-level docs come from Context7 or the raw provider markdown pinned
+to the lockfile version. The one table a check needs (Fargate CPU to
+memory) lives in the script beside the check.
+
+**Local review round on the plugin itself**: deep, broad and adversarial
+lenses on the first commit returned 30 findings; the blocking ones were a
+`forget` action exiting 0, validate diagnostics' free text reaching the
+table, sanitizers that no test exercised, unsanitized file names in the
+structural checker, and skill script paths that did not resolve when
+installed. All fixed with a test each or a documented change; the
+dispositions are in the pull request body.
+
 ## What was verified in the field, and what was not
 
 Captured with `SUPERVISOR_DEBUG=1` (the engine appends every raw hook input to
