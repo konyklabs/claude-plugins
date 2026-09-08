@@ -5,7 +5,7 @@
     "name": "Oleg Konyk",
     "url": "https://olegkonyk.com"
   },
-  "description": "Claude Code plugins for expensive-model sessions on a budget: the supervisor harness, and domain skills for Python test engineering.",
+  "description": "Claude Code plugins for expensive-model sessions on a budget: the supervisor harness, and domain skills for Python test engineering, production readiness, end-to-end sign-off, and OpenTofu on AWS.",
   "plugins": [
     {
       "name": "supervisor",
@@ -16,7 +16,7 @@
     {
       "name": "py-testing",
       "source": "./plugins/py-testing",
-      "description": "Python test engineering skills \u2014 pytest project structure, Playwright API and browser tests, SQLAlchemy test fixtures \u2014 and the untangling workflow for large unmerged test suites.",
+      "description": "Python test engineering skills — pytest project structure, Playwright API and browser tests, SQLAlchemy test fixtures — and the untangling workflow for large unmerged test suites.",
       "category": "testing"
     },
     {
@@ -30,6 +30,12 @@
       "source": "./plugins/signoff",
       "description": "Reconciles an application's end-to-end coverage against what it does: explore, mine, tile, fill, report, human-readable test cases.",
       "category": "testing"
+    },
+    {
+      "name": "terrain",
+      "source": "./plugins/terrain",
+      "description": "OpenTofu on AWS, authored and reviewed the way the Python work is: a deterministic preflight (fmt, validate, the linters on PATH reduced to counts, structural checks for the Fargate and Lambda traps no linter catches, a plan summary that fails closed on destroy), a Terraform review lens with an Opus reviewer agent, and docs-first authoring references for ECS Fargate, Lambda, IAM, networking and state.",
+      "category": "infrastructure"
     }
   ]
 }

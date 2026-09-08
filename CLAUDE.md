@@ -2,7 +2,8 @@
 
 Claude Code plugin marketplace (`konyklabs-plugins`): `supervisor` (token
 guardrails for expensive-model sessions), `py-testing` (Python test
-engineering skills), `prod-readiness` (security and readiness scanning).
+engineering skills), `prod-readiness` (security and readiness scanning),
+`signoff` (end-to-end coverage reconciliation), `terrain` (OpenTofu on AWS).
 `README.md` says how to install and use them; this file is for working on
 them.
 
@@ -39,7 +40,9 @@ Paste the output in the commit or PR; never say "tests pass" without it.
 - **Skills**: third-person descriptions with the words a person would type;
   SKILL.md under 150 lines; references one level deep with a contents list;
   one home per fact; sources and fetch dates at the end; where the docs are
-  silent, say so.
+  silent, say so. Live argument-level docs come from Context7 (or the raw
+  source the skill names); a reference carries patterns and traps, never
+  a catalogue that rots.
 - **Agents**: pin `model` and `effort` in frontmatter (subagents otherwise
   inherit the session's effort); state the report contract; keep tools to
   what the job needs.
@@ -73,4 +76,7 @@ Paste the output in the commit or PR; never say "tests pass" without it.
 - Inventory: `plugins/py-testing/skills/untangling-test-suites/scripts/inventory.py`.
 - signoff scripts: `plugins/signoff/skills/*/scripts/` (formats in
   `plugins/signoff/formats.md`).
-- Driving tasks: konyklabs/roadmap#60, #61 and #120.
+- terrain scripts: `plugins/terrain/skills/preflighting-tofu/scripts/`
+  (`preflight.py`, `hcl_checks.py`, `plan_summary.py`); planted-defect
+  fixture and answer key in `plugins/terrain/tests/fixtures/planted-stack/`.
+- Driving tasks: konyklabs/roadmap#60, #61, #120 and #130.

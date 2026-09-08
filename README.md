@@ -10,6 +10,7 @@ step that can be a script is a script.
 | **supervisor** | Guardrails in code for Fable-tier sessions: spawns are pinned to cheap workers (a bare one to its own `worker` agent), forks are denied, an expensive spawn needs a written brief, a priced per-session budget is enforced from the transcript, workers cannot stop without evidence, and a dead worker is named with what to do about it — retry once, or switch tier. Agents with pinned model and effort, skills for triage, delegation, decomposition and consultation, a ledger, a status line, and headless worker runs under a hard dollar cap. | `supervisor@konyklabs-plugins` |
 | **py-testing** | Python test engineering: pytest project layout, Playwright API and browser tests, SQLAlchemy test fixtures, and the workflow for untangling a large unmerged test suite, with a deterministic inventory script and a Sonnet worker that has the stack skills preloaded. | `py-testing@konyklabs-plugins` |
 | **prod-readiness** | Production-readiness and security scanning for API sample apps and developer portals: one deterministic scan emits a categorized report, external scanners are summarized to counts and never installed, an Opus auditor judges only the rows that need judgment. Twenty-five check classes from a real hardening pass, nineteen settled by the scanner. | `prod-readiness@konyklabs-plugins` |
+| **terrain** | OpenTofu on AWS: a preflight that runs fmt, validate and whatever linters are on PATH (never installed, reduced to counts), structural checks for the Fargate, Lambda, IAM, secrets and state-locking traps no linter catches, a plan summary that fails closed on destroy or replace, a review lens with an Opus reviewer agent, and authoring references that carry patterns and traps and leave the argument catalogue to the live docs. | `terrain@konyklabs-plugins` |
 | **signoff** | Reconciles an application's end-to-end coverage against what it does: explore, mine, tile, fill, report, human-readable test cases. Tiling coverage, recording test cases and the sign-off report are built and script-driven; explore and mine have no agent yet, so nothing yet writes `.qa/map.json` or `.qa/rules.json` on its own. | `signoff@konyklabs-plugins` |
 
 Requirements: Claude Code 2.1.255 or later, `python3` 3.9 or later on PATH.
@@ -28,6 +29,7 @@ claude plugin marketplace add konyklabs/claude-plugins
 claude plugin install supervisor@konyklabs-plugins
 claude plugin install py-testing@konyklabs-plugins
 claude plugin install prod-readiness@konyklabs-plugins
+claude plugin install terrain@konyklabs-plugins
 ```
 
 Until the first pull request has merged, add the branch instead:
