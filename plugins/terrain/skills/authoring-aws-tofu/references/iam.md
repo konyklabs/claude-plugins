@@ -133,8 +133,8 @@ Destroying the exclusive resource does not remove the policies.
 
 ## Least-privilege habits
 
-- `Action = "*"` with `Resource = "*"` is never right; the preflight flags
-  the JSON form and trivy/checkov the data-source form.
+- `Action = "*"` with `Resource = "*"` is never right; the preflight's
+  star-action check reads both the JSON form and the data-source form.
 - `iam:PassRole` is scoped to the role being passed and, where the service
   supports it, `iam:PassedToService`.
 - Build ARNs from `data.aws_partition`, `data.aws_caller_identity` and

@@ -36,11 +36,11 @@ Until the first pull request has merged, add the branch instead:
 `claude plugin marketplace add konyklabs/claude-plugins@feat/60-claude-plugins`.
 
 **B. From zips, no git access** (a work machine): build once anywhere that
-has the checkout, copy the three files, load them directly.
+has the checkout, copy the zips, load them directly.
 
 ```
 bash scripts/dist.sh                       # dist/<plugin>.zip, from the committed tree, each scanned
-claude --plugin-dir supervisor.zip --plugin-dir py-testing.zip --plugin-dir prod-readiness.zip
+claude --plugin-dir supervisor.zip --plugin-dir py-testing.zip --plugin-dir prod-readiness.zip --plugin-dir signoff.zip --plugin-dir terrain.zip
 ```
 
 The zips are `git archive` output (nothing ignored can be inside) and each
@@ -52,7 +52,7 @@ An installed plugin is a versioned copy; edits in the checkout are not seen
 until `version` in its `plugin.json` changes, so use `--plugin-dir` while
 developing.
 
-Verify: `claude plugin list` shows the three as enabled; `claude plugin
+Verify: `claude plugin list` shows the five as enabled; `claude plugin
 details supervisor` shows 10 skills, 6 agents, 6 hooks and about 1,500
 always-on tokens per session.
 
@@ -128,6 +128,9 @@ Everything an agent needs to operate the plugins without reading the code.
 | `/signoff:tiling-coverage` | building or refreshing `.qa/tiles.json` once the map and the mined rules exist, or on every later cycle |
 | `/signoff:recording-test-cases` | writing a case to close a coverage gap, before a commit that touches `testcases/`, or exporting cases to Azure, Gherkin or Markdown |
 | `/signoff:signoff-report` | writing `testcases/coverage.md` and the coverage section of a pull request |
+| `/terrain:preflighting-tofu` | before pushing OpenTofu or Terraform on AWS, or judging whether a plan is safe: fmt, validate, the linters on PATH, the structural checks, the plan summary |
+| `/terrain:reviewing-tofu` | reviewing a `.tf` diff: the nine classes in the order reviewers miss them, with the failure scenario each finding carries |
+| `/terrain:authoring-aws-tofu` | writing or changing `.tf` for AWS: docs first (Context7 or the raw provider markdown), then the ECS Fargate, Lambda, IAM, networking and state references |
 
 **Agents** (spawn by `subagent_type`; never pass `model`, the definition pins it):
 
@@ -142,6 +145,7 @@ Everything an agent needs to operate the plugins without reading the code.
 | `py-testing:test-implementer` | sonnet, medium | test slices, four stack skills preloaded | worker |
 | `prod-readiness:scanner` | sonnet, medium | run the scan and the installed tools | worker |
 | `prod-readiness:auditor` | opus, medium | judge the scan's review rows | JSON findings with failure scenarios |
+| `terrain:tofu-reviewer` | opus, medium | the infrastructure lens on a `.tf` change, `reviewing-tofu` preloaded, read-only | JSON findings with failure scenarios, plus the checklist items walked |
 
 The **worker contract**, enforced by a hook at `SubagentStop`: `## Result`
 with DONE, PARTIAL or BLOCKED; `## Changed files`; `## Evidence` with each
@@ -164,12 +168,16 @@ is sent back (twice at most).
 | `supervisor.py statusline-snippet` | the settings fragment for the status line |
 | `inventory.py tests [--json] [--diff before.json]` | test-suite facts; the diff is the integration evidence |
 | `readiness.py [ROOT] --tier precommit|release [--only id,id] [--json]` | the categorized scan; full report in `.readiness/report.json` |
+| `preflight.py DIR [--json]` | fmt, validate, tflint, trivy, checkov if on PATH; one row per tool, `skip` is never a pass; findings as `path:line rule` |
+| `hcl_checks.py DIR [--json]` | the structural traps no linter catches (Fargate shape, unmanaged log group, Lambda hash, secrets, locking, star IAM, hardcoded ids), modules included; exit 2 on findings |
+| `plan_summary.py tfplan.json [--allow ADDR ...] [--json]` | `tofu show -json` to a table; exit 2 on any destroy, replace or forget not allow-listed; never prints attribute values |
 | `scripts/dist.sh`, `scripts/validate.sh`, `scripts/audit-deps.sh` | zips, strict validation, dependency audit |
 
 `supervisor.py` lives at `plugins/supervisor/bin/`, `inventory.py` under
 `plugins/py-testing/skills/untangling-test-suites/scripts/`, `readiness.py`
-under `plugins/prod-readiness/skills/readiness-review/scripts/`. Inside a
-skill, `${CLAUDE_PLUGIN_ROOT}` and `${CLAUDE_SKILL_DIR}` resolve them.
+under `plugins/prod-readiness/skills/readiness-review/scripts/`, the three
+terrain scripts under `plugins/terrain/skills/preflighting-tofu/scripts/`.
+Inside a skill, `${CLAUDE_PLUGIN_ROOT}` and `${CLAUDE_SKILL_DIR}` resolve them.
 
 **Configuration**: `~/.claude/supervisor.json` for the user (per-project
 entries under `"projects": {"/abs/path": {...}}`), `.claude/supervisor.json`

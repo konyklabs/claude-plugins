@@ -7,8 +7,10 @@ Usage:
     python3 plan_summary.py tfplan.json [--allow ADDRESS ...] [--json]
 
 Exit codes:
-    0  no destroy or replace, or every one is allow-listed
-    2  a destroy or replace is present and not allow-listed
+    0  no destroy, replace or forget, or every one is allow-listed
+    2  a destroy, replace or forget is present and not allow-listed
+       (forget = removed from state without destroy; the object stops
+       being managed, which is as irreversible as a destroy for review)
     1  the input is missing, unreadable or not a plan
 
 The script never prints attribute values from the plan: a plan carries
@@ -24,8 +26,10 @@ import sys
 from collections import Counter
 
 # Addresses are `type.name`, `module.m["k"].type.name[0]` and the like. Anything
-# outside this set is replaced so a crafted name cannot smuggle text into the
-# table the model reads.
+# outside this set is replaced and the length is capped, so an address cannot
+# break the table's structure (newlines, control characters, markup). A
+# resource *name* is still repository text and can be a sentence; the reader
+# treats the address column as data, never as an instruction.
 _ADDRESS_OK = re.compile(r'[^A-Za-z0-9_.\[\]"\-/:]')
 # Longest reasonable address: a few nested modules plus a keyed instance. A
 # longer one is truncated so the table stays a table.
@@ -42,7 +46,7 @@ _ACTION_CLASS = {
     ("create", "delete"): "replace",
     ("forget",): "forget",
 }
-DESTRUCTIVE = {"destroy", "replace"}
+DESTRUCTIVE = {"destroy", "replace", "forget"}
 
 
 def sanitize(address: str) -> str:
@@ -68,6 +72,7 @@ def summarize(plan: dict) -> dict:
         rows.append(
             {
                 "address": sanitize(rc.get("address", "")),
+                "_raw": str(rc.get("address", "")),  # for the allow-list match; never printed
                 "type": sanitize(rc.get("type", "")),
                 "action": cls,
                 "reason": sanitize(rc.get("action_reason") or ""),
@@ -110,13 +115,13 @@ def render(summary: dict, blocked: list[dict], allowed: list[dict]) -> str:
         lines.append("outputs changed: " + ", ".join(summary["output_changes"]))
     lines.append("")
     if blocked:
-        lines.append("BLOCKED: destructive change(s) not on the allow list:")
+        lines.append("BLOCKED: destructive change(s) (destroy, replace, forget) not on the allow list:")
         lines.extend(f"  {r['action']:8} {r['address']}" for r in blocked)
     elif allowed:
         lines.append("OK: every destructive change is on the allow list:")
         lines.extend(f"  {r['action']:8} {r['address']}" for r in allowed)
     else:
-        lines.append("OK: no destroy or replace in this plan")
+        lines.append("OK: no destroy, replace or forget in this plan")
     return "\n".join(lines)
 
 
@@ -138,10 +143,14 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     summary = summarize(plan)
-    allow = {sanitize(a) for a in args.allow}
+    # Exact match on the raw address: sanitizing first would let one
+    # allow entry admit a different address that sanitizes the same way.
+    allow = set(args.allow)
     destructive = [r for r in summary["changes"] if r["action"] in DESTRUCTIVE or r["action"].startswith("unknown:")]
-    blocked = [r for r in destructive if r["address"] not in allow]
-    allowed = [r for r in destructive if r["address"] in allow]
+    blocked = [r for r in destructive if r["_raw"] not in allow]
+    allowed = [r for r in destructive if r["_raw"] in allow]
+    for r in summary["changes"]:
+        r.pop("_raw", None)
     summary["blocked"] = blocked
     summary["allowed"] = allowed
 

@@ -37,10 +37,18 @@ TIMEOUT_S = 300
 # counts already say how bad it is.
 MAX_ROWS = 40
 _SAFE = re.compile(r"[^A-Za-z0-9_.\-/\[\]\": ]")
+# Rule names and check ids are identifiers; anything else in one is an
+# attempt to smuggle text into the table.
+_IDENT = re.compile(r"[^A-Za-z0-9_.\-]")
 
 
 def _san(s: object, n: int = 80) -> str:
     out = _SAFE.sub("?", str(s))
+    return out if len(out) <= n else out[: n - 1] + "…"
+
+
+def _ident(s: object, n: int = 60) -> str:
+    out = _IDENT.sub("?", str(s))
     return out if len(out) <= n else out[: n - 1] + "…"
 
 
@@ -93,14 +101,19 @@ def check_validate(d: Path) -> dict:
         doc = json.loads(out)
     except ValueError:
         return _row("validate", "skip", f"exit {rc}, no JSON")
+    if "valid" not in doc or "diagnostics" not in doc:
+        return _row("validate", "skip", f"exit {rc}, unexpected JSON shape")
     counts: dict[str, int] = {}
     findings = []
     for diag in doc.get("diagnostics") or []:
-        sev = _san(diag.get("severity", "unknown"), 12)
+        sev = _ident(diag.get("severity", "unknown"), 12)
         counts[sev] = counts.get(sev, 0) + 1
         rng = diag.get("range") or {}
         loc = f"{_san(rng.get('filename', '?'))}:{int((rng.get('start') or {}).get('line', 0))}"
-        findings.append(f"{loc} {_san(diag.get('summary', ''), 60)}")
+        # No rule id exists for a validate diagnostic and its summary is
+        # free text, so the row names only the severity and the address;
+        # the operator reads the text by running `tofu validate` directly.
+        findings.append(f"{loc} validate:{sev} {_san(diag.get('address', ''), 60)}".rstrip())
     status = "pass" if doc.get("valid") and not doc.get("error_count") else "fail"
     return _row("validate", status, "", counts, findings)
 
@@ -115,16 +128,18 @@ def check_tflint(d: Path) -> dict:
         doc = json.loads(out)
     except ValueError:
         return _row("tflint", "skip", f"exit {rc}, no JSON (plugins not installed? run `tflint --init`)")
+    if rc not in (0, 2) or "issues" not in doc:  # 1 is a tool error, whatever it printed
+        return _row("tflint", "skip", f"exit {rc}, tool error")
     if doc.get("errors"):
         return _row("tflint", "skip", f"{len(doc['errors'])} tool error(s)")
     counts: dict[str, int] = {}
     findings = []
     for issue in doc.get("issues") or []:
         rule = issue.get("rule") or {}
-        sev = _san(rule.get("severity", "unknown"), 12)
+        sev = _ident(rule.get("severity", "unknown"), 12)
         counts[sev] = counts.get(sev, 0) + 1
         rng = issue.get("range") or {}
-        findings.append(f"{_san(rng.get('filename', '?'))}:{int((rng.get('start') or {}).get('line', 0))} {_san(rule.get('name', ''))}")
+        findings.append(f"{_san(rng.get('filename', '?'))}:{int((rng.get('start') or {}).get('line', 0))} {_ident(rule.get('name', ''))}")
     return _row("tflint", "fail" if findings else "pass", "", counts, findings)
 
 
@@ -138,14 +153,16 @@ def check_trivy(d: Path) -> dict:
         doc = json.loads(out)
     except ValueError:
         return _row("trivy", "skip", f"exit {rc}, no JSON")
+    if rc != 0 or not isinstance(doc, dict) or "Results" not in doc:  # without --exit-code, non-zero is a scan failure
+        return _row("trivy", "skip", f"exit {rc}, no Results")
     counts: dict[str, int] = {}
     findings = []
     for res in doc.get("Results") or []:
         for m in res.get("Misconfigurations") or []:
-            sev = _san(m.get("Severity", "UNKNOWN"), 12)
+            sev = _ident(m.get("Severity", "UNKNOWN"), 12)
             counts[sev] = counts.get(sev, 0) + 1
             line = int((m.get("CauseMetadata") or {}).get("StartLine") or 0)
-            findings.append(f"{_san(res.get('Target', '?'))}:{line} {_san(m.get('ID', ''))} {sev}")
+            findings.append(f"{_san(res.get('Target', '?'))}:{line} {_ident(m.get('ID', ''))} {sev}")
     return _row("trivy", "fail" if findings else "pass", "", counts, findings)
 
 
@@ -160,6 +177,8 @@ def check_checkov(d: Path) -> dict:
     except ValueError:
         return _row("checkov", "skip", f"exit {rc}, no JSON")
     reports = doc if isinstance(doc, list) else [doc]
+    if rc not in (0, 1) or not all(isinstance(r, dict) and "summary" in r and "results" in r for r in reports):
+        return _row("checkov", "skip", f"exit {rc}, no report")
     counts: dict[str, int] = {"failed": 0, "passed": 0}
     findings = []
     for rep in reports:
@@ -168,7 +187,7 @@ def check_checkov(d: Path) -> dict:
         counts["passed"] += int(summ.get("passed", 0))
         for f in (rep.get("results") or {}).get("failed_checks") or []:
             line = int((f.get("file_line_range") or [0])[0])
-            findings.append(f"{_san(f.get('file_path', '?').lstrip('/'))}:{line} {_san(f.get('check_id', ''))}")
+            findings.append(f"{_san(f.get('file_path', '?').lstrip('/'))}:{line} {_ident(f.get('check_id', ''))}")
     return _row("checkov", "fail" if findings else "pass", "", counts, findings)
 
 

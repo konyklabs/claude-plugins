@@ -35,7 +35,7 @@ def test_clean_plan_exits_zero(tmp_path):
     r = run(p)
     assert r.returncode == 0, r.stderr
     assert "create=1" in r.stdout and "update=1" in r.stdout
-    assert "OK: no destroy or replace" in r.stdout
+    assert "OK: no destroy, replace or forget" in r.stdout
 
 
 def test_destroy_blocks(tmp_path):
@@ -86,3 +86,22 @@ def test_drift_and_outputs_reported(tmp_path):
     r = run(p)
     assert "drift: 1 resource" in r.stdout
     assert "outputs changed: url" in r.stdout and "same" not in r.stdout
+
+
+def test_forget_is_destructive(tmp_path):
+    """A `removed` block with destroy = false yields ["forget"]: the object
+    leaves state and stops being managed. That needs the allow list too."""
+    p = _plan(tmp_path, [("aws_db_instance.main", ["forget"], None)])
+    assert run(p).returncode == 2
+    assert run(p, "--allow", "aws_db_instance.main").returncode == 0
+
+
+def test_allow_list_matches_the_raw_address_not_its_sanitized_form(tmp_path):
+    """Two addresses that sanitize to the same string must not admit each
+    other; the allow entry must equal the plan's address exactly."""
+    a = "module.x[\"k\"].aws_s3_bucket.logs"
+    b = "module.x[\"k\"].aws_s3_bucket.logs" + "\t"  # sanitizes to the same text
+    p = _plan(tmp_path, [(a, ["delete"], None), (b, ["delete"], None)])
+    assert run(p, "--allow", a).returncode == 2
+    assert run(p, "--allow", a, "--allow", b).returncode == 0
+    assert "_raw" not in run(p, "--json").stdout

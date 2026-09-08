@@ -24,10 +24,10 @@ assumes the previous one is clean.
 ```sh
 tofu fmt -recursive                                   # write, then re-run -check
 tofu init -backend=false -input=false                 # only if .terraform is absent; needs network
-python3 scripts/preflight.py DIR                      # fmt, validate, tflint, trivy, checkov
-python3 scripts/hcl_checks.py DIR                     # the structural traps
+python3 "${CLAUDE_SKILL_DIR}/scripts/preflight.py" DIR      # fmt, validate, tflint, trivy, checkov
+python3 "${CLAUDE_SKILL_DIR}/scripts/hcl_checks.py" DIR     # the structural traps, modules included
 tofu plan -out=tfplan -input=false && tofu show -json tfplan > tfplan.json
-python3 scripts/plan_summary.py tfplan.json           # fails closed on destroy/replace
+python3 "${CLAUDE_SKILL_DIR}/scripts/plan_summary.py" tfplan.json   # fails closed on destroy, replace, forget
 ```
 
 `terraform` is used automatically when `tofu` is not on PATH.
@@ -38,18 +38,24 @@ python3 scripts/plan_summary.py tfplan.json           # fails closed on destroy/
   `tofu init -backend=false` and re-run. `tflint skip ... tflint --init`
   means the AWS ruleset plugin is declared but not installed. A row that
   stays `skip` is stated as skipped in the evidence, by name.
-- **validate warnings are findings.** Since provider 6 they are deprecated
-  arguments (`inline_policy`, inline `acl`, `versioning`); the replacement
-  resource is named in the warning. Fix them; they become errors in 7.
+- **validate warnings are findings.** The row shows `path:line
+  validate:warning` and the resource address, never the message (a
+  diagnostic is free text, and the table is untrusted input to the model
+  that reads it). Run `tofu validate` yourself to read it. Since provider
+  6 these are deprecated arguments (`inline_policy`, inline `acl`,
+  `versioning`) and the message names the replacement resource. Fix
+  them; they become errors in 7.
 - **trivy and checkov are noisy by design.** Their counts go in the evidence
   as counts. Act on the rows that match the checklist in `reviewing-tofu`
   (open ingress, public access block, same role for execution and task,
   public IP on a Fargate task, unencrypted queue). A WAF or cross-region
   replication row on an internal service is answered in one line, not
   fixed.
-- **tflint's terraform preset** is the cheapest signal there is: unpinned
-  providers, untyped variables, an end-of-life Lambda runtime. Zero
-  warnings is the bar.
+- **tflint** is the cheapest signal there is: the bundled terraform
+  preset for unpinned providers and untyped variables, the AWS ruleset
+  plugin (declared in `.tflint.hcl`, installed by `tflint --init`) for an
+  end-of-life Lambda runtime and invalid arguments. Zero warnings is the
+  bar, and a `skip` row on tflint means the bar was not measured.
 
 ## Reading the structural checks
 
@@ -88,8 +94,11 @@ BLOCKED: destructive change(s) not on the allow list:
 ```
 
 Exit 2 is the answer "not safe to apply as it stands". The only way past
-it is `--allow ADDRESS` for each destroy or replace that the task brief
-names as intended, and the brief is quoted in the evidence. A replace the
+it is `--allow ADDRESS` for each destroy, replace or forget that the task
+brief names as intended (the address exactly as the plan prints it), and
+the brief is quoted in the evidence. A `forget` (a `removed` block or
+`destroy = false`) is on the list because the object stops being managed,
+which is as hard to undo as a destroy. A replace the
 brief does not mention is a finding: usually a `name` change on a resource
 that cannot rename, a `region` argument added to an existing resource, or
 a `for_each` key change. `moved` blocks fix the last one without a replace;

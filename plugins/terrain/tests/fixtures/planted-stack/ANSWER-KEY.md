@@ -28,7 +28,7 @@
 | D24 | lambda.tf | no `source_code_hash`: code changes never redeploy | lambda |
 | D25 | lambda.tf | runtime python3.8 is deprecated/unsupported | lambda |
 | D26 | lambda.tf | no log group with retention | lambda (minor) |
-| D27 | lambda.tf | SQS visibility timeout (default 30s) not >= lambda timeout; AWS says 6x | lambda |
+| D27 | lambda.tf | SQS visibility timeout left at the default 30 s while the function timeout is 60 s: a message is delivered again mid-invocation (AWS guidance: at least 6x) | lambda |
 | D28 | lambda.tf | `null_resource` local-exec, no triggers, runs once, needs aws CLI; null provider undeclared | provisioner |
 | D29 | lambda.tf | no DLQ/redrive on the queue; no ReportBatchItemFailures | lambda (minor) |
 | D30 | storage.tf | `acl` and inline `versioning` on aws_s3_bucket: removed/deprecated since 4.0 | provider-drift |

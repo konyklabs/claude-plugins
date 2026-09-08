@@ -10,7 +10,7 @@ resource "aws_lambda_function" "worker" {
   handler       = "handler.main"
   runtime       = "python3.8"
   filename      = data.archive_file.worker.output_path
-  timeout       = 30
+  timeout       = 60
 
   environment {
     variables = {
