@@ -9,6 +9,10 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+    # No release-type input: the reusable workflow's own contract says an
+    # empty value runs release-please in manifest mode, which is the only
+    # mode that reads release-please-config.json's extra-files. Passing
+    # `simple` here is why 1.0.0 (#3) and 2.2.0 (#23) bumped the manifest and
+    # CHANGELOG but left every plugins/*/.claude-plugin/plugin.json behind
+    # (konyklabs/roadmap#66).
     uses: konyklabs/.github/.github/workflows/release-please.yml@main
-    with:
-      release-type: simple
