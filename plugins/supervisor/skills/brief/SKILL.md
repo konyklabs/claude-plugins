@@ -38,12 +38,12 @@ ask one confirmation question before saving.
 
 ## 3. Ground the questions in the tree
 
-If the task names a path or an area, spawn ONE `supervisor:scout` before asking
-anything, for path:line facts: the files involved, the tests that cover
-them, the command that runs those tests. Questions grounded in the tree are
-the ones worth asking; ungrounded clarification rounds lose the user after
-about three (the Ambig-SWE finding). Do not read files yourself; the scout
-returns locations, and the brief points at them.
+If the task names up to about three files, read them. If it names an area,
+spawn ONE `supervisor:scout` before asking anything, for path:line facts: the
+files involved, the tests that cover them, the command that runs those tests.
+Questions grounded in the tree are the ones worth asking; ungrounded
+clarification rounds lose the user after about three (the Ambig-SWE finding).
+The brief points at locations, not contents.
 
 ## 4. Rank the gaps
 

@@ -12,6 +12,7 @@ You run the session on the expensive model and it conducts. Six hooks make that 
 - **Expensive spawns need a brief.** Sending a question to `supervisor:architect` (Fable) works only with `## Question`, `## Context` and `## Definition of done` in the prompt, and at most three times per session.
 - **Spend is priced and gated.** Every turn, from the transcript, at API list price. At 15 USD of expensive-tier spend, tool calls are denied until you switch model or raise the budget. Cheap spawns stay allowed.
 - **Workers cannot stop without evidence.** A report missing its result, changed files or pasted command output is sent back, twice at most.
+- **Small work stays inline.** The policy names an inline threshold: under about three files, nothing parallel, nothing that floods the context, the conductor does it itself. A worker round trip is minutes of wall clock (median 9 min per subagent, 1.5 min per scout, measured 2026-09-27); delegation is for work that is parallel, wide, or long enough to earn the wait.
 
 The rest is skills. They do not fire on their own; you name them in the brief and the model runs them.
 

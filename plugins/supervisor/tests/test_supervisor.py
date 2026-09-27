@@ -121,6 +121,31 @@ def test_pricing_resolves_longest_prefix_and_aliases():
     assert p.resolve("fable") == "claude-fable-5-1"
     assert p.resolve("claude-sonnet-5") == "claude-sonnet-5"
     assert p.resolve("no-such-model") is None
+    # Claude Code resolved the opus alias to Opus 5.5 in a session transcript on
+    # 2026-09-27; the alias follows it, and 5.5 is its own row (a 5.5 id would
+    # otherwise price by its longest prefix, Opus 5, at $5/$25 instead of $4/$20).
+    assert p.resolve("opus") == "claude-opus-5-5"
+    assert p.resolve("claude-opus-5-5") == "claude-opus-5-5"
+    assert p.resolve("claude-opus-5") == "claude-opus-5"
+
+
+def test_opus_5_5_is_priced_below_opus_5():
+    p = supervisor.Pricing.load()
+    u = usage(inp=1_000_000, out=1_000_000, w5=1_000_000, w1h=1_000_000, read=1_000_000)
+    assert p.cost_usd("claude-opus-5-5", u) == pytest.approx(4 + 20 + 5 + 8 + 0.2)
+    assert p.cost_usd("claude-opus-5-5", u) < p.cost_usd("claude-opus-5", u)
+
+
+def test_policy_states_the_inline_threshold():
+    """The conductor policy must say when NOT to delegate. The 2026-09-27
+    census (roadmap#148) measured a median 9 min per subagent and 1.5 min per
+    scout; a policy that only says 'everything else goes to a worker' turns
+    every three-line look-up into minutes of waiting."""
+    policy = (supervisor.PLUGIN_ROOT / "policy.md").read_text()
+    assert "inline" in policy and "three files" in policy
+    assert "Everything else goes to a worker" not in policy
+    triage = (supervisor.PLUGIN_ROOT / "skills" / "triage" / "SKILL.md").read_text()
+    assert "inline threshold" in triage.lower()
 
 
 def test_cost_uses_all_five_rates():
@@ -2240,6 +2265,21 @@ def test_a_bare_project_agent_that_pins_nothing_is_not_answered_by_the_plugins_w
     assert supervisor.declared_model("worker", supervisor.DEFAULTS, str(env["project"])) is None
     d = supervisor.agent_policy({"subagent_type": "worker", "prompt": "p"}, supervisor.DEFAULTS, led, str(env["project"]))
     assert d["action"] == "rewrite" and d["updated_input"]["model"] == "sonnet"
+
+
+def test_quota_hit_on_one_opus_version_denies_the_other(env):
+    """The opus alias moved from Opus 5 to Opus 5.5 on 2026-09-27; a limit hit
+    is announced per family, so a hit recorded under either id denies both."""
+    tp = make_session(env["tmp"], main_lines=assistant_lines("m1", "claude-fable-5-1", usage(out=10), blocks=1))
+    led = ledger_for(tp)
+    led.note_quota_hit("claude-opus-5-5", QUOTA_TEXT)
+    for spawn_model in ("opus", "claude-opus-5", "claude-opus-5-5"):
+        d = supervisor.agent_policy({"subagent_type": "s", "model": spawn_model, "prompt": "p"}, supervisor.DEFAULTS, led, str(env["project"]))
+        assert d["action"] == "deny", spawn_model
+    assert supervisor.agent_policy({"subagent_type": "s", "model": "sonnet", "prompt": "p"}, supervisor.DEFAULTS, led, str(env["project"]))["action"] == "allow"
+    p = supervisor.Pricing.load()
+    assert p.family("opus") == p.family("claude-opus-5") == "opus"
+    assert p.family("claude-newmodel-9") == "fable"  # unknown -> top-rate family, denies rather than lets through
 
 
 def test_quota_denial_says_when_the_spawns_model_is_unpriced(env):

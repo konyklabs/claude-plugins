@@ -36,10 +36,10 @@ and this skill does not change what it was not asked to.
 
 ## 2. Ground before asking
 
-If the sentence names a path, a module or an area, spawn ONE `supervisor:scout`
-for path:line facts: the files involved, the tests that cover them, the
-command that runs those tests. Do not read the files yourself. If the sentence
-names nothing in the tree, skip this step.
+If the sentence names up to about three files, read them; that is faster than
+any scout. If it names a module or an area, spawn ONE `supervisor:scout` for
+path:line facts: the files involved, the tests that cover them, the command
+that runs those tests. If it names nothing in the tree, skip this step.
 
 ## 3. Stop one: the batched round
 

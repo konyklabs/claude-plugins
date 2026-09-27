@@ -11,6 +11,15 @@ diagnoses that cheaper models have already failed at. Everything else it does
 at a premium a cheaper model would do as well. Triage is the ten-line step
 that keeps the premium on the judgment.
 
+## The inline threshold, first
+
+A worker round trip costs minutes (median 9 min per subagent, 1.5 min per
+scout, measured on the authoring machine), and a table costs a turn. So
+before any table: if the whole task is under about three files, nothing in
+it runs in parallel, and no output would flood the context, there is no
+table. Do it inline, on this model, and record it in one line. Delegation
+is for work that is parallel, wide, or long enough to earn the wait.
+
 ## The rubric
 
 Score the task on these. One "yes" in the first group is enough to keep it on
@@ -44,8 +53,9 @@ the expensive tier; none, and it goes down.
 - Where is X, which files touch Y, what does the config say, list the tests
   that use fixture Z.
 
-The test that settles most cases: **if you can write the spec, it is not yours
-to implement.** Write the spec and delegate.
+The test that settles most cases: **if you can write the spec and the slice
+is bigger than one sitting, it is not yours to implement.** Write the spec and
+delegate. If the spec would be longer than the change, make the change.
 
 ## Output
 
@@ -73,3 +83,5 @@ decision is the deliverable, and it must survive the session.
   stop and reconsider the slice boundary.
 - The conductor's own turns are long and full of tool output: the tier is
   right but the delegation is wrong. Ask a scout.
+- Every row is a look-up or a one-file change: the task was under the
+  threshold and the table was the overhead.
