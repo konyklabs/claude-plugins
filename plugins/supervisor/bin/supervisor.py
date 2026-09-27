@@ -10,7 +10,10 @@ Two callers share this file:
 * The skills, which run subcommands instead of reasoning a step out:
   ``status`` and ``budget`` (the ledger), ``check-report`` (a worker report
   against its contract), ``brief check`` and ``brief template`` (the task
-  brief), ``plan`` (slices to levels), ``run-worker`` (a headless slice).
+  brief), ``plan`` (slices to levels), ``run-worker`` (a headless slice),
+  ``learnings`` (the queue of corrections the UserPromptSubmit hook captured,
+  kept in the state directory keyed by project root, never inside a
+  repository; /supervisor:reflect reviews it; a hook never writes memory).
   These fail closed: an input the verb cannot read is a NONCOMPLIANT verdict,
   and an unexpected error exits 1 with one line on stderr.
 
@@ -124,6 +127,17 @@ DEFAULTS: Dict[str, Any] = {
     # SessionStart. "off": nothing in context; use the status line or
     # /supervisor:budget instead.
     "readout": "line",
+    # Learnings capture, on UserPromptSubmit: a prompt that reads as a
+    # correction, a standing rule or a preference is queued, with the assistant
+    # text it answers, under the state directory (learnings/<project key>.jsonl,
+    # keyed by the project root) and never inside a repository: a prompt can
+    # carry a secret or an employer term, and a queue file in the tree is one
+    # `git add .` from a public commit. No hook writes memory or rules;
+    # /supervisor:reflect shows the queue and the user accepts, edits or drops
+    # each line (roadmap#150: capture by hook, write by review). On in every
+    # mode, dormant included, because the queue is inert and the corrections
+    # worth keeping happen in ordinary sessions.
+    "capture_learnings": True,
     # Permission decision returned with a model rewrite. "none" sends the
     # rewritten input without a decision, so the session's own permission
     # rules still apply (verified on 2.1.258: the rewrite takes effect).
@@ -1678,6 +1692,213 @@ def arm_budget_words(stripped: str, cmd: Optional[str], cfg: Dict[str, Any], led
     return notes
 
 
+# --------------------------------------------------------------------------- learnings
+
+# What a prompt has to read like to be queued; the first match names the kind.
+# Anchored patterns catch a correction's opening ("No, ..."), the others a
+# phrase anywhere in the prompt. Deterministic on purpose: a model pass here
+# would cost a call per prompt and could invent a lesson the user never taught.
+LEARNING_PATTERNS: List[Tuple[str, str]] = [
+    # a correction opens the prompt: "No, ..." / "Wrong: ..." / "Actually, ..."
+    (r"^(no|nope)\b[,:!.]|^(wrong|not (quite|that|what|like that)|that'?s not|that is not|i meant|what i meant)\b|^actually,", "correction"),
+    (r"\b(not what i (asked|meant|want|said)|didn'?t (mean|say|ask for) that|you (misread|misunderstood|missed) |i didn'?t put it right|that'?s (wrong|incorrect)|stop (doing|using|spawning|delegating))\b", "correction"),
+    # a rule for later sessions; bare "always"/"never"/"in the future" also open
+    # ordinary feature requests ("only allow dates in the future"), so each needs
+    # the verb of a working rule after it
+    (r"\b(from now on|going forward|standing rule|every time you|never again|always (do|run|use|check|paste|ask|read|pin|show)|never (do|run|use|spawn|delegate|say|push|commit|paste|assume)|remember (that|to|this))\b|\brule:", "standing-rule"),
+    # a preference about how to work; "I want you to add X" is a task, not one
+    (r"\b(i'?d rather|i would rather|i prefer|don'?t ever|please (don'?t|do not|stop|never))\b", "preference"),
+]
+# Shorter than this is an acknowledgement ("no thanks"), not a lesson. The
+# excerpt caps keep the queue a table, not a second transcript.
+LEARNING_MIN_CHARS = 20
+LEARNING_USER_CHARS = 600
+LEARNING_ASSISTANT_CHARS = 400
+
+
+def learning_kind(prompt: str) -> Optional[str]:
+    """The kind of lesson a prompt reads as, or None. Slash commands and
+    expanded skill markup (starting with "<") are never lessons."""
+    text = prompt.strip()
+    if len(text) < LEARNING_MIN_CHARS or text.startswith("/") or text.startswith("<"):
+        return None
+    low = text.lower()
+    for pat, kind in LEARNING_PATTERNS:
+        if re.search(pat, low):
+            return kind
+    return None
+
+
+def project_root(path: Optional[str]) -> Path:
+    """The nearest ancestor holding a `.git` entry (a directory, or a
+    worktree's file), else the path itself. Capture sees the hook's cwd and
+    the CLI sees CLAUDE_PROJECT_DIR or its own cwd; both land on the same root,
+    so a session started in a subdirectory reviews the queue it filled."""
+    p = Path(path or os.getcwd()).resolve()
+    for cand in (p, *p.parents):
+        if (cand / ".git").exists():
+            return cand
+    return p
+
+
+def learnings_path(project_dir: Optional[str]) -> Path:
+    """Under the state directory, keyed by project root: never inside the
+    repository, where a `git add .` would commit whatever a prompt carried."""
+    root = project_root(project_dir)
+    key = hashlib.sha1(str(root).encode()).hexdigest()[:12]
+    return state_dir() / "learnings" / f"{key}.jsonl"
+
+
+def _learnings_lock(path: Path):
+    """Exclusive lock shared by capture (append) and the CLI (rewrite), so an
+    ack in one session cannot drop a row another session appends. Bounded
+    like session_lock: a hook must not stall on it."""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        f = path.with_suffix(".lock").open("a+")
+    except OSError:
+        return None
+    deadline = time.monotonic() + 3.0
+    while True:
+        try:
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return f
+        except OSError:
+            if time.monotonic() > deadline:
+                f.close()
+                return None
+            time.sleep(0.05)
+
+
+def read_learnings(path: Path) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    try:
+        with path.open(encoding="utf-8", errors="replace") as f:
+            for raw in f:
+                try:
+                    obj = json.loads(raw)
+                except ValueError:
+                    continue
+                if isinstance(obj, dict) and obj.get("id"):
+                    rows.append(obj)
+    except (OSError, UnicodeDecodeError):
+        return []
+    return rows
+
+
+def write_learnings(path: Path, rows: List[Dict[str, Any]]) -> None:
+    """Whole-file rewrite through a temp file and os.replace; callers hold
+    ``_learnings_lock`` so the read they rewrite from is not stale."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    with tmp.open("w") as f:
+        for r in rows:
+            f.write(json.dumps(r) + "\n")
+    os.replace(tmp, path)
+
+
+def capture_learning(hook: Dict[str, Any], cfg: Dict[str, Any], ledger: Ledger) -> Optional[Dict[str, Any]]:
+    """Queue the prompt when it reads as a lesson, with the assistant text it
+    answers. Returns the row written, or None. A repeat of the same prompt is
+    not queued twice."""
+    if not cfg.get("capture_learnings", True):
+        return None
+    prompt = str(hook.get("prompt") or "")
+    kind = learning_kind(prompt)
+    if not kind:
+        return None
+    project_dir = hook.get("cwd") or os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
+    path = learnings_path(project_dir)
+    user = one_line(prompt, LEARNING_USER_CHARS)
+    digest = hashlib.sha1(user.lower().encode()).hexdigest()[:10]
+    tp = hook.get("transcript_path")
+    assistant = one_line(last_assistant_text(Path(tp)), LEARNING_ASSISTANT_CHARS) if tp else ""
+    lock = _learnings_lock(path)
+    if lock is None:
+        log_error("learnings: lock not acquired; prompt not queued")
+        return None
+    try:
+        existing = read_learnings(path)
+        if any(r.get("digest") == digest for r in existing):
+            return None
+        row = {
+            "id": f"L{len(existing) + 1:03d}-{digest[:4]}",
+            "digest": digest,
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "session_id": ledger.session_id,
+            "kind": kind,
+            "user": user,
+            "assistant": assistant,
+            "handled": None,
+        }
+        try:
+            with path.open("a") as f:
+                f.write(json.dumps(row) + "\n")
+        except OSError as e:
+            log_error(f"learnings append failed: {e}")
+            return None
+        return row
+    finally:
+        lock.close()
+
+
+def cmd_learnings(args: List[str], project_dir: Optional[str]) -> int:
+    """learnings show [--all] | ack <id>... [--as accepted|dropped] | clear"""
+    verb = args[0] if args else "show"
+    path = learnings_path(project_dir)
+    rows = read_learnings(path)
+    if verb == "show":
+        pending = [r for r in rows if "--all" in args or not r.get("handled")]
+        if not pending:
+            print(f"learnings: none pending ({len(rows)} total) for {project_root(project_dir)} in {path}")
+            return 0
+        print(f"learnings for {project_root(project_dir)} ({path}):")
+        print(f"{'id':<10}{'kind':<14}{'when':<20}{'state':<9}user | assistant")
+        for r in pending:
+            print(f"{r['id']:<10}{str(r.get('kind') or '?'):<14}{str(r.get('ts') or '')[:19]:<20}{str(r.get('handled') or 'pending'):<9}"
+                  f"{one_line(r.get('user'), 160)} | {one_line(r.get('assistant'), 120)}")
+        return 0
+    if verb == "ack":
+        ids = [a for a in args[1:] if not a.startswith("--") and a != (_arg(args, "--as") or "")]
+        how = _arg(args, "--as") or "accepted"
+        if how not in ("accepted", "dropped") or not ids:
+            print("usage: learnings ack <id>... [--as accepted|dropped]", file=sys.stderr)
+            return 2
+        wanted = set(ids)
+        lock = _learnings_lock(path)
+        if lock is None:
+            print("learnings: queue is locked by another process; try again", file=sys.stderr)
+            return 1
+        try:
+            rows = read_learnings(path)
+            n = 0
+            for r in rows:
+                if r["id"] in wanted and not r.get("handled"):
+                    r["handled"] = how
+                    r["handled_ts"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+                    n += 1
+            write_learnings(path, rows)
+        finally:
+            lock.close()
+        print(f"learnings: {n} of {len(wanted)} marked {how}")
+        return 0 if n == len(wanted) else 1
+    if verb == "clear":
+        lock = _learnings_lock(path)
+        if lock is None:
+            print("learnings: queue is locked by another process; try again", file=sys.stderr)
+            return 1
+        try:
+            rows = read_learnings(path)
+            keep = [r for r in rows if not r.get("handled")]
+            write_learnings(path, keep)
+        finally:
+            lock.close()
+        print(f"learnings: removed {len(rows) - len(keep)} handled, {len(keep)} pending kept")
+        return 0
+    print("usage: learnings show [--all] | ack <id>... [--as accepted|dropped] | clear", file=sys.stderr)
+    return 2
+
+
 def h_user_prompt(hook: Dict[str, Any], cfg: Dict[str, Any], ledger: Ledger) -> Dict[str, Any]:
     """Arming and disarming live here: a slash command a user typed, or a
     skill's own marker line expanded into the prompt, are the only ways this
@@ -1685,6 +1906,10 @@ def h_user_prompt(hook: Dict[str, Any], cfg: Dict[str, Any], ledger: Ledger) -> 
     reasoning about it."""
     ledger.note_hook_context(hook)
     ledger.update(hook.get("transcript_path"))
+    try:
+        capture_learning(hook, cfg, ledger)
+    except Exception as e:  # capture must never cost the turn
+        log_error(f"learnings capture failed: {e}")
     prompt = str(hook.get("prompt") or "")
     stripped = prompt.strip()
     arm_mode: Optional[str] = None
@@ -3315,6 +3540,8 @@ def main(argv: List[str]) -> int:
         return cmd_spec(args, cfg)
     if event == "runs":
         return cmd_runs(args, project_dir)
+    if event == "learnings":
+        return cmd_learnings(args, project_dir)
     if event not in HOOK_EVENTS:
         print(f"supervisor: unknown event {event}", file=sys.stderr)
         return 2

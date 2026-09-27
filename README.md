@@ -120,6 +120,7 @@ Everything an agent needs to operate the plugins without reading the code.
 | `/supervisor:decompose` | a change touches more than about five files or a branch is too big to review |
 | `/supervisor:consult` | a session on a cheaper model needs one decision from Fable, with a brief |
 | `/supervisor:budget` | spend, budget by number or profile, ceiling, modes, status line |
+| `/supervisor:reflect` | the end of a session, or when something keeps being re-explained: the queued corrections, standing rules and preferences, one accept / edit / drop round, accepted ones written to auto memory with their reason |
 | `/py-testing:testing-pytest-projects`, `testing-playwright-api`, `testing-playwright-browser`, `testing-sqlalchemy` | writing or fixing tests in that part of the stack |
 | `/py-testing:untangling-test-suites` | a large or unmerged test suite nobody can review |
 | `/prod-readiness:readiness-review` | before a release or a publish; runs the scan, judges the review rows, writes the report |

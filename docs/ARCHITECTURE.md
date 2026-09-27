@@ -143,6 +143,40 @@ deny and price; what changed is the advice, because the advice was the
 cause. `test_policy_states_the_inline_threshold` keeps the wording from
 regressing to the old rule.
 
+### Learnings: capture by hook, write by review (2026-09-27)
+
+The operator's ask (roadmap#148, #150) was a setup that stops needing the
+same thing re-explained. The research settled the shape before the code:
+every product that auto-writes instructions from sessions either grew an
+approval step (Beacon, claude-reflect, Letta's review option) or removed the
+feature (Cursor 2.1); rules files that lose the reason for an instruction
+triple in size and cannot be pruned (arXiv 2608.11095); `SessionEnd` has a
+1.5 s budget, too short for a model pass, and a hook that ran a model per
+prompt would cost a call each time and could invent a lesson.
+
+So the capture is deterministic and the writing is a person's decision.
+`capture_learning`, called from the UserPromptSubmit handler in every mode,
+matches the prompt against `LEARNING_PATTERNS` (a correction's opening, a
+standing-rule phrase, a preference phrase), skips slash commands, expanded
+skill markup and anything under 20 characters, and appends one row — the
+prompt, the assistant text it answers, the kind, a digest that stops a
+repeat — to `learnings/<project key>.jsonl` under the state directory, keyed
+by the project root (`project_root`: the nearest `.git`), never inside the
+repository: the deep lens on the first cut showed a queue file in the tree is
+one `git add .` from committing a prompt that carried a secret or an employer
+term, and `.supervisor/` is excluded only where a worktree was made. It never returns
+anything to the session and never raises past `log_error`. The `learnings`
+verb shows, acks and clears the queue; `/supervisor:reflect` is the review:
+one question round, accept / edit / drop per row, accepted rows written to
+auto memory in its own format with a **Why** line, a contradiction written
+as an edit to the memory it supersedes, and the rows acked. CLAUDE.md and
+rules files are never written by the skill; a lesson that belongs there is a
+proposal in its report.
+
+Verified: unit tests on the kinds, the dedupe, the off switch, the CLI and
+the never-raise path. Not yet verified: a week of real use, which is the
+spike's definition of done.
+
 ### Opus 5.5 (2026-09-27)
 
 A `supervisor:reviewer` pinned to `opus` ran on `claude-opus-5-5` in a

@@ -2603,3 +2603,96 @@ def test_review_round_minors_128(env, capsys):
     assert "session sess1: budget $100.00" in capsys.readouterr().out
     assert supervisor.cmd_mode(["--session", "sess1"], ENFORCE, proj) == 0
     assert "mode:" in capsys.readouterr().out
+
+
+# --------------------------------------------------------------------------- learnings
+
+
+def _prompt_hook(tp, prompt, cwd):
+    return {"session_id": "sess1", "transcript_path": str(tp), "cwd": str(cwd), "prompt": prompt, "hook_event_name": "UserPromptSubmit"}
+
+
+def test_user_prompt_queues_a_correction_with_the_answer_it_corrects(env):
+    tp = make_session(env["tmp"], main_lines=assistant_lines("m1", "claude-fable-5-1", usage(out=10), blocks=1, text="I delegated the three-line fix to a worker."))
+    led = ledger_for(tp)
+    supervisor.h_user_prompt(_prompt_hook(tp, "No, that's not what I meant: a three-line fix stays inline, do not spawn a worker for it.", env["project"]), supervisor.DEFAULTS, led)
+    rows = supervisor.read_learnings(supervisor.learnings_path(str(env["project"])))
+    assert len(rows) == 1
+    assert rows[0]["kind"] == "correction" and rows[0]["handled"] is None
+    assert "stays inline" in rows[0]["user"] and "delegated" in rows[0]["assistant"]
+    assert rows[0]["session_id"] == "sess1" and rows[0]["id"].startswith("L001-")
+
+
+def test_learning_kinds_and_non_lessons():
+    assert supervisor.learning_kind("From now on, run the tests before you report done.") == "standing-rule"
+    assert supervisor.learning_kind("rule: always run the suite before pushing, whatever the change is") == "standing-rule"
+    assert supervisor.learning_kind("I prefer one proposal in prose, never a shortlist round.") == "preference"
+    assert supervisor.learning_kind("Actually, the alias resolves to Opus 5.5 now, not Opus 5.") == "correction"
+    assert supervisor.learning_kind("No, that is not what I asked: read the one file yourself.") == "correction"
+    # slash commands, expanded skill markup, short acknowledgements and ordinary asks are not lessons
+    assert supervisor.learning_kind("/supervisor:on") is None
+    assert supervisor.learning_kind("<command-name>/spike</command-name> no, wait") is None
+    assert supervisor.learning_kind("no thanks") is None
+    assert supervisor.learning_kind("Please add a test for the family comparison and run the suite.") is None
+    # the deep lens's false positives (2026-09-27): tasks that merely contain a trigger word
+    assert supervisor.learning_kind("I want you to add a test and run it, then report the output.") is None
+    assert supervisor.learning_kind("Add a date picker that only allows dates in the future.") is None
+    assert supervisor.learning_kind("Now that the branch is green, open the pull request please.") is None
+
+
+def test_learnings_queue_lives_in_the_state_dir_keyed_by_project_root(env):
+    proj = env["project"]
+    (proj / ".git").mkdir()
+    sub = proj / "src" / "pkg"
+    sub.mkdir(parents=True)
+    # a session started in a subdirectory and the CLI at the root see one queue
+    assert supervisor.learnings_path(str(sub)) == supervisor.learnings_path(str(proj))
+    path = supervisor.learnings_path(str(sub))
+    assert str(path).startswith(str(env["state"])) and not str(path).startswith(str(proj))
+    tp = make_session(env["tmp"], main_lines=assistant_lines("m1", "claude-fable-5-1", usage(out=10), blocks=1))
+    supervisor.h_user_prompt(_prompt_hook(tp, "No, keep the queue out of the repository; a prompt can carry a secret.", sub), supervisor.DEFAULTS, ledger_for(tp))
+    assert not (proj / ".supervisor").exists() and len(supervisor.read_learnings(path)) == 1
+    # a queue file that is not valid UTF-8 is unreadable, not a traceback
+    path.write_bytes(b"\xff\xfe not json\n")
+    assert supervisor.read_learnings(path) == [] or isinstance(supervisor.read_learnings(path), list)
+
+
+def test_same_correction_is_queued_once_and_capture_can_be_turned_off(env):
+    tp = make_session(env["tmp"], main_lines=assistant_lines("m1", "claude-fable-5-1", usage(out=10), blocks=1))
+    led = ledger_for(tp)
+    prompt = "Wrong: never delegate a look-up that a single grep answers."
+    supervisor.h_user_prompt(_prompt_hook(tp, prompt, env["project"]), supervisor.DEFAULTS, led)
+    supervisor.h_user_prompt(_prompt_hook(tp, prompt + "  ", env["project"]), supervisor.DEFAULTS, led)
+    assert len(supervisor.read_learnings(supervisor.learnings_path(str(env["project"])))) == 1
+    off = dict(supervisor.DEFAULTS, capture_learnings=False)
+    supervisor.h_user_prompt(_prompt_hook(tp, "No, that is not it either, and this is a different sentence.", env["project"]), off, led)
+    assert len(supervisor.read_learnings(supervisor.learnings_path(str(env["project"])))) == 1
+
+
+def test_learnings_cli_show_ack_and_clear(env, capsys):
+    tp = make_session(env["tmp"], main_lines=assistant_lines("m1", "claude-fable-5-1", usage(out=10), blocks=1))
+    led = ledger_for(tp)
+    supervisor.h_user_prompt(_prompt_hook(tp, "Going forward, paste the test output; never say tests pass.", env["project"]), supervisor.DEFAULTS, led)
+    supervisor.h_user_prompt(_prompt_hook(tp, "I meant the workspace repository, not the plugins one.", env["project"]), supervisor.DEFAULTS, led)
+    proj = str(env["project"])
+    assert supervisor.cmd_learnings(["show"], proj) == 0
+    out = capsys.readouterr().out
+    assert "standing-rule" in out and "correction" in out and out.count("pending") == 2
+    rows = supervisor.read_learnings(supervisor.learnings_path(proj))
+    assert supervisor.cmd_learnings(["ack", rows[0]["id"], "--as", "dropped"], proj) == 0
+    assert supervisor.cmd_learnings(["ack", rows[1]["id"]], proj) == 0
+    assert supervisor.cmd_learnings(["show"], proj) == 0
+    assert "none pending (2 total)" in capsys.readouterr().out
+    assert supervisor.cmd_learnings(["ack", "L999-zzzz"], proj) == 1  # unknown id: not a silent success
+    assert supervisor.cmd_learnings(["clear"], proj) == 0
+    assert supervisor.read_learnings(supervisor.learnings_path(proj)) == []
+    assert supervisor.cmd_learnings(["bogus"], proj) == 2
+
+
+def test_capture_failure_never_costs_the_turn(env, monkeypatch):
+    tp = make_session(env["tmp"], main_lines=assistant_lines("m1", "claude-fable-5-1", usage(out=10), blocks=1))
+    led = ledger_for(tp)
+    monkeypatch.setattr(supervisor, "capture_learning", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("disk")))
+    out = supervisor.h_user_prompt(_prompt_hook(tp, "No, that's not what I meant at all, keep it inline.", env["project"]), supervisor.DEFAULTS, led)
+    assert isinstance(out, dict)
+
