@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.3.0](https://github.com/konyklabs/claude-plugins/compare/v2.2.1...v2.3.0) (2026-09-27)
+
+
+### Features
+
+* **supervisor:** queue corrections from prompts and review them with /supervisor:reflect (konyklabs/roadmap[#150](https://github.com/konyklabs/claude-plugins/issues/150)) ([#27](https://github.com/konyklabs/claude-plugins/issues/27)) ([175ee27](https://github.com/konyklabs/claude-plugins/commit/175ee270c46646a239cf89e2e729c55c52c8e172))
+
 ## [2.2.1](https://github.com/konyklabs/claude-plugins/compare/v2.2.0...v2.2.1) (2026-09-27)
 
 
