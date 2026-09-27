@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.2.1](https://github.com/konyklabs/claude-plugins/compare/v2.2.0...v2.2.1) (2026-09-27)
+
+
+### Bug Fixes
+
+* **ci:** run release-please in manifest mode so extra-files bump the plugin versions (konyklabs/roadmap[#66](https://github.com/konyklabs/claude-plugins/issues/66)) ([#25](https://github.com/konyklabs/claude-plugins/issues/25)) ([ada9bf3](https://github.com/konyklabs/claude-plugins/commit/ada9bf3338d7d61deae16522da408b234f2591ca))
+
 ## [2.2.0](https://github.com/konyklabs/claude-plugins/compare/v2.1.0...v2.2.0) (2026-09-27)
 
 
