@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.2.0](https://github.com/konyklabs/claude-plugins/compare/v2.1.0...v2.2.0) (2026-09-27)
+
+
+### Features
+
+* **supervisor:** Opus 5.5 pricing and alias, quota by family, the inline threshold, and the eval cases run on the released tool (konyklabs/roadmap[#148](https://github.com/konyklabs/claude-plugins/issues/148)) ([#22](https://github.com/konyklabs/claude-plugins/issues/22)) ([b93fb9a](https://github.com/konyklabs/claude-plugins/commit/b93fb9a8bd4949815fb3deaba2b36b6286f44a8f))
+
 ## [2.1.0](https://github.com/konyklabs/claude-plugins/compare/v2.0.0...v2.1.0) (2026-09-08)
 
 
