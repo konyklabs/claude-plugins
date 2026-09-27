@@ -1,6 +1,6 @@
 {
   "name": "terrain",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "description": "OpenTofu on AWS, authored and reviewed the way the Python work is: a deterministic preflight (fmt, validate, the linters on PATH reduced to counts, structural checks for the Fargate and Lambda traps no linter catches, a plan summary that fails closed on destroy), a Terraform review lens, and docs-first authoring references for ECS Fargate, Lambda, IAM, networking and state.",
   "author": {
     "name": "Oleg Konyk",
