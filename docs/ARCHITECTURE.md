@@ -122,6 +122,39 @@ deserves, `delegate` says how a spec is written and evidence read,
 cannot ship standing rules (no `rules/`, no CLAUDE.md; documented), so the
 policy arrives through the SessionStart hook as context, and it is short.
 
+### The inline threshold (2026-09-27)
+
+The first policy said "everything else goes to a worker" and "do not read
+files yourself", with no size below which that stops being true. A census
+of the 493 subagents this machine ran between 2026-08-25 and 2026-09-27
+(konyklabs/roadmap#148) measured what that costs in time rather than
+dollars: a median 9 min per subagent, 1.5 min per scout look-up, and in
+sessions that delegated, 40-100% of the session's active minutes with at
+least one worker outstanding. The dollars were fine; the waiting was not,
+and the operator's verdict was that the main session "does very little" and
+the work "slows down like crazy".
+
+So the policy, the triage rubric, `start`, `brief` and `delegate` now name
+a threshold: under about three files, nothing that runs in parallel, no
+output that would flood the context, the conductor does the work itself and
+records it in one line. Delegation is for work that is parallel, wide, or
+long enough to earn a round trip. The hooks are unchanged: they still pin,
+deny and price; what changed is the advice, because the advice was the
+cause. `test_policy_states_the_inline_threshold` keeps the wording from
+regressing to the old rule.
+
+### Opus 5.5 (2026-09-27)
+
+A `supervisor:reviewer` pinned to `opus` ran on `claude-opus-5-5` in a
+session transcript on 2026-09-27: Claude Code's alias had moved. The alias
+in `pricing.json` follows it, Opus 5.5 has its own row ($4/$20, cache read
+$0.20; by longest-prefix it would have priced as Opus 5 at $5/$25), and a
+quota hit is now compared by family (`Pricing.family`), so a limit hit
+recorded under either Opus id denies spawns onto both. Opus 5.5 at medium
+effort costs 2x Sonnet 5, not the 2.5x the worker-model comment assumed
+when it was written; `worker_model` is still Sonnet, and the comment says
+why.
+
 ### The brief: interview, then lint
 
 The flow above is only as good as the brief it starts from, and a

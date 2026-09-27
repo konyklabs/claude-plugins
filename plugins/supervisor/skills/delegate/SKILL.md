@@ -120,10 +120,10 @@ To re-check a report deterministically (a pasted one, or one from
 python3 "${CLAUDE_PLUGIN_ROOT}/bin/supervisor.py" check-report <report.md> --contract worker
 ```
 
-PARTIAL or BLOCKED means a question came back. Answer the question here (that
-is the expensive model's job) and re-delegate with the spec amended. Do not
-finish the slice inline: it is the most expensive way to finish it, and it
-leaves no spec for the reviewer.
+PARTIAL or BLOCKED means a question came back. Answer it here (that is the
+expensive model's job). Under the inline threshold (about three files, nothing
+to wait on), finish it here and say so in the record; otherwise re-delegate
+with the spec amended, so the reviewer has a spec to review against.
 
 ## 4. Review with a different model
 
@@ -145,5 +145,5 @@ The hook says which kind. Transient (an API overload): wait about a minute,
 re-spawn once with the same spec, then stop and record if it dies again.
 Usage limit: the hook denies spawns onto that tier — delegate elsewhere or
 wait, never retry into it. Read what the worker left on disk (worktree,
-`.supervisor/runs/`) first, and never finish the slice inline; `run-level`
-already retries headless workers with backoff on its own.
+`.supervisor/runs/`) first; finish inline only what is under the threshold.
+`run-level` already retries headless workers with backoff on its own.

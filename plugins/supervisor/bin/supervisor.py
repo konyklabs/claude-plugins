@@ -46,7 +46,8 @@ DEFAULTS: Dict[str, Any] = {
     # that implements from a spec reliably; Haiku is for the scout agent only.
     "worker_model": "sonnet",
     # Rewrite model-less spawns even when the session itself runs on a cheap
-    # model. True because "inherit" on an Opus conductor is still 2.5x Sonnet.
+    # model. True because "inherit" on an Opus conductor is still 2x Sonnet
+    # (Opus 5.5 at $4/$20 against Sonnet 5 at $2/$10; it was 2.5x on Opus 5).
     "always_pin_workers": True,
     # Route a bare "general-purpose" spawn to supervisor:worker instead of only
     # pinning its model. The Agent tool has no effort field to rewrite, so a
@@ -480,6 +481,16 @@ class Pricing:
     def priced_key(self, model: Optional[str]) -> Tuple[str, bool]:
         key = self.resolve(model)
         return (key, True) if key else (self.fallback_key(), False)
+
+    def family(self, model: Optional[str]) -> str:
+        """The model family of a priced key: "opus" for claude-opus-5 and
+        claude-opus-5-5 alike. Usage limits are announced per family ("You've
+        reached your Fable 5 limit"), and an alias moves between versions
+        ("opus" became Opus 5.5 on 2026-09-27), so a quota hit recorded under
+        one version must deny spawns onto every version of that family."""
+        key, _ = self.priced_key(model)
+        m = re.match(r"claude-([a-z]+)", key)
+        return m.group(1) if m else key
 
     def cost_usd(self, model: Optional[str], usage: Dict[str, Any]) -> float:
         key, _ = self.priced_key(model)
@@ -1114,6 +1125,7 @@ def quota_denial(model: Optional[str], ledger: Ledger, cfg: Dict[str, Any]) -> O
     """A deny for a spawn onto a model whose usage limit this session already
     hit, or None. Families are compared through the pricing table, so the
     alias a spawn uses ("opus") matches the id a transcript carries
+    ("claude-opus-5-5"), and one version of a family matches another
     ("claude-opus-5"); an unknown id normalises to the top-rate family, which
     denies rather than lets through."""
     hits = ledger.state.get("quota_hit") or {}
@@ -1121,7 +1133,7 @@ def quota_denial(model: Optional[str], ledger: Ledger, cfg: Dict[str, Any]) -> O
         return None
     key, known = ledger.pricing.priced_key(model)
     for hit_model, info in hits.items():
-        if ledger.pricing.priced_key(hit_model)[0] != key:
+        if ledger.pricing.family(hit_model) != ledger.pricing.family(model):
             continue
         head = one_line((info or {}).get("error") or "", 60)
         note = "" if known else f" ({model} is not in pricing.json and is treated as the {key} family; add it there to spawn it)"
