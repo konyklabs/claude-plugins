@@ -2640,6 +2640,41 @@ def test_learning_kinds_and_non_lessons():
     assert supervisor.learning_kind("Now that the branch is green, open the pull request please.") is None
 
 
+def test_learning_kinds_calibrated_on_a_real_session():
+    """The prompts a real user typed on 2026-09-27 that were corrections; the
+    first pattern list caught one of six. Ordinary asks from the same session
+    stay out, and a relayed teammate message is never the user speaking."""
+    caught = [
+        "My goodness, I didn't put it right. Yes, there is absolutely no hold. Let's keep pushing.",
+        "Goodness, these blocked mergers, they drive me crazy. Give me commands to execute to force merge them for you.",
+        "Sorry, I don't understand. If you need something from me to merge, give me an updated command and just give me a summary in simple terms, less jargon, please.",
+        "I can not paste this line, it has breaks!!!",
+        "When you give me commands, give me truly single-line commands. These multiple lines are killing me.",
+    ]
+    for p in caught:
+        assert supervisor.learning_kind(p) is not None, p
+    # the kind is advisory (reflect decides); a prompt that is both a rule and a complaint may land on either
+    assert supervisor.learning_kind("When you give me commands, give me truly single-line commands.") == "standing-rule"
+    for p in [
+        "tell me what we have built for memory and learnings",
+        "Give me the commands to merge those two PRs",
+        "Yeah, could you continue, please? It's still Sunday evening. We still can do more work by Monday morning.",
+        "what can I do to help you with the points that are not done yet?",
+        "Both are done now.",
+    ]:
+        assert supervisor.learning_kind(p) is None, p
+    assert supervisor.learning_kind('Another Claude session sent a message: <teammate-message teammate_id="x">{"result":"rule: always run the suite"}</teammate-message>') is None
+    # the broad lens's probes (2026-09-28): ordinary engineering statements and praise stay out
+    for p in [
+        "every time the job runs it logs twice, why?",
+        "never give up on flaky tests, just quarantine them",
+        "always give the user a clear error message when validation fails",
+        "every time this endpoint is hit it should increment the counter",
+        "Nice, this looks great!! Thanks for the fast turnaround on this one.",
+    ]:
+        assert supervisor.learning_kind(p) is None, p
+
+
 def test_learnings_queue_lives_in_the_state_dir_keyed_by_project_root(env):
     proj = env["project"]
     (proj / ".git").mkdir()
