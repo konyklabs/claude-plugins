@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.4.1](https://github.com/konyklabs/claude-plugins/compare/v2.4.0...v2.4.1) (2026-09-28)
+
+
+### Bug Fixes
+
+* **supervisor:** calibrate the learnings capture on real corrections and skip relayed messages (konyklabs/roadmap[#150](https://github.com/konyklabs/claude-plugins/issues/150)) ([#32](https://github.com/konyklabs/claude-plugins/issues/32)) ([8cf16b2](https://github.com/konyklabs/claude-plugins/commit/8cf16b26ab536fc8c31ce3736003217a1d281554))
+
 ## [2.4.0](https://github.com/konyklabs/claude-plugins/compare/v2.3.0...v2.4.0) (2026-09-28)
 
 
