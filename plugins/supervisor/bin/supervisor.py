@@ -1699,13 +1699,21 @@ def arm_budget_words(stripped: str, cmd: Optional[str], cfg: Dict[str, Any], led
 # phrase anywhere in the prompt. Deterministic on purpose: a model pass here
 # would cost a call per prompt and could invent a lesson the user never taught.
 LEARNING_PATTERNS: List[Tuple[str, str]] = [
-    # a correction opens the prompt: "No, ..." / "Wrong: ..." / "Actually, ..."
-    (r"^(no|nope)\b[,:!.]|^(wrong|not (quite|that|what|like that)|that'?s not|that is not|i meant|what i meant)\b|^actually,", "correction"),
+    # a correction opens the prompt: "No, ..." / "Wrong: ..." / "Actually, ..." /
+    # "Sorry, I don't understand ..."
+    (r"^(no|nope)\b[,:!.]|^(wrong|not (quite|that|what|like that)|that'?s not|that is not|i meant|what i meant)\b|^actually,|^sorry\b", "correction"),
     (r"\b(not what i (asked|meant|want|said)|didn'?t (mean|say|ask for) that|you (misread|misunderstood|missed) |i didn'?t put it right|that'?s (wrong|incorrect)|stop (doing|using|spawning|delegating))\b", "correction"),
+    # the answer failed the person: they cannot use it, or it is wearing them
+    # down. Calibrated on a real session (2026-09-27): "I can not paste this
+    # line, it has breaks", "these multiple lines are killing me", "they drive
+    # me crazy", "I don't understand ... less jargon, please". Punctuation alone
+    # ("!!") is not a signal: praise carries it too (lens finding, 2026-09-28)
+    (r"\b(i (don'?t|do not) understand|i (can ?not|can'?t) (paste|read|run|use|follow|see)|(is|are) killing me|drives? me crazy|less jargon|in simple terms|plain (terms|english|words))\b", "correction"),
     # a rule for later sessions; bare "always"/"never"/"in the future" also open
     # ordinary feature requests ("only allow dates in the future"), so each needs
-    # the verb of a working rule after it
-    (r"\b(from now on|going forward|standing rule|every time you|never again|always (do|run|use|check|paste|ask|read|pin|show)|never (do|run|use|spawn|delegate|say|push|commit|paste|assume)|remember (that|to|this))\b|\brule:", "standing-rule"),
+    # the verb of a working rule after it. "When you give me X, do Y" is how a
+    # rule is stated in speech
+    (r"\b(from now on|going forward|standing rule|every time you|never again|always (do|run|use|check|paste|ask|read|pin|show)|never (do|run|use|spawn|delegate|say|push|commit|paste|assume)|remember (that|to|this))\b|\brule:|^when you (give|send|show|hand|write|ask|report|tell) me", "standing-rule"),
     # a preference about how to work; "I want you to add X" is a task, not one
     (r"\b(i'?d rather|i would rather|i prefer|don'?t ever|please (don'?t|do not|stop|never))\b", "preference"),
 ]
@@ -1723,6 +1731,10 @@ def learning_kind(prompt: str) -> Optional[str]:
     if len(text) < LEARNING_MIN_CHARS or text.startswith("/") or text.startswith("<"):
         return None
     low = text.lower()
+    # a relayed message from another session or agent is not the user speaking,
+    # whatever it quotes (seen 2026-09-28: a teammate report matched "rule:")
+    if low.startswith("another claude session") or "<teammate-message" in low or "<agent-message" in low:
+        return None
     for pat, kind in LEARNING_PATTERNS:
         if re.search(pat, low):
             return kind
