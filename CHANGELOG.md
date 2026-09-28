@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.4.0](https://github.com/konyklabs/claude-plugins/compare/v2.3.0...v2.4.0) (2026-09-28)
+
+
+### Features
+
+* **marketplace:** the agent-box host plugin as a git-subdir entry (konyklabs/roadmap[#147](https://github.com/konyklabs/claude-plugins/issues/147)) ([238c981](https://github.com/konyklabs/claude-plugins/commit/238c981ce651ae51d34708ee0efc4740c885d3b8))
+
 ## [2.3.0](https://github.com/konyklabs/claude-plugins/compare/v2.2.1...v2.3.0) (2026-09-27)
 
 
