@@ -5,7 +5,7 @@
     "name": "Oleg Konyk",
     "url": "https://olegkonyk.com"
   },
-  "description": "Claude Code plugins for expensive-model sessions on a budget: the supervisor harness, and domain skills for Python test engineering, production readiness, end-to-end sign-off, and OpenTofu on AWS.",
+  "description": "Claude Code plugins for expensive-model sessions on a budget: the supervisor harness, and domain skills for Python test engineering, production readiness, end-to-end sign-off, and OpenTofu on AWS, and the host side of agent-box.",
   "plugins": [
     {
       "name": "supervisor",
@@ -16,7 +16,7 @@
     {
       "name": "py-testing",
       "source": "./plugins/py-testing",
-      "description": "Python test engineering skills — pytest project structure, Playwright API and browser tests, SQLAlchemy test fixtures — and the untangling workflow for large unmerged test suites.",
+      "description": "Python test engineering skills \u2014 pytest project structure, Playwright API and browser tests, SQLAlchemy test fixtures \u2014 and the untangling workflow for large unmerged test suites.",
       "category": "testing"
     },
     {
@@ -36,6 +36,17 @@
       "source": "./plugins/terrain",
       "description": "OpenTofu on AWS, authored and reviewed the way the Python work is: a deterministic preflight (fmt, validate, the linters on PATH reduced to counts, structural checks for the Fargate and Lambda traps no linter catches, a plan summary that fails closed on destroy), a Terraform review lens with an Opus reviewer agent, and docs-first authoring references for ECS Fargate, Lambda, IAM, networking and state.",
       "category": "infrastructure"
+    },
+    {
+      "name": "agentbox-channel",
+      "source": {
+        "source": "git-subdir",
+        "url": "https://github.com/konyklabs/agent-box.git",
+        "path": "host/claude-plugin",
+        "ref": "main"
+      },
+      "description": "Orients a host session about the agent-box boxes on this machine: a card at every session start (the boxes, which mode the session is in, the four commands) and one line whenever a box has something open in its channel. Nothing from inside a box reaches the session through it. Needs the agentbox CLI on PATH (github.com/konyklabs/agent-box).",
+      "category": "productivity"
     }
   ]
 }
