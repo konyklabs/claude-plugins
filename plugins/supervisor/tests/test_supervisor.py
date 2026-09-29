@@ -87,6 +87,7 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setenv("SUPERVISOR_STATE_DIR", str(state))
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(project))
     monkeypatch.delenv("SUPERVISOR_CONFIG", raising=False)
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
     monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path / "home"))
     (tmp_path / "home" / ".claude").mkdir(parents=True)
     return {"state": state, "project": project, "tmp": tmp_path}
@@ -648,7 +649,32 @@ def test_state_dir_precedence(env, monkeypatch):
     assert supervisor.state_dir() == env["tmp"] / "argdir"
     supervisor.STATE_DIR_ARG = None
     monkeypatch.delenv("CLAUDE_PLUGIN_DATA")
+    # the tests may run from an installed copy, whose own path derives a data
+    # dir: pin the module path to a checkout shape before asserting the fallback
+    monkeypatch.setattr(supervisor, "__file__", str(env["tmp"] / "repo" / "plugins" / "supervisor" / "bin" / "supervisor.py"))
     assert supervisor.state_dir() == env["tmp"] / "home" / ".cache" / "supervisor"
+
+
+def test_state_dir_falls_back_to_the_install_data_dir(env, monkeypatch):
+    """A skill's CLI call carries ${CLAUDE_PLUGIN_DATA} only as text; nothing
+    exports it to the shell. Without --state-dir the CLI must still land on the
+    install's data dir, or `learnings show` reads an empty ~/.cache queue."""
+    monkeypatch.delenv("SUPERVISOR_STATE_DIR")
+    monkeypatch.delenv("CLAUDE_PLUGIN_DATA", raising=False)
+    monkeypatch.setattr(supervisor, "STATE_DIR_ARG", None)
+    home = env["tmp"] / "home"
+    cache = home / ".claude" / "plugins" / "cache" / "konyklabs-plugins" / "supervisor" / "2.4.2" / "bin" / "supervisor.py"
+    monkeypatch.setattr(supervisor, "__file__", str(cache))
+    assert supervisor.state_dir() == home / ".claude" / "plugins" / "data" / "supervisor-konyklabs-plugins"
+    # a --plugin-dir load: not in the cache; its data dir is <plugin>-inline when Claude Code has made it
+    checkout = env["tmp"] / "repo" / "plugins" / "supervisor" / "bin" / "supervisor.py"
+    monkeypatch.setattr(supervisor, "__file__", str(checkout))
+    assert supervisor.state_dir() == home / ".cache" / "supervisor"
+    (home / ".claude" / "plugins" / "data" / "supervisor-inline").mkdir(parents=True)
+    assert supervisor.state_dir() == home / ".claude" / "plugins" / "data" / "supervisor-inline"
+    # an explicit --state-dir still wins over the derived dir
+    monkeypatch.setattr(supervisor, "STATE_DIR_ARG", str(env["tmp"] / "argdir"))
+    assert supervisor.state_dir() == env["tmp"] / "argdir"
 
 
 def test_cli_state_dir_flag(env):
@@ -1136,8 +1162,12 @@ def test_section_body_ignores_hashes_inside_fences():
     assert supervisor.section_body("## Task\nline\n~~~sh\n## not a heading\n~~~\nafter\n### Sub\nno", "Task") == "line\n~~~sh\n## not a heading\n~~~\nafter"
 
 
+PLAYBOOK = REPO / "docs" / "PLAYBOOK.md"
+
+
+@pytest.mark.skipif(not (REPO / ".git").exists(), reason="an installed copy carries the tests but not the repository docs")
 def test_playbook_worked_brief_passes_the_lint():
-    md = (REPO / "docs" / "PLAYBOOK.md").read_text()
+    md = PLAYBOOK.read_text()
     start = md.index("## A worked brief")
     m = re.search(r"^````\n(.*?)^````$", md[start:], re.S | re.M)
     assert m
@@ -2493,7 +2523,11 @@ def test_closed_gate_lets_the_plugins_own_budget_cli_through(env):
     assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"
     for cmd in (f'python3 "{script}" budget session 50', f'python3 "{script}" budget reset', f"python3 {script} budget show", f'python3 "{script}" status',
                 f'python3 "{script}" budget', f'python3 "{script}" mode show', 'python3 "${CLAUDE_PLUGIN_ROOT}/bin/supervisor.py" budget session 50',
-                f'python3 "{script}" budget history --state-dir /x'):
+                f'python3 "{script}" budget history --state-dir /x',
+                # the skills carry the data dir since 2.4.2, substituted or (on a host that does not) as the placeholder
+                f'python3 "{script}" status --state-dir "/x/data/supervisor-konyklabs-plugins"', f'python3 "{script}" budget session 50 --state-dir /x',
+                f'python3 "{script}" mode show --state-dir /x', 'python3 "${CLAUDE_PLUGIN_ROOT}/bin/supervisor.py" status --state-dir "${CLAUDE_PLUGIN_DATA}"',
+                'python3 "${CLAUDE_PLUGIN_ROOT}/bin/supervisor.py" budget session medium --state-dir "${CLAUDE_PLUGIN_DATA}"'):
         out = supervisor.h_pre_tool_use(dict(hook_base(tp), tool_name="Bash", tool_input={"command": cmd}), ENFORCE, led, proj)
         assert "permissionDecision" not in out.get("hookSpecificOutput", {}), cmd
         # and the hook pins the call to this session, so a Bash command that
@@ -2505,13 +2539,16 @@ def test_closed_gate_lets_the_plugins_own_budget_cli_through(env):
     for cmd in (f'python3 "{script}" budget show; rm -rf /', f'python3 "{script}" budget show && ls', f'python3 "{script}" run-worker --spec x', f'echo x | python3 "{script}" budget show',
                 f'python3 "{script}" budget show\nrm -rf /', f'python3 "{script}" budget show\r\nls', 'python3 /tmp/evil/supervisor.py budget show', './supervisor.py mode off',
                 f'python3 "{script}" mode off --user', f'python3 "{script}" mode enforce', f'python3 "{script}" budget set 999 --user', f'python3 "{script}" budget ceiling off',
-                f'python3 "{script}" brief template', 'python3 "$HOME/x/supervisor.py" budget show', f'X=1 python3 "{script}" budget show'):
+                f'python3 "{script}" brief template', 'python3 "$HOME/x/supervisor.py" budget show', f'X=1 python3 "{script}" budget show',
+                # the flag's value is the only '$' allowed, and only the documented one; a stray word or a config-writing verb is still the gate
+                f'python3 "{script}" status --state-dir "$(evil)"', f'python3 "{script}" status --state-dir "${{OTHER}}"', f'python3 "{script}" status --state-dir /x extra',
+                f'python3 "{script}" mode enforce --state-dir /x', f'python3 "{script}" budget set 999 --state-dir /x'):
         out = supervisor.h_pre_tool_use(dict(hook_base(tp), tool_name="Bash", tool_input={"command": cmd}), ENFORCE, led, proj)
         assert out["hookSpecificOutput"]["permissionDecision"] == "deny", cmd
-    # a call that already names a session is left alone
-    cmd = f'python3 "{script}" budget show --session other'
-    out = supervisor.h_pre_tool_use(dict(hook_base(tp), tool_name="Bash", tool_input={"command": cmd}), ENFORCE, led, proj)
-    assert out == {}
+    # a call that already names a session is left alone, with or without the data dir
+    for cmd in (f'python3 "{script}" budget show --session other', f'python3 "{script}" status --session other2 --state-dir /x'):
+        out = supervisor.h_pre_tool_use(dict(hook_base(tp), tool_name="Bash", tool_input={"command": cmd}), ENFORCE, led, proj)
+        assert out == {}, cmd
     # dormant: the pin still happens, nothing else does
     led_d = supervisor.Ledger("sessd", supervisor.Pricing.load())
     out = supervisor.h_pre_tool_use(dict(hook_base(tp), session_id="sessd", tool_name="Bash", tool_input={"command": f'python3 "{script}" budget reset'}), supervisor.DEFAULTS, led_d, proj)
@@ -2664,6 +2701,42 @@ def test_learning_kinds_calibrated_on_a_real_session():
     ]:
         assert supervisor.learning_kind(p) is None, p
     assert supervisor.learning_kind('Another Claude session sent a message: <teammate-message teammate_id="x">{"result":"rule: always run the suite"}</teammate-message>') is None
+    # a prohibition with its condition is a rule (2026-09-29: "No new designs until
+    # the pipe is finished" read as nothing because no comma followed the "No")
+    for p in [
+        "No new designs until the pipe is finished",
+        "No more shortlists unless I ask for one.",
+        "No pushes before the local round has run, whatever the size of the change.",
+        "No merging until the gate has posted a verdict",
+        "No changes until the freeze lifts",
+    ]:
+        assert supervisor.learning_kind(p) == "standing-rule", p
+    # observations and questions that open with "No" and carry a condition word
+    # stay out (deep and adversarial lens probes, 2026-09-29)
+    for p in [
+        "No tests are failing right now, what should we do next?",
+        "No worries at all, just continue with the plan as it stands.",
+        "No new tests needed for this one, it is a docs change.",
+        "No idea why this fails before the migration runs",
+        "No output until I pressed enter, is it hanging?",
+        "No change before and after the fix, still broken",
+        "No more errors in the log after your fix, thanks",
+        "No difference unless the cache is cold, weird right?",
+        "No luck until I restarted the server",
+        "No output until the build finishes, is that normal",
+        "No more failures after the fix, the suite is green now",
+        "No more than three retries?",
+        "No idea why it fails before the migration, can you look?",
+        "No luck until now with the flaky test, try the other fixture",
+        "No change before and after the patch, the latency is the same",
+    ]:
+        assert supervisor.learning_kind(p) is None, p
+    # a pasted report quoting a correction is not the user correcting (2026-09-29)
+    pasted = 'what can we do to take care of this\n\n<pasted_content id="10cf">\nNo, that is not what I asked - the hero text must be readable.\nSorry, I don\'t understand the rest.\n</pasted_content id="10cf">'
+    assert supervisor.learning_kind(pasted) is None
+    # an unterminated block is stripped to the end: without the stripping the quoted correction would queue
+    assert supervisor.learning_kind('see the report below\n<pasted_content id="1">\nNo, that is not what I asked, read the file.\n') is None
+    assert supervisor.learning_kind('From now on, run the tests first.\n<pasted_content id="2">\nlog line\n</pasted_content id="2">') == "standing-rule"
     # the broad lens's probes (2026-09-28): ordinary engineering statements and praise stay out
     for p in [
         "every time the job runs it logs twice, why?",
@@ -2701,6 +2774,19 @@ def test_same_correction_is_queued_once_and_capture_can_be_turned_off(env):
     assert len(supervisor.read_learnings(supervisor.learnings_path(str(env["project"])))) == 1
     off = dict(supervisor.DEFAULTS, capture_learnings=False)
     supervisor.h_user_prompt(_prompt_hook(tp, "No, that is not it either, and this is a different sentence.", env["project"]), off, led)
+    assert len(supervisor.read_learnings(supervisor.learnings_path(str(env["project"])))) == 1
+
+
+def test_pasted_blocks_are_never_stored_as_the_lesson(env):
+    tp = make_session(env["tmp"], main_lines=assistant_lines("m1", "claude-fable-5-1", usage(out=10), blocks=1))
+    led = ledger_for(tp)
+    paste = '<pasted_content id="7">\n' + "confidential line\n" * 60 + '</pasted_content id="7">'
+    supervisor.h_user_prompt(_prompt_hook(tp, paste + "\n\nFrom now on, run the suite first.", env["project"]), supervisor.DEFAULTS, led)
+    rows = supervisor.read_learnings(supervisor.learnings_path(str(env["project"])))
+    assert len(rows) == 1 and rows[0]["kind"] == "standing-rule"
+    assert rows[0]["user"].startswith("From now on, run the suite first") and "confidential" not in json.dumps(rows[0])
+    # the same rule after a different paste is the same lesson, queued once
+    supervisor.h_user_prompt(_prompt_hook(tp, '<pasted_content id="8">\nother text\n</pasted_content id="8">\nFrom now on, run the suite first.', env["project"]), supervisor.DEFAULTS, led)
     assert len(supervisor.read_learnings(supervisor.learnings_path(str(env["project"])))) == 1
 
 

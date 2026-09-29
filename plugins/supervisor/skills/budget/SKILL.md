@@ -19,7 +19,7 @@ Spend this session (per model, per subagent, biggest tool results, spawns,
 and any config values that were ignored):
 
 ```
-python3 "${CLAUDE_PLUGIN_ROOT}/bin/supervisor.py" status
+python3 "${CLAUDE_PLUGIN_ROOT}/bin/supervisor.py" status --state-dir "${CLAUDE_PLUGIN_DATA}"
 ```
 
 Current budget, mode, and where each setting comes from — includes the
@@ -27,7 +27,7 @@ named profiles, the ceiling (`none` or a number), and, when in force, the
 profile matching the budget or `→ effective <n> (ceiling)` when clamped:
 
 ```
-python3 "${CLAUDE_PLUGIN_ROOT}/bin/supervisor.py" budget show
+python3 "${CLAUDE_PLUGIN_ROOT}/bin/supervisor.py" budget show --state-dir "${CLAUDE_PLUGIN_DATA}"
 ```
 
 Raise or lower the expensive-tier budget for this project, by number or by
@@ -39,8 +39,8 @@ which can only lower. A ceiling never changes what is written; it caps
 what is in force, and the reply says when the two differ:
 
 ```
-python3 "${CLAUDE_PLUGIN_ROOT}/bin/supervisor.py" budget set 25
-python3 "${CLAUDE_PLUGIN_ROOT}/bin/supervisor.py" budget set medium
+python3 "${CLAUDE_PLUGIN_ROOT}/bin/supervisor.py" budget set 25 --state-dir "${CLAUDE_PLUGIN_DATA}"
+python3 "${CLAUDE_PLUGIN_ROOT}/bin/supervisor.py" budget set medium --state-dir "${CLAUDE_PLUGIN_DATA}"
 ```
 
 `budget set 0` closes the gate for the expensive tier; it does not disable it.
@@ -52,16 +52,16 @@ sessions in one directory can hold different budgets and no file is edited.
 on the newest one:
 
 ```
-python3 "${CLAUDE_PLUGIN_ROOT}/bin/supervisor.py" budget session 50
-python3 "${CLAUDE_PLUGIN_ROOT}/bin/supervisor.py" budget session medium
-python3 "${CLAUDE_PLUGIN_ROOT}/bin/supervisor.py" budget session off
+python3 "${CLAUDE_PLUGIN_ROOT}/bin/supervisor.py" budget session 50 --state-dir "${CLAUDE_PLUGIN_DATA}"
+python3 "${CLAUDE_PLUGIN_ROOT}/bin/supervisor.py" budget session medium --state-dir "${CLAUDE_PLUGIN_DATA}"
+python3 "${CLAUDE_PLUGIN_ROOT}/bin/supervisor.py" budget session off --state-dir "${CLAUDE_PLUGIN_DATA}"
 ```
 
 Count expensive-tier spend from now, keeping the totals and the history for
 the whole session (the one-shot warning and the explore checkpoint re-arm):
 
 ```
-python3 "${CLAUDE_PLUGIN_ROOT}/bin/supervisor.py" budget reset
+python3 "${CLAUDE_PLUGIN_ROOT}/bin/supervisor.py" budget reset --state-dir "${CLAUDE_PLUGIN_DATA}"
 ```
 
 The typed equivalents are `/supervisor:on <usd|profile>` and
@@ -72,14 +72,14 @@ Set or clear the personal ceiling that caps `budget_usd` from any source
 because a ceiling is not a per-project raise):
 
 ```
-python3 "${CLAUDE_PLUGIN_ROOT}/bin/supervisor.py" budget ceiling 60
-python3 "${CLAUDE_PLUGIN_ROOT}/bin/supervisor.py" budget ceiling off
+python3 "${CLAUDE_PLUGIN_ROOT}/bin/supervisor.py" budget ceiling 60 --state-dir "${CLAUDE_PLUGIN_DATA}"
+python3 "${CLAUDE_PLUGIN_ROOT}/bin/supervisor.py" budget ceiling off --state-dir "${CLAUDE_PLUGIN_DATA}"
 ```
 
 Past sessions:
 
 ```
-python3 "${CLAUDE_PLUGIN_ROOT}/bin/supervisor.py" budget history
+python3 "${CLAUDE_PLUGIN_ROOT}/bin/supervisor.py" budget history --state-dir "${CLAUDE_PLUGIN_DATA}"
 ```
 
 Status line (spend visible under the prompt, no context cost); prints the
@@ -102,7 +102,7 @@ Two keys in `~/.claude/supervisor.json`:
   and forks denied, report contracts off, and the budget a one-time
   checkpoint (one denied call asking ship, spike or drop) instead of a
   wall. Set it per project with
-  `python3 "${CLAUDE_PLUGIN_ROOT}/bin/supervisor.py" mode off|explore|enforce|observe`
+  `python3 "${CLAUDE_PLUGIN_ROOT}/bin/supervisor.py" mode off|explore|enforce|observe --state-dir "${CLAUDE_PLUGIN_DATA}"`
   (`--user` for every project; `--project` may only set enforce); `mode show`
   prints the effective value. `/supervisor:explore` does this for you.
 - `"readout": "line" | "start" | "off"` controls what goes into the

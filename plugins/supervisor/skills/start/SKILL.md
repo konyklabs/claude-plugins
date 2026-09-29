@@ -26,7 +26,7 @@ on the session model anyway: they are the judgment the expensive tier is for.
 `$ARGUMENTS` is the task in one sentence. Run first:
 
 ```
-python3 "${CLAUDE_PLUGIN_ROOT}/bin/supervisor.py" mode show
+python3 "${CLAUDE_PLUGIN_ROOT}/bin/supervisor.py" mode show --state-dir "${CLAUDE_PLUGIN_DATA}"
 mkdir -p .supervisor
 ```
 
@@ -100,7 +100,7 @@ task skips this step and says so on the card.
 ## 7. Pick the budget profile
 
 ```
-python3 "${CLAUDE_PLUGIN_ROOT}/bin/supervisor.py" budget show
+python3 "${CLAUDE_PLUGIN_ROOT}/bin/supervisor.py" budget show --state-dir "${CLAUDE_PLUGIN_DATA}"
 ```
 
 lists the profiles (small, medium, large by default) and the ceiling. Pick by
@@ -123,7 +123,7 @@ done from the brief; the tier table; the plan levels when there are any;
 files that will be written. Then ONE `AskUserQuestion` with three options:
 **go (recommended)**, **adjust**, **explore instead**.
 
-- **go**: run `python3 "${CLAUDE_PLUGIN_ROOT}/bin/supervisor.py" budget session <profile>`
+- **go**: run `python3 "${CLAUDE_PLUGIN_ROOT}/bin/supervisor.py" budget session <profile> --state-dir "${CLAUDE_PLUGIN_DATA}"`
   (this session's own budget, in the ledger; the hook pins the call to the
   session, and nothing in `~/.claude/supervisor.json` changes), then continue
   in this turn: invoke the

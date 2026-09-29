@@ -442,13 +442,38 @@ def raise_advice(cfg: Dict[str, Any]) -> str:
     return "no profile is above this budget; set a number with /supervisor:on <usd> (this session) or /supervisor:budget set <usd> (this project)." + tail
 
 
+def installed_data_dir() -> Optional[Path]:
+    """The data directory Claude Code gives this install, derived from where
+    this file sits: an install from a marketplace is laid out as
+    <config>/plugins/cache/<marketplace>/<plugin>/<version>/ and its data as
+    <config>/plugins/data/<plugin>-<marketplace>/ (the plugin id with the '@'
+    replaced, per the manifest reference). A `--plugin-dir` load has no cache
+    entry; its data dir is <plugin>-inline, used when it exists, so a checkout
+    call next to a `--plugin-dir` session reads that session's state. None
+    when neither applies (a checkout with no inline data dir, the tests)."""
+    parts = Path(__file__).resolve().parts
+    if len(parts) >= 7 and parts[-7:-5] == ("plugins", "cache") and parts[-2] == "bin":
+        marketplace, plugin = parts[-5], parts[-4]
+        return Path(*parts[:-7]) / "plugins" / "data" / f"{plugin}-{marketplace}"
+    config = Path(os.environ.get("CLAUDE_CONFIG_DIR") or (Path.home() / ".claude"))
+    inline = config / "plugins" / "data" / f"{Path(__file__).resolve().parents[1].name}-inline"
+    return inline if inline.is_dir() else None
+
+
 def state_dir() -> Path:
     """Where ledgers live. In order: $SUPERVISOR_STATE_DIR, the --state-dir the
-    hook passed (Claude Code substitutes ${CLAUDE_PLUGIN_DATA}, which survives
-    plugin updates), $CLAUDE_PLUGIN_DATA if exported, then ~/.cache/supervisor."""
+    caller passed (hooks and skill commands carry ${CLAUDE_PLUGIN_DATA}, which
+    Claude Code substitutes in hooks.json and skill bodies but never exports to
+    a Bash tool shell, manifest reference fetched 2026-09-29), $CLAUDE_PLUGIN_DATA
+    if exported, the install's own data dir, then ~/.cache/supervisor. Before
+    the install fallback a bare CLI call read an empty ~/.cache/supervisor:
+    `learnings show` said none pending while the hook had queued rows."""
     for d in (os.environ.get("SUPERVISOR_STATE_DIR"), os.environ.get("GOVERNOR_STATE_DIR"), STATE_DIR_ARG, os.environ.get("CLAUDE_PLUGIN_DATA")):
         if d and not d.startswith("${"):
             return Path(d)
+    installed = installed_data_dir()
+    if installed is not None:
+        return installed
     xdg = os.environ.get("XDG_CACHE_HOME")
     base = Path(xdg) if xdg else Path.home() / ".cache"
     return base / "supervisor"
@@ -1709,6 +1734,14 @@ LEARNING_PATTERNS: List[Tuple[str, str]] = [
     # me crazy", "I don't understand ... less jargon, please". Punctuation alone
     # ("!!") is not a signal: praise carries it too (lens finding, 2026-09-28)
     (r"\b(i (don'?t|do not) understand|i (can ?not|can'?t) (paste|read|run|use|follow|see)|(is|are) killing me|drives? me crazy|less jargon|in simple terms|plain (terms|english|words))\b", "correction"),
+    # a prohibition with its condition is a rule stated in the imperative: "No
+    # new designs until the pipe is finished", "No more shortlists unless I ask",
+    # "No pushes before the local round" (missed 2026-09-29: the correction
+    # pattern wanted punctuation after "No"). The thing forbidden is plural, a
+    # gerund, "new" or "more"; an observation names a singular ("No idea why it
+    # fails before the migration", "No output until I pressed enter"), and a
+    # bare "No new tests needed for this one" has no condition (lens probes)
+    (r"^no (?:more|new|\w+ing|\w+s)\b[^,.:!?\n]{0,60}\b(until|unless|before)\b", "standing-rule"),
     # a rule for later sessions; bare "always"/"never"/"in the future" also open
     # ordinary feature requests ("only allow dates in the future"), so each needs
     # the verb of a working rule after it. "When you give me X, do Y" is how a
@@ -1720,14 +1753,28 @@ LEARNING_PATTERNS: List[Tuple[str, str]] = [
 # Shorter than this is an acknowledgement ("no thanks"), not a lesson. The
 # excerpt caps keep the queue a table, not a second transcript.
 LEARNING_MIN_CHARS = 20
+# A paste is not the user speaking either: a report or transcript pasted in
+# for review quotes corrections verbatim (2026-09-29: a pasted status report
+# carrying "No, that is not what I asked" queued the question around it). An
+# unterminated block is stripped to the end
+PASTED_RE = re.compile(r"<pasted_content\b[^>]*>.*?(?:</pasted_content\b[^>]*>|\Z)", re.S | re.I)
 LEARNING_USER_CHARS = 600
 LEARNING_ASSISTANT_CHARS = 400
 
 
+def user_words(prompt: str) -> str:
+    """The prompt without its pasted blocks: what the user typed. The queue
+    stores this, never the raw prompt, so a paste that must stay local is not
+    persisted as the lesson, and a rule typed after two different pastes has
+    one digest (adversarial lens, 2026-09-29)."""
+    return PASTED_RE.sub(" ", prompt).strip()
+
+
 def learning_kind(prompt: str) -> Optional[str]:
     """The kind of lesson a prompt reads as, or None. Slash commands and
-    expanded skill markup (starting with "<") are never lessons."""
-    text = prompt.strip()
+    expanded skill markup (starting with "<") are never lessons, and pasted
+    blocks are dropped before the user's own words are read."""
+    text = user_words(prompt)
     if len(text) < LEARNING_MIN_CHARS or text.startswith("/") or text.startswith("<"):
         return None
     low = text.lower()
@@ -1821,7 +1868,7 @@ def capture_learning(hook: Dict[str, Any], cfg: Dict[str, Any], ledger: Ledger) 
         return None
     project_dir = hook.get("cwd") or os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
     path = learnings_path(project_dir)
-    user = one_line(prompt, LEARNING_USER_CHARS)
+    user = one_line(user_words(prompt), LEARNING_USER_CHARS)
     digest = hashlib.sha1(user.lower().encode()).hexdigest()[:10]
     tp = hook.get("transcript_path")
     assistant = one_line(last_assistant_text(Path(tp)), LEARNING_ASSISTANT_CHARS) if tp else ""
@@ -2020,6 +2067,30 @@ OWN_CLI_VERBS: Dict[str, Tuple[str, ...]] = {
     "mode": ("show",),
 }
 OWN_CLI_ENV_FORMS = ("${CLAUDE_PLUGIN_ROOT}/bin/supervisor.py", "$CLAUDE_PLUGIN_ROOT/bin/supervisor.py")
+# the one '$' a skill command may carry after the verb: the data-dir
+# placeholder Claude Code substitutes in skill bodies (manifest reference,
+# 2026-09-29), allowed only as the value of --state-dir, as the env forms of
+# the path are allowed above. Any other '$' in the rest still fails the match
+OWN_CLI_DATA_FORMS = ('"${CLAUDE_PLUGIN_DATA}"', "${CLAUDE_PLUGIN_DATA}", '"$CLAUDE_PLUGIN_DATA"', "$CLAUDE_PLUGIN_DATA")
+# flags that take a value; the value is not a positional word
+OWN_CLI_VALUED_FLAGS = ("--state-dir", "--session")
+
+
+def own_cli_words(rest: str) -> List[str]:
+    """The positional words of the plugin's own CLI call: flags dropped, and
+    the value after a flag that takes one dropped with it, so a data-dir path
+    is not read as a stray verb (2026-09-29: `status --state-dir <dir>` was
+    refused at a closed gate and left unpinned once the skills carried the flag)."""
+    words: List[str] = []
+    skip = False
+    for w in rest.split():
+        if skip:
+            skip = False
+        elif w in OWN_CLI_VALUED_FLAGS:
+            skip = True
+        elif not w.startswith("--"):
+            words.append(w)
+    return words
 
 
 def own_cli_call(tool: Optional[str], tool_input: Dict[str, Any]) -> Optional["re.Match[str]"]:
@@ -2028,6 +2099,8 @@ def own_cli_call(tool: Optional[str], tool_input: Dict[str, Any]) -> Optional["r
     if tool != "Bash":
         return None
     cmd = str(tool_input.get("command") or "").strip()
+    for form in OWN_CLI_DATA_FORMS:
+        cmd = cmd.replace(f"--state-dir {form}", "--state-dir PLUGIN_DATA")
     m = OWN_CLI_RE.match(cmd)
     if m is None:
         return None
@@ -2043,7 +2116,7 @@ def own_cli_call(tool: Optional[str], tool_input: Dict[str, Any]) -> Optional["r
     verb = m.group("verb")
     if verb not in OWN_CLI_VERBS:
         return None
-    words = [w for w in m.group("rest").split() if not w.startswith("--")]
+    words = own_cli_words(m.group("rest"))
     if verb in ("budget", "mode"):
         if words and words[0] not in OWN_CLI_VERBS[verb]:
             return None
