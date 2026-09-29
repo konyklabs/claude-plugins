@@ -1,7 +1,7 @@
 ---
 type: regex
 target: last_message
-pattern: "secrets:\\s*\\n\\s*DEPLOY_TOKEN:\\s*\\$\\{\\{\\s*secrets\\.|secrets:\\s*inherit"
+pattern: "DEPLOY_TOKEN:\\s*\\$\\{\\{\\s*secrets\\.DEPLOY_TOKEN|secrets:\\s*inherit"
 ---
 The secret must cross the call boundary explicitly: either named
 (`DEPLOY_TOKEN: ${{ secrets.DEPLOY_TOKEN }}`) or via `secrets: inherit`,

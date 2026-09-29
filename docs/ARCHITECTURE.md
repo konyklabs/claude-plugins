@@ -540,12 +540,17 @@ and docs-first authoring references with dated digests.
 scanner (no PyYAML: the repository ships nothing but the standard library)
 and never evaluates an expression. It runs `actionlint` and `zizmor` when
 they are on PATH, reduced to counts and `path:line tool/rule`, and eleven
-structural rules always; four are blocking (`uses-unpinned`,
+structural rules always; five are blocking (`uses-unpinned`,
 `permissions-write-all`, `pull-request-target-checkout`,
-`expression-injection`, plus `secrets-inherit-external`) and exit 2. A job
-that calls a reusable workflow is exempt from `timeout-missing`, because
-GitHub does not accept the key there. Org-internal callers at `@main` are
-a policy the preflight allowlists only when told (`--allow-unpinned`).
+`expression-injection`, `secrets-inherit-external`) and exit 2, and so is a
+file the scanner could not fully parse: it fails closed rather than passing
+what it did not read. A job that calls a reusable workflow is exempt from
+`timeout-missing`, because a caller job takes no such key. The org's own
+reusable-workflow callers at `@main` are exempt from `uses-unpinned` by
+default (the org's callers ride `@main` on purpose, so the gate's
+anti-tamper check can compare them with the default branch); any other
+prefix is exempt only when told (`--allow-unpinned`), and the tension with
+release-please at `@main` is roadmap#159's to settle.
 
 **The baseline.** A five-workflow fixture with sixteen planted defects and
 one clean workflow, kept as

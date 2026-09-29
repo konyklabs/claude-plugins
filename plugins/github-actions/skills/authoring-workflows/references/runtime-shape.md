@@ -14,8 +14,11 @@ this is widely cited but marked here as to-confirm against the current
 limits page before relying on it —
 https://docs.github.com/en/actions/reference/limits. A private-repository
 variant with a different default has been seen elsewhere but was not
-verified this pass. Set `timeout-minutes` explicitly on any job rather
-than trusting the default, hosted or self-hosted.
+verified this pass. Set `timeout-minutes` explicitly on any job that runs
+steps rather than trusting the default, hosted or self-hosted. A job that
+calls a reusable workflow takes no `timeout-minutes`: the workflow-syntax
+reference lists the keys a caller job accepts and this is not among them
+(not re-fetched on 2026-09-29); the callee's jobs carry their own.
 
 ## Concurrency and cancellation
 
