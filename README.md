@@ -261,6 +261,23 @@ silently, a vendor key mode) are written as tests in the references and
 delegated as slices. External tools are documented with install-from-
 maintainer, pin-and-checksum guidance and are never installed by the plugin.
 
+## github-actions in one minute
+
+```
+preflight.py .                                 # actionlint and zizmor when on PATH, reduced to counts; the structural rules always
+preflight.py . --allow-unpinned ORG/.github/   # your org's reusable workflows ride @main by policy
+```
+
+Stdout is a bounded table (`pass` / `fail` / `skip` per check); findings are
+`path:line rule`, never workflow text. Blocking rows (an unpinned action, a
+fork head checked out under `pull_request_target`, event text inside `run:`,
+`write-all`, secrets inherited across organisations) exit 2. The workflow:
+run the preflight, paste the table, ask `github-actions:workflow-reviewer`
+for what no tool sees (trust boundaries, token scope, secrets flow, caches
+across trust levels, a deploy that cancels itself). `authoring-workflows`
+carries the shape that passes, with OIDC instead of keys and SHA pins with
+version comments.
+
 ## Development
 
 ```
@@ -291,6 +308,7 @@ plugins/supervisor/                      bin/supervisor.py, hooks/hooks.json, ag
 plugins/py-testing/                    skills/ (5, with references and scripts/inventory.py), agents/, tests/, evals/
 plugins/prod-readiness/                skills/ (3, with references and scripts/readiness.py), agents/, tests/, evals/
 plugins/signoff/                       formats.md, skills/ (4: exploring-app, tiling-coverage, recording-test-cases, signoff-report), tests/, evals/; no agents yet
+plugins/github-actions/               skills/ (3: authoring-workflows with references, preflighting-workflows with scripts/preflight.py, reviewing-workflows), agents/, tests/ (planted-workflows fixture), evals/
 scripts/                               validate.sh, audit-deps.sh, dist.sh
 docs/                                  ARCHITECTURE.md, COST-TRACKING.md, PLAYBOOK.md
 .github/workflows/                     validate (manifests, audit, hooks on 3.9 and 3.13) plus the org callers

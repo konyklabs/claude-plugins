@@ -1,0 +1,24 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup node
+        uses: actions/setup-node@1a4442cacd436585916779262731d5b162bc6ec
+      - name: Comment on issue
+        run: |
+          echo "Title was: ${{ github.event.issue.title }}"
+      - name: Echo input
+        run: echo "${{ inputs.message }}"
+      - name: List commits
+        run: echo "${{ github.event.commits }}"
+      - name: Not a real credential, only a leak canary for the test suite
+        run: echo "AKIAPLANTEDEXAMPLE0"

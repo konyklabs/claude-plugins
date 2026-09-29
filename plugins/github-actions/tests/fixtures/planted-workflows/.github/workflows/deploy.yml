@@ -1,0 +1,12 @@
+name: deploy
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    permissions:
+      contents: read
+    secrets: inherit
+    uses: other-org/shared-workflows/.github/workflows/deploy.yml@abcdefabcdefabcdefabcdefabcdefabcdefabcd

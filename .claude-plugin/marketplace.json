@@ -38,6 +38,12 @@
       "category": "infrastructure"
     },
     {
+      "name": "github-actions",
+      "source": "./plugins/github-actions",
+      "description": "GitHub Actions workflows authored, preflighted and reviewed the way the infrastructure work is: a deterministic preflight (actionlint and zizmor on PATH reduced to counts, structural checks for the pinning, permissions, pull_request_target and injection traps), a workflow review lens with an Opus reviewer agent, and docs-first authoring references for reusable workflows, permissions and OIDC, supply chain and runtime shape.",
+      "category": "ci"
+    },
+    {
       "name": "agentbox-channel",
       "source": {
         "source": "git-subdir",

@@ -1,0 +1,28 @@
+name: nightly
+
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+    inputs:
+      message:
+        description: "note"
+        required: false
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Run scanner
+        uses: docker://ghcr.io/example/audit-tool:1.4.0
+      - name: Report
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
+        with:
+          script: |
+            core.info(`${{ github.event.inputs.message }}`)
+      - name: Danger
+        run: |
+          echo "commit was ${{ github.event.head_commit.message }}"

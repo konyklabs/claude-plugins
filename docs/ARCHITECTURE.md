@@ -524,6 +524,42 @@ structural checker, and skill script paths that did not resolve when
 installed. All fixed with a test each or a documented change; the
 dispositions are in the pull request body.
 
+## github-actions: the terrain shape for CI workflows (2026-09-29)
+
+The org runs on GitHub Actions (a reusable review gate, release-please,
+title lint, OIDC deploys) and had no skill for it. The traps are the ones
+reviewers find late in every CI review: an action pinned to a mutable tag
+(CVE-2025-30066 rewrote every tj-actions/changed-files tag), a fork's head
+checked out under `pull_request_target`, a PR title interpolated into
+`run:`, a token holding more than the job uses, a cache prefix shared across
+trust levels, a deploy job the next push cancels. `github-actions` mirrors
+`terrain`: a deterministic preflight, a review lens with an Opus agent,
+and docs-first authoring references with dated digests.
+
+`preflight.py` parses workflow YAML with a line-oriented indentation
+scanner (no PyYAML: the repository ships nothing but the standard library)
+and never evaluates an expression. It runs `actionlint` and `zizmor` when
+they are on PATH, reduced to counts and `path:line tool/rule`, and eleven
+structural rules always; four are blocking (`uses-unpinned`,
+`permissions-write-all`, `pull-request-target-checkout`,
+`expression-injection`, plus `secrets-inherit-external`) and exit 2. A job
+that calls a reusable workflow is exempt from `timeout-missing`, because
+GitHub does not accept the key there. Org-internal callers at `@main` are
+a policy the preflight allowlists only when told (`--allow-unpinned`).
+
+**The baseline.** A five-workflow fixture with sixteen planted defects and
+one clean workflow, kept as
+`plugins/github-actions/tests/fixtures/planted-workflows/` with its answer
+key; the tests parse the key, so it is the contract. On 2026-09-29 the
+structural rules reported all sixteen; `actionlint` and `zizmor` were not
+installed on the authoring machine, so their rows were `skip` and their
+parsing is covered by stubbed JSON only. Run on the org's own `.github`
+repository the same day, the preflight found 32 tag-pinned actions
+(`actions/checkout@v6`, `anthropics/claude-code-action@v1`) across the
+reusable workflows, four workflows with no top-level `permissions`, seven
+jobs with no timeout, two release jobs with no `concurrency`, and one
+`inputs.*` inside `run:`; filed, not fixed here.
+
 ## What was verified in the field, and what was not
 
 Captured with `SUPERVISOR_DEBUG=1` (the engine appends every raw hook input to
