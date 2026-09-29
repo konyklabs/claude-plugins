@@ -448,8 +448,9 @@ def installed_data_dir() -> Optional[Path]:
     <config>/plugins/cache/<marketplace>/<plugin>/<version>/ and its data as
     <config>/plugins/data/<plugin>-<marketplace>/ (the plugin id with the '@'
     replaced, per the manifest reference). A `--plugin-dir` load has no cache
-    entry; its data dir is <plugin>-inline, used when it exists. None when
-    neither applies (a checkout, the tests)."""
+    entry; its data dir is <plugin>-inline, used when it exists, so a checkout
+    call next to a `--plugin-dir` session reads that session's state. None
+    when neither applies (a checkout with no inline data dir, the tests)."""
     parts = Path(__file__).resolve().parts
     if len(parts) >= 7 and parts[-7:-5] == ("plugins", "cache") and parts[-2] == "bin":
         marketplace, plugin = parts[-5], parts[-4]
@@ -1734,10 +1735,13 @@ LEARNING_PATTERNS: List[Tuple[str, str]] = [
     # ("!!") is not a signal: praise carries it too (lens finding, 2026-09-28)
     (r"\b(i (don'?t|do not) understand|i (can ?not|can'?t) (paste|read|run|use|follow|see)|(is|are) killing me|drives? me crazy|less jargon|in simple terms|plain (terms|english|words))\b", "correction"),
     # a prohibition with its condition is a rule stated in the imperative: "No
-    # new designs until the pipe is finished", "No more shortlists unless I ask"
-    # (missed 2026-09-29: the correction pattern wanted punctuation after "No").
-    # A bare "No new tests needed for this one" is a one-off and stays out
-    (r"^no more\b|^no\b[^,.:!?\n]{1,60}\b(until|unless|before)\b", "standing-rule"),
+    # new designs until the pipe is finished", "No more shortlists unless I ask",
+    # "No pushes before the local round" (missed 2026-09-29: the correction
+    # pattern wanted punctuation after "No"). The thing forbidden is plural, a
+    # gerund, "new" or "more"; an observation names a singular ("No idea why it
+    # fails before the migration", "No output until I pressed enter"), and a
+    # bare "No new tests needed for this one" has no condition (lens probes)
+    (r"^no (?:more|new|\w+ing|\w+s)\b[^,.:!?\n]{0,60}\b(until|unless|before)\b", "standing-rule"),
     # a rule for later sessions; bare "always"/"never"/"in the future" also open
     # ordinary feature requests ("only allow dates in the future"), so each needs
     # the verb of a working rule after it. "When you give me X, do Y" is how a
@@ -1758,11 +1762,19 @@ LEARNING_USER_CHARS = 600
 LEARNING_ASSISTANT_CHARS = 400
 
 
+def user_words(prompt: str) -> str:
+    """The prompt without its pasted blocks: what the user typed. The queue
+    stores this, never the raw prompt, so a paste that must stay local is not
+    persisted as the lesson, and a rule typed after two different pastes has
+    one digest (adversarial lens, 2026-09-29)."""
+    return PASTED_RE.sub(" ", prompt).strip()
+
+
 def learning_kind(prompt: str) -> Optional[str]:
     """The kind of lesson a prompt reads as, or None. Slash commands and
     expanded skill markup (starting with "<") are never lessons, and pasted
     blocks are dropped before the user's own words are read."""
-    text = PASTED_RE.sub(" ", prompt).strip()
+    text = user_words(prompt)
     if len(text) < LEARNING_MIN_CHARS or text.startswith("/") or text.startswith("<"):
         return None
     low = text.lower()
@@ -1856,7 +1868,7 @@ def capture_learning(hook: Dict[str, Any], cfg: Dict[str, Any], ledger: Ledger) 
         return None
     project_dir = hook.get("cwd") or os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
     path = learnings_path(project_dir)
-    user = one_line(prompt, LEARNING_USER_CHARS)
+    user = one_line(user_words(prompt), LEARNING_USER_CHARS)
     digest = hashlib.sha1(user.lower().encode()).hexdigest()[:10]
     tp = hook.get("transcript_path")
     assistant = one_line(last_assistant_text(Path(tp)), LEARNING_ASSISTANT_CHARS) if tp else ""
@@ -2055,6 +2067,30 @@ OWN_CLI_VERBS: Dict[str, Tuple[str, ...]] = {
     "mode": ("show",),
 }
 OWN_CLI_ENV_FORMS = ("${CLAUDE_PLUGIN_ROOT}/bin/supervisor.py", "$CLAUDE_PLUGIN_ROOT/bin/supervisor.py")
+# the one '$' a skill command may carry after the verb: the data-dir
+# placeholder Claude Code substitutes in skill bodies (manifest reference,
+# 2026-09-29), allowed only as the value of --state-dir, as the env forms of
+# the path are allowed above. Any other '$' in the rest still fails the match
+OWN_CLI_DATA_FORMS = ('"${CLAUDE_PLUGIN_DATA}"', "${CLAUDE_PLUGIN_DATA}", '"$CLAUDE_PLUGIN_DATA"', "$CLAUDE_PLUGIN_DATA")
+# flags that take a value; the value is not a positional word
+OWN_CLI_VALUED_FLAGS = ("--state-dir", "--session")
+
+
+def own_cli_words(rest: str) -> List[str]:
+    """The positional words of the plugin's own CLI call: flags dropped, and
+    the value after a flag that takes one dropped with it, so a data-dir path
+    is not read as a stray verb (2026-09-29: `status --state-dir <dir>` was
+    refused at a closed gate and left unpinned once the skills carried the flag)."""
+    words: List[str] = []
+    skip = False
+    for w in rest.split():
+        if skip:
+            skip = False
+        elif w in OWN_CLI_VALUED_FLAGS:
+            skip = True
+        elif not w.startswith("--"):
+            words.append(w)
+    return words
 
 
 def own_cli_call(tool: Optional[str], tool_input: Dict[str, Any]) -> Optional["re.Match[str]"]:
@@ -2063,6 +2099,8 @@ def own_cli_call(tool: Optional[str], tool_input: Dict[str, Any]) -> Optional["r
     if tool != "Bash":
         return None
     cmd = str(tool_input.get("command") or "").strip()
+    for form in OWN_CLI_DATA_FORMS:
+        cmd = cmd.replace(f"--state-dir {form}", "--state-dir PLUGIN_DATA")
     m = OWN_CLI_RE.match(cmd)
     if m is None:
         return None
@@ -2078,7 +2116,7 @@ def own_cli_call(tool: Optional[str], tool_input: Dict[str, Any]) -> Optional["r
     verb = m.group("verb")
     if verb not in OWN_CLI_VERBS:
         return None
-    words = [w for w in m.group("rest").split() if not w.startswith("--")]
+    words = own_cli_words(m.group("rest"))
     if verb in ("budget", "mode"):
         if words and words[0] not in OWN_CLI_VERBS[verb]:
             return None

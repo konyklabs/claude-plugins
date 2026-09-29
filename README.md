@@ -66,7 +66,7 @@ Once, after updating the marketplace:
 claude plugin uninstall governor@konyklabs-plugins && claude plugin install supervisor@konyklabs-plugins
 mv ~/.claude/governor.json ~/.claude/supervisor.json          # or let the first `budget set` / `mode` write rename it
 mv ~/.claude/plugins/data/governor-konyklabs-plugins ~/.claude/plugins/data/supervisor-konyklabs-plugins   # keeps the spend history
-[ -d ~/.cache/governor ] && mv ~/.cache/governor ~/.cache/supervisor                                        # only if you ran the script outside a plugin
+[ -d ~/.cache/governor ] && mv ~/.cache/governor ~/.cache/supervisor                                        # only for a checkout run: since 2.4.2 an installed copy reads its data dir, and what 1.x skill commands left here were per-session budgets, safe to delete
 ```
 
 `GOVERNOR_STATE_DIR`, `GOVERNOR_CONFIG` and `GOVERNOR_DEBUG` became
@@ -187,9 +187,11 @@ reason for its value, are `DEFAULTS` in `supervisor.py`. The scanner reads an
 optional `.readiness.json` at the scanned root; its own `disable` list is
 honoured only when passed with `--config`.
 
-**State**: `~/.claude/plugins/data/<plugin>-<marketplace>/` — hooks and skill
-commands pass it as `--state-dir "${CLAUDE_PLUGIN_DATA}"`, and a bare CLI
-call derives it from the install path (`~/.cache/supervisor` only outside an install):
+**State**: `~/.claude/plugins/data/<plugin>-<marketplace>/`. Hooks and skill
+commands pass it as `--state-dir "${CLAUDE_PLUGIN_DATA}"`; a bare CLI call
+derives it from the install path, or uses `<plugin>-inline` from a checkout
+when a `--plugin-dir` session has made it, else `~/.cache/supervisor`.
+`SUPERVISOR_STATE_DIR` overrides all of these:
 per-session ledgers, `history.jsonl`, `errors.log`; the scanner writes
 `.readiness/` into the scanned repository. Add `.supervisor/` and
 `.readiness/` to `.gitignore` in projects that use them.
