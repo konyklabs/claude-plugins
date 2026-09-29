@@ -21,7 +21,7 @@ resource "aws_lambda_function" "worker" {
   handler          = "handler.main"
   architectures    = ["arm64"]
   filename         = data.archive_file.worker.output_path
-  source_code_hash = data.archive_file.worker.output_base64sha256   # or code_sha256 = ...
+  code_sha256      = data.archive_file.worker.output_base64sha256   # Lambda's own hash; see below
   timeout          = 60
   memory_size      = 512
   environment {
@@ -34,10 +34,15 @@ resource "aws_lambda_function" "worker" {
 }
 ```
 
-Without `source_code_hash` (or `code_sha256`) the provider never sees a
-code change: the zip is rebuilt, the function keeps the old code. The hash
-must be `output_base64sha256`; Lambda compares base64 SHA-256, so `output_md5`
-and `output_sha` never match and force an update on every plan. The
+Without `code_sha256` (or `source_code_hash`) the provider never sees a
+code change: the zip is rebuilt, the function keeps the old code.
+`code_sha256` must be `output_base64sha256`: the provider compares it with
+Lambda's own base64 SHA-256, so `output_md5` and `output_sha` never match
+and force an update on every plan. `source_code_hash` is the older form and
+is now documented as a synthetic trigger the provider never compares with
+Lambda's hash: any digest works, and an out-of-band deploy is not caught
+(provider docs, 2026-09-29; the 2026-09-08 digest had the two the other way
+round). The
 archive is built at plan time and must exist at apply; in a multi-stage
 pipeline persist the zip or build it in a step before plan. Artifacts
 larger than a few MB go through S3 (`s3_bucket`, `s3_key`,
@@ -140,6 +145,6 @@ CloudWatch logging example with `depends_on`), `r/lambda_alias`,
 `data-sources/file` (plan-time build, `output_file_mode`); AWS Lambda
 developer guide: runtimes and deprecation policy, VPC networking,
 CloudWatch log groups, SQS event source parameters and error handling;
-terraform-aws-modules/terraform-aws-lambda README. Fetched 2026-09-08.
+terraform-aws-modules/terraform-aws-lambda README. Fetched 2026-09-29 (first 2026-09-08; `code_sha256` versus `source_code_hash` corrected on 2026-09-29 against provider 6.66.0).
 The `AWSLambdaSQSQueueExecutionRole` action list is from memory of the
 AWS managed policy reference and was not re-fetched.

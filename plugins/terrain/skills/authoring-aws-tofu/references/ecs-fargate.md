@@ -183,4 +183,4 @@ CPU and memory, task definition parameters (awslogs options, secrets),
 task execution IAM role and `AmazonECSTaskExecutionRolePolicy`, deployment
 circuit breaker, Fargate capacity providers, VPC endpoints for Fargate,
 ECR VPC endpoints; terraform-aws-modules/terraform-aws-ecs README
-(`ignore_task_definition_changes`, defaults). All fetched 2026-09-08.
+(`ignore_task_definition_changes`, defaults). All fetched 2026-09-29 (first 2026-09-08).

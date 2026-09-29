@@ -787,6 +787,7 @@ def test_contract_lookup_respects_namespaces():
     cfg = supervisor.DEFAULTS
     assert supervisor.contract_for("supervisor:implementer", cfg) == "worker"
     assert supervisor.contract_for("py-testing:test-implementer", cfg) == "worker"
+    assert supervisor.contract_for("ts-testing:test-implementer", cfg) == "worker"  # the TypeScript twin is held to the same contract
     assert supervisor.contract_for("prod-readiness:scanner", cfg) == "worker"
     assert supervisor.contract_for("prod-readiness:auditor", cfg) == "reviewer"
     assert supervisor.contract_for("otherplugin:reviewer", cfg) is None
@@ -1096,7 +1097,8 @@ def test_brief_cli(env, tmp_path):
     r = run_cli(env, ["brief", "check", str(bad)])
     assert r.returncode == 1 and r.stdout.startswith("NONCOMPLIANT brief=") and "- missing '## Procedure'" in r.stdout
     r = run_cli(env, ["brief", "template"])
-    assert r.returncode == 0 and r.stdout == supervisor.BRIEF_TEMPLATE.read_text()
+    assert r.returncode == 0 and "<!--" not in r.stdout  # the template's own comments stay in the repository
+    assert r.stdout == re.sub(r"[ \t]*<!--.*?-->[ \t]*\n?", "", supervisor.BRIEF_TEMPLATE.read_text(), flags=re.S)
     r = run_cli(env, ["brief", "check", "-"], stdin=r.stdout)
     assert r.returncode == 1 and r.stdout.startswith("NONCOMPLIANT brief=-") and "not checkable" in r.stdout
     r = run_cli(env, ["brief", "check", "-"], stdin=GOOD_BRIEF)

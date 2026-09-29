@@ -100,6 +100,6 @@ def test_order_shows_up(page, context):
 ## Sources
 
 playwright.dev/python/docs/api-testing, /test-runners; pytest-base-url on
-GitHub; fetched 2026-09-02. The docs do not compare `APIRequestContext` with
+GitHub; fetched 2026-09-29 (first 2026-09-02). The docs do not compare `APIRequestContext` with
 `httpx`/`requests`; the case for it here is the shared lifecycle and auth
 with browser tests.

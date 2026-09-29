@@ -90,3 +90,5 @@ def test_static_has_no_html_string_sinks():
 **When it is wrong.** A sink fed a constant is safe. The finding is the
 sink; the auditor decides the source. The fix is still usually cheaper
 than the argument.
+
+<!-- no external sources: surfaces recorded from this repository's own hardening pass -->

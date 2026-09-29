@@ -127,4 +127,4 @@ batch responses, log groups), hashicorp/aws provider docs for
 `aws_ecs_service` (`ignore_changes` on `desired_count`), `aws_iam_role`
 (deprecations), `aws_security_group` (inline rules discouraged), version 6
 upgrade guide; OpenTofu docs (ephemerality, `moved`, `removed`, `tofu
-test`). All fetched 2026-09-08.
+test`). All fetched 2026-09-29 (first 2026-09-08).

@@ -112,7 +112,7 @@ and the triage belongs on the session model.
 
 ## Sources
 
-Fetched 2026-09-03. Claude Code best practices, "let Claude interview you":
+Fetched 2026-09-29 (first 2026-09-03). Claude Code best practices, "let Claude interview you":
 ask the questions before writing the plan. spec-kit `clarify`: five
 questions at most, one at a time, ordered by impact times uncertainty.
 `AskUserQuestion` reference: one to four questions per call, two to four
@@ -120,4 +120,7 @@ options each, "Other" always available; not available inside subagents,
 which is why this skill has no `context: fork`. Skill frontmatter: `model:`
 applies to the invoking turn. The docs are silent on whether that override
 survives the AskUserQuestion round-trips within one turn, and on how
-AskUserQuestion behaves in `-p` mode; neither has been verified here.
+AskUserQuestion behaves in `-p` mode; neither has been verified here. One
+indirect data point since: the headless docs say `--permission-prompts none`
+removes the tools that need a person, AskUserQuestion among them, which
+implies it otherwise blocks for input in `-p`; still not a direct statement.

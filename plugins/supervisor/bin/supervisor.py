@@ -108,7 +108,7 @@ DEFAULTS: Dict[str, Any] = {
     # plugin agents always arrive namespaced (verified: supervisor:scout), so
     # a bare agent type is a project or user agent, and those are governed
     # only when listed here by the user.
-    "contract_namespaces": ["supervisor", "py-testing", "prod-readiness"],
+    "contract_namespaces": ["supervisor", "py-testing", "prod-readiness", "ts-testing"],
     "govern_bare_agents": [],
     # "off": installed but not armed; the plugin pins nothing, denies nothing,
     # injects nothing. The user arms a session with /supervisor:start,
@@ -2754,7 +2754,9 @@ def cmd_brief(args: List[str], cfg: Dict[str, Any]) -> int:
         return 2
     if args[0] == "template":
         try:
-            sys.stdout.write(BRIEF_TEMPLATE.read_text())
+            # HTML comments in the template are the repository's own notes (the
+            # digest check's opt-out); a brief made from it does not carry them
+            sys.stdout.write(re.sub(r"[ \t]*<!--.*?-->[ \t]*\n?", "", BRIEF_TEMPLATE.read_text(), flags=re.S))
         except (OSError, ValueError) as e:
             print(f"cannot read {BRIEF_TEMPLATE}: {e}")
             return 1

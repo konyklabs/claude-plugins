@@ -1,6 +1,6 @@
 # pytest configuration reference
 
-Fetched 2026-09-02 from docs.pytest.org (stable), pytest-xdist docs, and PyPI.
+Fetched 2026-09-29 (first 2026-09-02) from docs.pytest.org (stable, pytest 9.1.1), pytest-xdist docs, and PyPI.
 
 ## Contents
 

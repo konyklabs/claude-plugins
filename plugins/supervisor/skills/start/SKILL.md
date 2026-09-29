@@ -146,7 +146,7 @@ applies.
 
 ## Sources
 
-Fetched 2026-09-05. `AskUserQuestion` reference: one to four questions per
+Fetched 2026-09-29 (first 2026-09-05). `AskUserQuestion` reference: one to four questions per
 call, two to four options each, "Other" always available, unavailable inside
 subagents. Skill frontmatter: `model:` applies to the invoking turn only,
 which is why brief runs on Sonnet and hands the next turn back; this skill
