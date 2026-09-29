@@ -5,8 +5,8 @@ A skill that depends on external documentation keeps a dated digest: its
 `references/*.md`, and its SKILL.md when that cites docs itself, carry the
 words `fetched YYYY-MM-DD` next to their sources. The workspace rule says a
 digest older than 14 days is re-fetched, never trusted from memory. Nothing
-enforced that until 2026-09-29, when every digest in the repository was
-between 21 and 27 days old; this script is the enforcement, the way the
+enforced that until 2026-09-29, when every digest in the repository but one
+was between 21 and 27 days old; this script is the enforcement, the way the
 arch drift check enforces the model.
 
 Usage:
@@ -16,15 +16,21 @@ Exit codes:
     0  every digest is fresh
     1  a digest is stale, a references file carries no marker, or a date is
        malformed or in the future
+    2  a bad argument (`--today` not a date)
 
 Rules this script keeps:
-- Scanned: plugins/*/skills/*/SKILL.md and plugins/*/skills/*/references/*.md.
+- Scanned: plugins/*/skills/*/SKILL.md and every .md under a skill's
+  references/ (the convention is one level deep; a nested file is not a way out).
 - A marker is `fetched YYYY-MM-DD` in any case (`Fetched`, `All fetched`).
   A file with several markers is as old as its oldest: every source in it
   must be fresh.
-- Every references file carries a marker, or the words `no external sources`
-  (a template or checklist of this repository's own making).
-- A SKILL.md without a marker is `none`: not every skill digests docs.
+- Every references file carries a marker, or the comment
+  `<!-- no external sources: why -->` (a template or checklist of this
+  repository's own making); the phrase in prose does not count.
+- A SKILL.md without a marker is `none` (not every skill digests docs), unless
+  it has a `## Sources` section, which is a digest whose date was dropped.
+- A date up to one day ahead of the runner's clock is fresh (a refresh dated
+  after local midnight east of UTC); further ahead is malformed.
 - Refresh means re-reading the cited pages (Context7 when its server is
   present, the raw source otherwise), applying what changed, and only then
   writing today's date. A bumped date with no re-read is the failure this
@@ -41,8 +47,15 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 DEFAULT_MAX_AGE_DAYS = 14
-MARKER_RE = re.compile(r"\bfetched\s+(\d{4}-\d{2}-\d{2})\b", re.I)  # \s+: prose wraps "Fetched\n2026-09-08"
+# "Fetched 2026-09-29", "fetched on 2026-09-29", "Fetched: 2026-09-29", and the prose
+# wrap "Fetched\n2026-09-08" all count; a date in any other shape next to the
+# word is a malformed marker, never a silent `none`
+MARKER_RE = re.compile(r"\bfetched\b\W{0,3}(?:on\s+)?(\d{4}-\d{2}-\d{2})\b", re.I)
+NEAR_MISS_RE = re.compile(r"\bfetched\b[^\n]{0,24}?\d{4}", re.I)
 OPT_OUT = "no external sources"
+OPT_OUT_RE = re.compile(r"<!--\s*" + OPT_OUT + r"\b", re.I)  # the comment form only: prose cannot exempt a digest
+SOURCES_RE = re.compile(r"^#{2,3}\s*Sources\b", re.M)
+FUTURE_TOLERANCE_DAYS = 1
 FAILING = ("stale", "missing", "malformed")
 
 
@@ -66,10 +79,15 @@ def judge(path: Path, root: Path, today: date, max_age: int) -> Dict[str, Any]:
     found = MARKER_RE.findall(text)
     is_reference = path.parent.name == "references"
     if not found:
-        if is_reference and OPT_OUT not in text.lower():
-            row.update(status="missing", note=f"no `fetched YYYY-MM-DD` marker and no `{OPT_OUT}` line")
-        elif is_reference:
+        opted_out = OPT_OUT_RE.search(text) is not None
+        if NEAR_MISS_RE.search(text):
+            row.update(status="malformed", note="a date next to `fetched` is not `fetched YYYY-MM-DD`")
+        elif opted_out:
             row.update(note=OPT_OUT)
+        elif is_reference:
+            row.update(status="missing", note=f"no `fetched YYYY-MM-DD` marker and no `<!-- {OPT_OUT}: ... -->` comment")
+        elif SOURCES_RE.search(text):
+            row.update(status="missing", note="a Sources section with no `fetched YYYY-MM-DD` marker")
         else:
             row.update(note="no marker; the skill cites no docs")
         return row
@@ -83,7 +101,7 @@ def judge(path: Path, root: Path, today: date, max_age: int) -> Dict[str, Any]:
     oldest = min(parsed)
     age = (today - oldest).days
     row.update(fetched=oldest.isoformat(), age=age)
-    if age < 0:
+    if age < -FUTURE_TOLERANCE_DAYS:
         row.update(status="malformed", note="fetched date is in the future")
     elif age > max_age:
         row.update(status="stale", note=f"older than {max_age} days: re-fetch the cited pages, then date it")
@@ -95,7 +113,7 @@ def judge(path: Path, root: Path, today: date, max_age: int) -> Dict[str, Any]:
 def scan(root: Path, today: date, max_age: int) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
     for skill_md in sorted(root.glob("plugins/*/skills/*/SKILL.md")):
-        files = [skill_md] + sorted(skill_md.parent.glob("references/*.md"))
+        files = [skill_md] + sorted((skill_md.parent / "references").rglob("*.md"))
         rows.extend(judge(f, root, today, max_age) for f in files)
     return rows
 

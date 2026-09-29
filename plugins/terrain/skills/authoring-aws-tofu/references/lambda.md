@@ -145,6 +145,6 @@ CloudWatch logging example with `depends_on`), `r/lambda_alias`,
 `data-sources/file` (plan-time build, `output_file_mode`); AWS Lambda
 developer guide: runtimes and deprecation policy, VPC networking,
 CloudWatch log groups, SQS event source parameters and error handling;
-terraform-aws-modules/terraform-aws-lambda README. Fetched 2026-09-29 (first 2026-09-08; `code_sha256` versus `source_code_hash` corrected then, provider 6.66.0).
+terraform-aws-modules/terraform-aws-lambda README. Fetched 2026-09-29 (first 2026-09-08; `code_sha256` versus `source_code_hash` corrected on 2026-09-29 against provider 6.66.0).
 The `AWSLambdaSQSQueueExecutionRole` action list is from memory of the
 AWS managed policy reference and was not re-fetched.
