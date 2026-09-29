@@ -80,4 +80,4 @@ Paste the output in the commit or PR; never say "tests pass" without it.
 - terrain scripts: `plugins/terrain/skills/preflighting-tofu/scripts/`
   (`preflight.py`, `hcl_checks.py`, `plan_summary.py`); planted-defect
   fixture and answer key in `plugins/terrain/tests/fixtures/planted-stack/`.
-- Driving tasks: konyklabs/roadmap#60, #61, #120, #130, #156, #157 and #158.
+- Driving tasks: konyklabs/roadmap#60, #61, #120, #130 and #158.

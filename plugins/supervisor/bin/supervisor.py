@@ -108,7 +108,7 @@ DEFAULTS: Dict[str, Any] = {
     # plugin agents always arrive namespaced (verified: supervisor:scout), so
     # a bare agent type is a project or user agent, and those are governed
     # only when listed here by the user.
-    "contract_namespaces": ["supervisor", "py-testing", "prod-readiness"],
+    "contract_namespaces": ["supervisor", "py-testing", "prod-readiness", "ts-testing"],
     "govern_bare_agents": [],
     # "off": installed but not armed; the plugin pins nothing, denies nothing,
     # injects nothing. The user arms a session with /supervisor:start,

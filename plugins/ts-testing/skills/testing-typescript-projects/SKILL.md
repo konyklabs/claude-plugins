@@ -30,7 +30,8 @@ rules.
 // tsconfig.json — what the editor and the tests see
 {
   "compilerOptions": {
-    "module": "nodenext",            // ESM and CJS resolved as Node does; .js extensions in imports
+    "module": "nodenext",            // as Node resolves; package.json says "type": "module" or this is CJS
+    "rewriteRelativeImportExtensions": true,   // source imports ./x.ts (Node runs it as is); tsc emits ./x.js
     "target": "es2023",              // the oldest Node you run; module node20 implies es2023
     "strict": true,                  // the default since 6.0; write it anyway
     "noUncheckedIndexedAccess": true,
@@ -52,10 +53,14 @@ rules.
   `tsc -p tsconfig.build.json` emits `src/` only. The split is a
   convention, not a compiler feature; the compiler's own answer for many
   packages is project references (section 5).
-- `nodenext` requires the `.js` extension on relative imports of `.ts`
-  files; `--rewriteRelativeImportExtensions` (5.8) lets the source say `.ts`
-  and emits `.js`. `bundler` resolution never needs extensions and is for
-  code a bundler consumes, not code Node runs.
+- `nodenext` reads the nearest package.json: without `"type": "module"`
+  every file is CommonJS and `verbatimModuleSyntax` rejects its `import`
+  and `export` lines, so a service's package.json says `"type": "module"`.
+  Relative imports name a file with its extension: `./util.js` when the
+  emitted JavaScript runs, `./util.ts` when Node runs the source (section
+  4), and `rewriteRelativeImportExtensions` (5.8) turns the latter into the
+  former on emit. `bundler` resolution needs no extensions and is for code a
+  bundler consumes, not code Node runs.
 - `paths` informs the type checker only; `tsc` never rewrites emitted
   specifiers. An import that resolves in the editor and throws `Cannot find
   module` at runtime is `paths` without a runtime resolver (a bundler,
@@ -86,20 +91,20 @@ Node strips types itself: behind a flag from 22.6, on by default from
 22.18 and 23.6, stable from 24.12 and 25.2. Stripping is erasure only: an
 `enum`, a `namespace` with runtime code, a parameter property or an
 `import =` alias throws `ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX`. Set
-`erasableSyntaxOnly` so `tsc` refuses that syntax before Node does. Run
-scripts and tests through `node` on 24+, or `tsx` (4.23.x) on an older
-runtime; `ts-node` (10.9.2) has not moved since 2023. Align `@types/node`
+`erasableSyntaxOnly` so `tsc` refuses that syntax before Node does. Node
+also rewrites nothing else: a `.ts` file run directly imports its siblings
+as `.ts` (section 2). Run through `node` on 24+, or `tsx` (4.23.x) on an
+older runtime; `ts-node` (10.9.2) has not moved since 2023. Align `@types/node`
 with the Node major you run. Node 24 is the active LTS on 2026-09-29; Node
 26 becomes one on 2026-10-28.
 
 ## 5. Project references for anything with two packages
 
 A root `tsconfig.json` with `"files": []` and `"references": [...]`, each
-leaf `composite: true` (forces `declaration`, pins `rootDir` to the config
-directory), `tsc -b` to build in dependency order (`--verbose`, `--clean`,
-`--force` when the `.tsbuildinfo` files lie), `declarationMap` on so
-go-to-definition lands in source, `tsBuildInfoFile` under `node_modules/
-.cache` or `dist`, never committed.
+leaf `composite: true` (forces `declaration`, pins `rootDir`), `tsc -b` to
+build in dependency order (`--force` when the `.tsbuildinfo` files lie),
+`declarationMap` on so go-to-definition lands in source, `tsBuildInfoFile`
+under `node_modules/.cache` or `dist`, never committed.
 
 ## 6. The gates
 
@@ -116,9 +121,6 @@ npx publint && npx @arethetypeswrong/cli --pack .   # exports and types resolve 
 - `typescript-eslint` with `parserOptions.projectService` (stable since 8.0)
   gives type-aware rules without a lint-only tsconfig; Biome 2 has its own
   inference for a growing subset. `knip` before a package is published.
-- `isolatedDeclarations` (5.5) makes declaration emit per file and refuses
-  exported values without an explicit type: turn it on in a library that
-  publishes types, expect to annotate.
 
 ## 7. Traps, in the order they are found late
 
@@ -133,8 +135,6 @@ npx publint && npx @arethetypeswrong/cli --pack .   # exports and types resolve 
 6. TypeScript 6 upgrade: `strict` and `types: []` now on, `baseUrl`
    deprecated, `node10` and `classic` resolution gone, `module:
    amd|umd|systemjs` gone; 7 drops `target: es5` and `downlevelIteration`.
-7. `declaration` emit failing on an inferred export type that names a
-   non-exported type: export the type, or annotate.
 
 ## Sources
 

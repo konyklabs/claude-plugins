@@ -535,8 +535,8 @@ earlier: Vitest 5 (2026-09-03) clears mocks between tests by default and
 fails an unawaited async assertion; TypeScript 7 (2026-07-08) is the
 native compiler with no programmatic API until 7.1, and 6.0 changed the
 defaults (`strict`, `types: []`, `baseUrl` deprecated) under every config
-that relied on them. The digest check is what keeps those facts from
-ageing silently. No preflight script: `vitest run` and `tsc --noEmit` are
+that relied on them. The dated markers are what roadmap#156's digest check
+reads, so those facts cannot age silently once it lands. No preflight script: `vitest run` and `tsc --noEmit` are
 the deterministic checks, and the skills say when a green run proves
 nothing (a Vitest run type-checks nothing on its own).
 

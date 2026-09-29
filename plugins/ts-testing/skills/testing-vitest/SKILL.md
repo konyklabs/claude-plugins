@@ -28,8 +28,9 @@ mocking rules; `fixtures-and-structure.md` fixtures, tables and the CLI.
 ## 2. One config, shared with Vite
 
 ```ts
-// vitest.config.ts — overrides vite.config.ts when both exist; Vitest reads
-// vite.config.ts by default, so plugins and aliases are shared
+// vite.config.ts — Vitest reads it by default, so plugins and aliases are
+// shared. A separate vitest.config.ts REPLACES it rather than extending it:
+// add one only when test config must diverge, and repeat the plugins there
 /// <reference types="vitest/config" />
 import { defineConfig } from "vitest/config";
 import tsconfigPaths from "vite-tsconfig-paths";
