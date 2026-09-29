@@ -38,6 +38,12 @@
       "category": "infrastructure"
     },
     {
+      "name": "ts-testing",
+      "source": "./plugins/ts-testing",
+      "description": "Vitest and TypeScript project skills, the py-testing shape for the TypeScript side: config that shares vite.config.ts, mocking and fake-timer rules, test.extend fixtures, typecheck mode, CI reporters and sharding; tsconfig for Node with nodenext, the TypeScript 6 and 7 default changes, strictness adoption, project references, type stripping; and a Sonnet test-implementer with both skills preloaded.",
+      "category": "testing"
+    },
+    {
       "name": "agentbox-channel",
       "source": {
         "source": "git-subdir",

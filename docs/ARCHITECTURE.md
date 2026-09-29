@@ -524,6 +524,22 @@ structural checker, and skill script paths that did not resolve when
 installed. All fixed with a test each or a documented change; the
 dispositions are in the pull request body.
 
+## ts-testing: the py-testing shape for TypeScript (2026-09-29)
+
+The org's TypeScript side (the site, vendorfake's TypeScript, tooling) had
+an `impl-ts` agent and no skill behind it. `ts-testing` mirrors
+`py-testing`: two skills of patterns and traps with dated references, and
+a Sonnet implementer with both preloaded. The facts were fetched the day
+the skills were written, and two of them would have been wrong a month
+earlier: Vitest 5 (2026-09-03) clears mocks between tests by default and
+fails an unawaited async assertion; TypeScript 7 (2026-07-08) is the
+native compiler with no programmatic API until 7.1, and 6.0 changed the
+defaults (`strict`, `types: []`, `baseUrl` deprecated) under every config
+that relied on them. The digest check is what keeps those facts from
+ageing silently. No preflight script: `vitest run` and `tsc --noEmit` are
+the deterministic checks, and the skills say when a green run proves
+nothing (a Vitest run type-checks nothing on its own).
+
 ## What was verified in the field, and what was not
 
 Captured with `SUPERVISOR_DEBUG=1` (the engine appends every raw hook input to

@@ -261,6 +261,21 @@ silently, a vendor key mode) are written as tests in the references and
 delegated as slices. External tools are documented with install-from-
 maintainer, pin-and-checksum guidance and are never installed by the plugin.
 
+## ts-testing in one minute
+
+Two skills and one agent. `testing-vitest`: one `vitest.config.ts` that
+shares `vite.config.ts`, `projects` not `workspace`, `vi.mock` hoisting and
+`vi.hoisted`, fake timers on in `beforeEach` and off in `afterEach`,
+`test.extend` fixtures with scopes, `*.test-d.ts` through `--typecheck`,
+`vitest run --shard` with `--merge-reports` in CI, and the flakiness order
+(timers left on, unawaited `resolves`, `isolate: false` with module state).
+`testing-typescript-projects`: `nodenext` with `.js` extensions, an editor
+config and a build config, `erasableSyntaxOnly` so Node can strip the
+types, `paths` only with a runtime resolver, `types: []` since TypeScript
+6, `tsc --noEmit` as the gate a Vitest run does not provide.
+`ts-testing:test-implementer` is Sonnet with both preloaded and the
+evidence contract: `vitest run` and `tsc --noEmit` output pasted.
+
 ## Development
 
 ```
@@ -291,6 +306,7 @@ plugins/supervisor/                      bin/supervisor.py, hooks/hooks.json, ag
 plugins/py-testing/                    skills/ (5, with references and scripts/inventory.py), agents/, tests/, evals/
 plugins/prod-readiness/                skills/ (3, with references and scripts/readiness.py), agents/, tests/, evals/
 plugins/signoff/                       formats.md, skills/ (4: exploring-app, tiling-coverage, recording-test-cases, signoff-report), tests/, evals/; no agents yet
+plugins/ts-testing/                   skills/ (2: testing-vitest, testing-typescript-projects, with references), agents/, evals/; no scripts
 scripts/                               validate.sh, audit-deps.sh, dist.sh
 docs/                                  ARCHITECTURE.md, COST-TRACKING.md, PLAYBOOK.md
 .github/workflows/                     validate (manifests, audit, hooks on 3.9 and 3.13) plus the org callers
