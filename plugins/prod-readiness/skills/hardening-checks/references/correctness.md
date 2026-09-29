@@ -149,3 +149,5 @@ An upstream that mostly emits RFC 9457 `problem+json` and occasionally
 emits a non-JSON body breaks the error contract consumers branch on. The
 consumer contract (Pact or equivalent) must include the non-JSON case, and
 the client must branch on `Content-Type` before parsing.
+
+<!-- no external sources: traps recorded from this repository's own hardening pass -->

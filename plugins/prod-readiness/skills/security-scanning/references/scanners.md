@@ -1,5 +1,7 @@
 # External scanners
 
+Fetched 2026-09-29 from each tool's GitHub README or releases page and PyPI page as cited below (first written without a date; every command and field re-verified on that date, current versions: gitleaks 8.30.1, pip-audit 2.10.1, bandit 1.9.4, semgrep 1.178.0, osv-scanner 2.6.0, trivy 0.74.0, lychee 0.24.2; trivy's `Severity` field name not re-read from a live page).
+
 What the `tools` check runs, how each is installed from its maintainer,
 and how its output is kept small. The scanner never installs anything: a
 tool that is not on PATH is a `skip` row with the command below.
@@ -46,7 +48,9 @@ https://github.com/gitleaks/gitleaks/releases.
 gitleaks detect --source . --no-banner --report-format json --report-path .readiness/gitleaks.json
 ```
 
-Exit code 1 means findings. Summarize to counts by `RuleID` and
+Exit code 1 means findings. `detect` is hidden since gitleaks 8.19.0 and
+still works; the README's current forms are `gitleaks git .` (history) and
+`gitleaks dir .` (working tree). Summarize to counts by `RuleID` and
 `File:StartLine`; never surface `Secret` or `Match`. Needs a full clone.
 
 ## 3. pip-audit
@@ -90,7 +94,8 @@ scanner at them:
 semgrep --json --config tools/semgrep-rules src
 ```
 
-Summarize by `check_id` and severity.
+Summarize by `check_id` and `extra.severity` (ERROR, WARNING, INFO);
+severity is not a top-level key of a result.
 
 ## 6. osv-scanner
 
@@ -100,6 +105,9 @@ https://github.com/google/osv-scanner/releases.
 ```
 osv-scanner --format json -r .
 ```
+
+`scan` is the default subcommand; the current docs write it out as
+`osv-scanner scan -r . --format json`.
 
 Summarize to vulnerability count by package. Overlaps pip-audit for
 Python; keep both when the project also has JavaScript or container

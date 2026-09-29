@@ -28,3 +28,5 @@ $ <the command whose output proves the definition of done>
 - /supervisor:delegate per slice; workers: supervisor:implementer (or py-testing:test-implementer for tests); supervisor:reviewer on every slice that changes behaviour
 - plugin agents by name, nothing implemented inline, no other agent type
 - a BLOCKED or PARTIAL report is answered by the conductor and re-delegated
+
+<!-- no external sources: a template of this repository's own making -->

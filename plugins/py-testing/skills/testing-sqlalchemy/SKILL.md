@@ -113,8 +113,8 @@ Full code, the async fixture, container fixture and factory setup in
 
 ## Sources
 
-SQLAlchemy 2.0 docs (session_transaction "Joining a Session into an External
+SQLAlchemy 2.1 docs, 2.1.1 stable since 2026-09-25, recipe unchanged from 2.0 (session_transaction "Joining a Session into an External
 Transaction", sqlite dialect "Threading/Pooling Behavior"), sqlalchemy
 discussion #10857 (async recipe, maintainer-endorsed), Alembic cookbook,
 pytest-alembic README, testcontainers-python Postgres module, factory_boy ORM
-docs, polyfactory SQLAlchemyFactory docs; fetched 2026-09-02.
+docs, polyfactory SQLAlchemyFactory docs; fetched 2026-09-29 (first 2026-09-02).

@@ -2754,7 +2754,9 @@ def cmd_brief(args: List[str], cfg: Dict[str, Any]) -> int:
         return 2
     if args[0] == "template":
         try:
-            sys.stdout.write(BRIEF_TEMPLATE.read_text())
+            # HTML comments in the template are the repository's own notes (the
+            # digest check's opt-out); a brief made from it does not carry them
+            sys.stdout.write(re.sub(r"[ \t]*<!--.*?-->[ \t]*\n?", "", BRIEF_TEMPLATE.read_text(), flags=re.S))
         except (OSError, ValueError) as e:
             print(f"cannot read {BRIEF_TEMPLATE}: {e}")
             return 1

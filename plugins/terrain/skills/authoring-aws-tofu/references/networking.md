@@ -137,4 +137,4 @@ discouraged, default egress removed), `r/vpc_security_group_ingress_rule`,
 `deregistration_delay`), `r/vpc_endpoint`, `d/availability_zones`,
 `d/region`; AWS ECS developer guide: load balancer target type for
 `awsvpc`, VPC endpoints for Fargate; AWS ECR VPC endpoints page. Fetched
-2026-09-08.
+2026-09-29 (first 2026-09-08).

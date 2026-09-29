@@ -12,9 +12,10 @@ them.
 
 ```
 bash scripts/validate.sh                                        # must end: all manifests and components valid
+python3 scripts/digests.py                                      # must end: digests: N fresh … with no stale, missing or malformed
 bash scripts/audit-deps.sh                                      # must end: audit ok
-uv run --with pytest python -m pytest -q plugins                # all green, paste the summary line
-uv run --python 3.9 --with pytest python -m pytest -q plugins   # 3.9 is the floor the scripts promise
+uv run --with pytest python -m pytest -q plugins scripts        # all green, paste the summary line
+uv run --python 3.9 --with pytest python -m pytest -q plugins scripts   # 3.9 is the floor the scripts promise
 ```
 
 Paste the output in the commit or PR; never say "tests pass" without it.
@@ -40,8 +41,10 @@ Paste the output in the commit or PR; never say "tests pass" without it.
   constant carries the reason for its value.
 - **Skills**: third-person descriptions with the words a person would type;
   SKILL.md under 150 lines; references one level deep with a contents list;
-  one home per fact; sources and fetch dates at the end; where the docs are
-  silent, say so. Live argument-level docs come from Context7 (or the raw
+  one home per fact; sources and fetch dates at the end (`fetched YYYY-MM-DD`,
+  checked by `scripts/digests.py`: older than 14 days is a red check; a
+  references file of the repository's own making carries `<!-- no external sources: why -->`);
+  where the docs are silent, say so. Live argument-level docs come from Context7 (or the raw
   source the skill names); a reference carries patterns and traps, never
   a catalogue that rots.
 - **Agents**: pin `model` and `effort` in frontmatter (subagents otherwise

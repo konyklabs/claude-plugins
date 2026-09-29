@@ -127,3 +127,5 @@ the secret and the bearer token never reach the browser.
 
 **When it is wrong.** A route the scanner names "config" may not serve the
 browser at all. The auditor confirms the consumer before the row counts.
+
+<!-- no external sources: leak classes recorded from this repository's own hardening pass -->

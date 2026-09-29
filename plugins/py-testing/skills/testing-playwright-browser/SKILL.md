@@ -115,6 +115,6 @@ Fuller fixture code, the CLI table and sources in
 ## Sources
 
 playwright.dev/python/docs: test-runners, locators, test-assertions, auth,
-network, pom, debug; pytest-xdist how-to; fetched 2026-09-02. The `auth_state`
+network, pom, debug; pytest-xdist how-to; fetched 2026-09-29 (first 2026-09-02; pytest-playwright 0.9.0 current). The `auth_state`
 fixture above composes documented pieces (`storage_state`,
 `browser_context_args`); the docs show the pieces, not this exact fixture.
