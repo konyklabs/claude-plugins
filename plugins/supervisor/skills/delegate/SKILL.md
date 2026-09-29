@@ -74,7 +74,7 @@ the worker at all: run it in print mode under a hard dollar cap, and read
 only the verdict line and the report file.
 
 ```
-python3 "${CLAUDE_PLUGIN_ROOT}/bin/supervisor.py" run-worker --spec .supervisor/specs/<slug>.md --agent supervisor:implementer --budget 2
+python3 "${CLAUDE_PLUGIN_ROOT}/bin/supervisor.py" run-worker --spec .supervisor/specs/<slug>.md --agent supervisor:implementer --budget 2 --state-dir "${CLAUDE_PLUGIN_DATA}"
 ```
 
 The runner passes the spec, caps spend with `--max-budget-usd`, allows
@@ -86,7 +86,7 @@ contract, and prints one line: `VERDICT: DONE|PARTIAL|BLOCKED|NONCOMPLIANT
 For a whole level of a plan, do not loop by hand; the supervisor does it:
 
 ```
-python3 "${CLAUDE_PLUGIN_ROOT}/bin/supervisor.py" run-level .supervisor/plan.json --level 1
+python3 "${CLAUDE_PLUGIN_ROOT}/bin/supervisor.py" run-level .supervisor/plan.json --level 1 --state-dir "${CLAUDE_PLUGIN_DATA}"
 ```
 
 One worker per slice (spec at `.supervisor/specs/<id>.md`; the dollar cap is

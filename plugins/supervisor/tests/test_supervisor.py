@@ -651,6 +651,28 @@ def test_state_dir_precedence(env, monkeypatch):
     assert supervisor.state_dir() == env["tmp"] / "home" / ".cache" / "supervisor"
 
 
+def test_state_dir_falls_back_to_the_install_data_dir(env, monkeypatch):
+    """A skill's CLI call carries ${CLAUDE_PLUGIN_DATA} only as text; nothing
+    exports it to the shell. Without --state-dir the CLI must still land on the
+    install's data dir, or `learnings show` reads an empty ~/.cache queue."""
+    monkeypatch.delenv("SUPERVISOR_STATE_DIR")
+    monkeypatch.delenv("CLAUDE_PLUGIN_DATA", raising=False)
+    monkeypatch.setattr(supervisor, "STATE_DIR_ARG", None)
+    home = env["tmp"] / "home"
+    cache = home / ".claude" / "plugins" / "cache" / "konyklabs-plugins" / "supervisor" / "2.4.2" / "bin" / "supervisor.py"
+    monkeypatch.setattr(supervisor, "__file__", str(cache))
+    assert supervisor.state_dir() == home / ".claude" / "plugins" / "data" / "supervisor-konyklabs-plugins"
+    # a --plugin-dir load: not in the cache; its data dir is <plugin>-inline when Claude Code has made it
+    checkout = env["tmp"] / "repo" / "plugins" / "supervisor" / "bin" / "supervisor.py"
+    monkeypatch.setattr(supervisor, "__file__", str(checkout))
+    assert supervisor.state_dir() == home / ".cache" / "supervisor"
+    (home / ".claude" / "plugins" / "data" / "supervisor-inline").mkdir(parents=True)
+    assert supervisor.state_dir() == home / ".claude" / "plugins" / "data" / "supervisor-inline"
+    # an explicit --state-dir still wins over the derived dir
+    monkeypatch.setattr(supervisor, "STATE_DIR_ARG", str(env["tmp"] / "argdir"))
+    assert supervisor.state_dir() == env["tmp"] / "argdir"
+
+
 def test_cli_state_dir_flag(env):
     tp = make_session(env["tmp"], main_lines=assistant_lines("m1", "claude-fable-5-1", usage(out=10), blocks=1))
     target = env["tmp"] / "viaflag"
@@ -1136,8 +1158,12 @@ def test_section_body_ignores_hashes_inside_fences():
     assert supervisor.section_body("## Task\nline\n~~~sh\n## not a heading\n~~~\nafter\n### Sub\nno", "Task") == "line\n~~~sh\n## not a heading\n~~~\nafter"
 
 
+PLAYBOOK = REPO / "docs" / "PLAYBOOK.md"
+
+
+@pytest.mark.skipif(not PLAYBOOK.exists(), reason="repository docs are not shipped with an installed plugin (tests are)")
 def test_playbook_worked_brief_passes_the_lint():
-    md = (REPO / "docs" / "PLAYBOOK.md").read_text()
+    md = PLAYBOOK.read_text()
     start = md.index("## A worked brief")
     m = re.search(r"^````\n(.*?)^````$", md[start:], re.S | re.M)
     assert m
@@ -2664,6 +2690,25 @@ def test_learning_kinds_calibrated_on_a_real_session():
     ]:
         assert supervisor.learning_kind(p) is None, p
     assert supervisor.learning_kind('Another Claude session sent a message: <teammate-message teammate_id="x">{"result":"rule: always run the suite"}</teammate-message>') is None
+    # a prohibition with its condition is a rule (2026-09-29: "No new designs until
+    # the pipe is finished" read as nothing because no comma followed the "No")
+    for p in [
+        "No new designs until the pipe is finished",
+        "No more shortlists unless I ask for one.",
+        "No pushes before the local round has run, whatever the size of the change.",
+    ]:
+        assert supervisor.learning_kind(p) == "standing-rule", p
+    for p in [
+        "No tests are failing right now, what should we do next?",
+        "No worries at all, just continue with the plan as it stands.",
+        "No new tests needed for this one, it is a docs change.",
+    ]:
+        assert supervisor.learning_kind(p) is None, p
+    # a pasted report quoting a correction is not the user correcting (2026-09-29)
+    pasted = 'what can we do to take care of this\n\n<pasted_content id="10cf">\nNo, that is not what I asked - the hero text must be readable.\nSorry, I don\'t understand the rest.\n</pasted_content id="10cf">'
+    assert supervisor.learning_kind(pasted) is None
+    assert supervisor.learning_kind('<pasted_content id="1">\nrule: always run the suite\n') is None  # unterminated block
+    assert supervisor.learning_kind('From now on, run the tests first.\n<pasted_content id="2">\nlog line\n</pasted_content id="2">') == "standing-rule"
     # the broad lens's probes (2026-09-28): ordinary engineering statements and praise stay out
     for p in [
         "every time the job runs it logs twice, why?",

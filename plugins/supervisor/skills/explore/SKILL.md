@@ -23,7 +23,7 @@ model. This skill sets no model itself; the session model is your choice.
 ## 1. Switch
 
 ```
-python3 "${CLAUDE_PLUGIN_ROOT}/bin/supervisor.py" mode explore
+python3 "${CLAUDE_PLUGIN_ROOT}/bin/supervisor.py" mode explore --state-dir "${CLAUDE_PLUGIN_DATA}"
 mkdir -p .supervisor
 ```
 
@@ -37,7 +37,7 @@ your own `~/.claude/supervisor.json`; a project file may only set `enforce`.
 - **Checkpoint**: a leading number or profile name in the arguments
   (`/supervisor:explore 5 why is the build slow`) is this session's own
   budget, set by the hook when the command arrived; otherwise the
-  `budget_usd` from `python3 "${CLAUDE_PLUGIN_ROOT}/bin/supervisor.py" budget show`.
+  `budget_usd` from `python3 "${CLAUDE_PLUGIN_ROOT}/bin/supervisor.py" budget show --state-dir "${CLAUDE_PLUGIN_DATA}"`.
 - **Worth keeping if**: one sentence, what a result would have to look like
   to deserve a brief.
 
@@ -58,7 +58,7 @@ question in its reason, then gets out of the way. Then, or as soon as the
 question is answered, one `AskUserQuestion`: **ship**, **spike** or
 **drop**, recommended option first, chosen from what was learned.
 
-- **ship**: `python3 "${CLAUDE_PLUGIN_ROOT}/bin/supervisor.py" mode enforce`,
+- **ship**: `python3 "${CLAUDE_PLUGIN_ROOT}/bin/supervisor.py" mode enforce --state-dir "${CLAUDE_PLUGIN_DATA}"`,
   then `/supervisor:start <the task in one sentence>`. The interview is short
   because the exploration answered it; the brief is the first durable act.
 - **spike**: append to `.supervisor/explore.md`, five lines: what was learned,

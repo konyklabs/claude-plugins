@@ -68,7 +68,7 @@ they could have answered a question.
 ## 6. Write
 
 ```
-python3 "${CLAUDE_PLUGIN_ROOT}/bin/supervisor.py" mode enforce
+python3 "${CLAUDE_PLUGIN_ROOT}/bin/supervisor.py" mode enforce --state-dir "${CLAUDE_PLUGIN_DATA}"
 mkdir -p .supervisor
 python3 "${CLAUDE_PLUGIN_ROOT}/bin/supervisor.py" brief template
 ```

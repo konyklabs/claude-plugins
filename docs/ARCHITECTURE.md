@@ -99,8 +99,14 @@ closed, because a broken guardrail must not lock the user out of their own
 session. Errors go to `errors.log` in the state dir.
 
 State lives in `${CLAUDE_PLUGIN_DATA}` (survives plugin updates; documented),
-passed as `--state-dir` from `hooks.json`, with `~/.cache/supervisor` as the
-fallback. Verified: a `--plugin-dir` session wrote to
+passed as `--state-dir` from `hooks.json` and from every state-touching command
+in a skill body — Claude Code substitutes the placeholder in both, but never
+exports it to a Bash tool shell (manifest reference, fetched 2026-09-29), so a
+skill command without the flag read an empty `~/.cache/supervisor` and
+`learnings show` reported nothing pending. A bare CLI call now derives the
+data dir from the install path (`plugins/cache/<marketplace>/<plugin>/<ver>/`
+→ `plugins/data/<plugin>-<marketplace>/`), then `<plugin>-inline` when it
+exists, then `~/.cache/supervisor`. Verified: a `--plugin-dir` session wrote to
 `~/.claude/plugins/data/supervisor-inline/`.
 
 ### Prices

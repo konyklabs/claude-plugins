@@ -21,7 +21,7 @@ themselves; a queue with a person at the end is how they stay short.
 ## 1. Show the queue
 
 ```
-python3 "${CLAUDE_PLUGIN_ROOT}/bin/supervisor.py" learnings show
+python3 "${CLAUDE_PLUGIN_ROOT}/bin/supervisor.py" learnings show --state-dir "${CLAUDE_PLUGIN_DATA}"
 ```
 
 Nothing pending: say so in one line and stop. `$ARGUMENTS` of `--all`
@@ -69,8 +69,8 @@ line first.
 Then mark the rows:
 
 ```
-python3 "${CLAUDE_PLUGIN_ROOT}/bin/supervisor.py" learnings ack <id> [<id>...]
-python3 "${CLAUDE_PLUGIN_ROOT}/bin/supervisor.py" learnings ack <id> --as dropped
+python3 "${CLAUDE_PLUGIN_ROOT}/bin/supervisor.py" learnings ack <id> [<id>...] --state-dir "${CLAUDE_PLUGIN_DATA}"
+python3 "${CLAUDE_PLUGIN_ROOT}/bin/supervisor.py" learnings ack <id> --as dropped --state-dir "${CLAUDE_PLUGIN_DATA}"
 ```
 
 ## 5. Report

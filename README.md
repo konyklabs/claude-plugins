@@ -187,7 +187,9 @@ reason for its value, are `DEFAULTS` in `supervisor.py`. The scanner reads an
 optional `.readiness.json` at the scanned root; its own `disable` list is
 honoured only when passed with `--config`.
 
-**State**: `~/.claude/plugins/data/<plugin>/` (or `~/.cache/supervisor`):
+**State**: `~/.claude/plugins/data/<plugin>-<marketplace>/` — hooks and skill
+commands pass it as `--state-dir "${CLAUDE_PLUGIN_DATA}"`, and a bare CLI
+call derives it from the install path (`~/.cache/supervisor` only outside an install):
 per-session ledgers, `history.jsonl`, `errors.log`; the scanner writes
 `.readiness/` into the scanned repository. Add `.supervisor/` and
 `.readiness/` to `.gitignore` in projects that use them.
