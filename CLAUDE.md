@@ -82,4 +82,4 @@ Paste the output in the commit or PR; never say "tests pass" without it.
   fixture and answer key in `plugins/terrain/tests/fixtures/planted-stack/`.
 - github-actions scripts: `plugins/github-actions/skills/preflighting-workflows/scripts/preflight.py`;
   planted-defect fixture and answer key in `plugins/github-actions/tests/fixtures/planted-workflows/`.
-- Driving tasks: konyklabs/roadmap#60, #61, #120, #130, #156, #157 and #158.
+- Driving tasks: konyklabs/roadmap#60, #61, #120, #130 and #157.
