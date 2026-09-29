@@ -9,7 +9,7 @@ description: How to write GitHub Actions workflows that survive the preflight an
 
 Actions changes weekly: checkout v7 (2026-06-18) refuses fork heads under
 `pull_request_target` by default, OIDC subjects gained an ID-pinned form
-(2026-04), the `permissions` scope list grows. Before writing a key you
+(effective for new repositories from 2026-07-15), the scope list grows. Before writing a key you
 have not written this month, read its current page:
 
 - **Context7 when the MCP server is present**: resolve the id for the
@@ -57,10 +57,11 @@ jobs:
   OIDC exchange needs `id-token: write`.
 - **OIDC, never keys.** Provider `token.actions.githubusercontent.com`,
   audience `sts.amazonaws.com`. The trust policy's `sub` condition is the
-  whole access control: `repo:OWNER/REPO:ref:refs/heads/main`, or
-  `:environment:NAME`. Repositories created after 2026-07-15 (and renamed
-  or transferred ones) issue the ID-pinned `repo:OWNER@ORGID/REPO@REPOID:...`
-  form, which survives renames; write trust policies against it.
+  whole access control. Write it in the ID-pinned form
+  `repo:OWNER@ORGID/REPO@REPOID:ref:refs/heads/main` (or `:environment:NAME`),
+  which repositories created after 2026-07-15 and renamed or transferred
+  ones issue and a rename cannot hijack; the name-only `repo:OWNER/REPO:…`
+  form is for older repositories only, until they opt in.
 - **Pin to a SHA, comment the version.** A tag is mutable: CVE-2025-30066
   rewrote every tj-actions/changed-files tag to a commit that dumped
   runner memory for secrets in 23,000+ repositories. The docs call the
@@ -132,9 +133,8 @@ jobs:
 
 ## 6. Before the push
 
-Run the preflight in `preflighting-workflows` and paste its table into the
-PR. A blocking row is fixed, not explained. The lens in
-`reviewing-workflows` then reads what no tool sees.
+Run the preflight in `preflighting-workflows`, paste its table into the PR,
+fix every blocking row; the lens in `reviewing-workflows` reads the rest.
 
 ## Sources
 

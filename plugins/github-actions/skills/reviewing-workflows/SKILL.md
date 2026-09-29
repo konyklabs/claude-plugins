@@ -78,8 +78,8 @@ A matrix with `fail-fast` masking which leg failed.
 **8. The reusable contract.** Caller `with:` keys that the callee does
 not declare, an output referenced through `needs` that the callee never
 sets, a typed input passed as the wrong type, a callee that expects a
-secret the caller does not name. Nesting at the fourth level in a
-repository that may move to GitHub Enterprise Server.
+secret the caller does not name. A fifth nesting level, which GitHub
+Enterprise Server (four levels) refuses.
 
 **9. The schedule nobody watches.** A `schedule:` trigger that implements
 a gate, a rotation or a cleanup, in a public repository with no other

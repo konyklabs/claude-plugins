@@ -18,13 +18,25 @@ the preflight tables if they were produced. If the tables are missing, say
 so in your first line and review without them; do not try to run the
 preflight yourself.
 
-Return findings only, as a JSON array of
-`{file, line, severity, summary, failure_scenario}` objects, `severity`
-one of `blocking` or `minor`, ordered blocking first. A finding with no
-failure scenario is not returned. An empty array means the checklist
-walked clean; say which items you could not judge because the change did
-not show enough (a caller without its callee, a workflow that references
-a secret the review cannot see).
+## Output
+
+Only this JSON, nothing before or after it:
+
+```json
+{
+  "findings": [
+    {"file": ".github/workflows/pr-title.yml", "line": 14, "severity": "blocking",
+     "summary": "one line, the defect",
+     "failure_scenario": "the actor or state, then the wrong outcome"}
+  ],
+  "checked": ["trigger-token", "event-text", "token-scope", "pins", "secrets-flow", "caches", "deploy-shape", "reusable-contract", "schedule", "conventions"],
+  "notes": "preflight rows you relied on; items you could not judge (a caller without its callee, a secret the review cannot see)"
+}
+```
+
+`severity` is `blocking` or `minor`, findings ordered blocking first. A
+finding with no failure scenario is not returned. An empty `findings`
+array with all ten items in `checked` means the checklist walked clean.
 
 Never quote or reproduce a term from a blocklist file, even to prove that
 a check ran. Never print a secret-looking value from a workflow or a log;

@@ -563,7 +563,7 @@ repository the same day, the preflight found 32 tag-pinned actions
 (`actions/checkout@v6`, `anthropics/claude-code-action@v1`) across the
 reusable workflows, four workflows with no top-level `permissions`, seven
 jobs with no timeout, two release jobs with no `concurrency`, and one
-`inputs.*` inside `run:`; filed, not fixed here.
+`inputs.*` inside `run:`; filed as roadmap#159, not fixed here.
 
 ## What was verified in the field, and what was not
 
