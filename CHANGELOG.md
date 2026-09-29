@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.4.2](https://github.com/konyklabs/claude-plugins/compare/v2.4.1...v2.4.2) (2026-09-29)
+
+
+### Bug Fixes
+
+* **supervisor:** reach the install's state dir from skill commands and catch prohibition rules (konyklabs/roadmap[#150](https://github.com/konyklabs/claude-plugins/issues/150)) ([8868b39](https://github.com/konyklabs/claude-plugins/commit/8868b39d697c9a4fa58d439bfef64f9d0a9685ca))
+
 ## [2.4.1](https://github.com/konyklabs/claude-plugins/compare/v2.4.0...v2.4.1) (2026-09-28)
 
 
