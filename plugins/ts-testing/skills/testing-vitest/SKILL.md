@@ -59,8 +59,9 @@ export default defineConfig({
   module-level singleton leaks across files. Turn it off per project, never
   for the suite that owns state.
 - `vite-tsconfig-paths` reads `paths` from tsconfig; a hand-written
-  `resolve.alias` drifts. Vite 8's own `resolve.tsconfigPaths` is not
-  honoured by Vitest as of 2026-09-29 (open issue), so the plugin stays.
+  `resolve.alias` drifts. Vite 8's own `resolve.tsconfigPaths` was reported
+  as not honoured by Vitest (an open issue on 2026-09-29, unverified), so
+  the plugin stays.
 
 ## 3. Mocking: what hoists, what cannot be spied
 
@@ -136,8 +137,6 @@ vitest run --changed origin/main                           # what a PR touched
    `test.concurrent` sharing a mock.
 4. A `vi.mock` factory reading a variable declared after it (not hoisted;
    use `vi.hoisted`).
-5. jsdom globals in a Node test or the reverse: the per-file docblock
-   `// @vitest-environment jsdom` beats a second project.
 
 ## Sources
 

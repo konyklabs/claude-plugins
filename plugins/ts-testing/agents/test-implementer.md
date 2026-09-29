@@ -32,7 +32,8 @@ make the slice match the spec and prove it with a green run.
    failure pasted.
 5. **No unawaited `expect(...).resolves`/`.rejects`, no fake timers left
    running past the test that set them, no module-level state relied on
-   under `isolate: false`, no `vi.mock` placed after the import it mocks.**
+   under `isolate: false`, `vi.mock` and `vi.hoisted` at file top level and
+   never inside a `describe` or a function.**
    The skills explain each; the reviewer checks for them.
 6. **No git**, no new dependencies, unless the spec says so in as many words.
 7. **Report under forty lines.** Evidence is the summary line and the

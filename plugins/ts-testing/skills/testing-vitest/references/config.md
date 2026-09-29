@@ -31,7 +31,9 @@ narrowed the default `exclude` to just `node_modules` and `.git` (`dist`
 and `cypress` are no longer auto-excluded); raised the floor to Node ≥20,
 Vite ≥6 — https://v4.vitest.dev/guide/migration. v4→v5 flipped `clearMocks`
 from `false` to `true` and requires hoisted `vi.mock`/`vi.unmock`/
-`vi.hoisted` calls to sit at file top level (a nested one now throws) —
+`vi.hoisted` calls to sit at file top level (a nested one now throws), and
+fails an unawaited `resolves`, `rejects` or `toMatchFileSnapshot` assertion
+that earlier versions passed silently —
 https://vitest.dev/guide/migration.html. A config copied from a v3 project
 that still declares `workspace` or `poolOptions.threads.singleThread` is
 the first thing to fix on an upgrade.

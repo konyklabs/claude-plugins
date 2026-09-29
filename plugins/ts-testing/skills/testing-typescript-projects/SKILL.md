@@ -33,7 +33,7 @@ rules.
     "module": "nodenext",            // as Node resolves; package.json says "type": "module" or this is CJS
     "rewriteRelativeImportExtensions": true,   // source imports ./x.ts (Node runs it as is); tsc emits ./x.js
     "target": "es2023",              // the oldest Node you run; module node20 implies es2023
-    "strict": true,                  // the default since 6.0; write it anyway
+    "strict": true, "esModuleInterop": true,   // strict is the default since 6.0; write it anyway
     "noUncheckedIndexedAccess": true,
     "exactOptionalPropertyTypes": true,
     "noImplicitOverride": true,
@@ -46,7 +46,7 @@ rules.
   "include": ["src", "test"]
 }
 // tsconfig.build.json — what ships
-{ "extends": "./tsconfig.json", "include": ["src"], "exclude": ["**/*.test.ts"] }
+{ "extends": "./tsconfig.json", "include": ["src"], "exclude": ["**/*.test.ts"], "compilerOptions": { "rootDir": "src" } }
 ```
 
 - Two configs, one extending the other: the editor and Vitest see `test/`;
@@ -94,9 +94,9 @@ Node strips types itself: behind a flag from 22.6, on by default from
 `erasableSyntaxOnly` so `tsc` refuses that syntax before Node does. Node
 also rewrites nothing else: a `.ts` file run directly imports its siblings
 as `.ts` (section 2). Run through `node` on 24+, or `tsx` (4.23.x) on an
-older runtime; `ts-node` (10.9.2) has not moved since 2023. Align `@types/node`
-with the Node major you run. Node 24 is the active LTS on 2026-09-29; Node
-26 becomes one on 2026-10-28.
+older runtime; `ts-node` (10.9.2) is for existing setups, its last release
+date not confirmed. Node 24 is the active LTS on 2026-09-29, Node 26 is
+Current.
 
 ## 5. Project references for anything with two packages
 
@@ -112,15 +112,14 @@ under `node_modules/.cache` or `dist`, never committed.
 tsc --noEmit -p tsconfig.json          # the type gate, over src and test
 tsc -p tsconfig.build.json             # what ships; fails on declaration emit problems
 vitest run --typecheck                 # the *.test-d.ts files, through tsc
-npx publint && npx @arethetypeswrong/cli --pack .   # exports and types resolve for node16 and bundler consumers
 ```
 
 - `tsc --noEmit` on the editor config catches test code drifting from the
   types; a Vitest run type-checks nothing on its own (esbuild strips
   types), so a suite can be green with a broken type.
 - `typescript-eslint` with `parserOptions.projectService` (stable since 8.0)
-  gives type-aware rules without a lint-only tsconfig; Biome 2 has its own
-  inference for a growing subset. `knip` before a package is published.
+  gives type-aware rules without a lint-only tsconfig. `knip` before a
+  package is published.
 
 ## 7. Traps, in the order they are found late
 
@@ -130,11 +129,10 @@ npx publint && npx @arethetypeswrong/cli --pack .   # exports and types resolve 
    its side effect vanishes if written as a type import.
 4. `esModuleInterop` off with a CommonJS default export: `import * as x`
    compiles, then `x()` throws because a namespace is an object. Leave it on.
-5. A `composite` project whose `include` misses a file: no error, missing
-   types downstream.
-6. TypeScript 6 upgrade: `strict` and `types: []` now on, `baseUrl`
-   deprecated, `node10` and `classic` resolution gone, `module:
-   amd|umd|systemjs` gone; 7 drops `target: es5` and `downlevelIteration`.
+5. TypeScript 6 upgrade: `strict` and `types: []` now on, `baseUrl`
+   deprecated, `rootDir` now the config's directory (a build config without
+   `rootDir: "src"` emits `dist/src/`), `node10` and `classic` resolution
+   gone; 7 drops `target: es5` and `downlevelIteration`.
 
 ## Sources
 
