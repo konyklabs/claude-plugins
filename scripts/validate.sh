@@ -11,4 +11,6 @@ for p in plugins/*/; do
   [ -d "$p/skills" ] && run "$p/skills"
   [ -d "$p/agents" ] && run "$p/agents"
 done
-echo "all manifests and components valid"
+echo "+ python3 scripts/digests.py"
+python3 scripts/digests.py
+echo "all manifests and components valid, all digests fresh"

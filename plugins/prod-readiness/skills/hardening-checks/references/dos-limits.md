@@ -97,3 +97,5 @@ the default.
 A process killed mid-request loses the request. Present: a lifespan
 handler or `SIGTERM` handler that stops accepting and drains. Absent is
 `review`, not `fail`: the process manager may drain for you.
+
+<!-- no external sources: limits recorded from this repository's own hardening pass -->

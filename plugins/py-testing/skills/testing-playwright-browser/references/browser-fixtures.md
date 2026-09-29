@@ -1,6 +1,6 @@
 # pytest-playwright reference
 
-Fetched 2026-09-02 from playwright.dev/python/docs (test-runners, auth,
+Fetched 2026-09-29 (first 2026-09-02) from playwright.dev/python/docs (test-runners, auth,
 locators, test-assertions, network, pom, debug) and pytest-xdist docs.
 pytest-playwright 0.9.0 (2026-08-10) requires Python >= 3.10; asyncio users
 take `pytest-playwright-asyncio`.

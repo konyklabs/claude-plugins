@@ -24,7 +24,7 @@ its current page, pinned to the version in `.terraform.lock.hcl`:
   can read while the registry's HTML cannot:
   `https://raw.githubusercontent.com/hashicorp/terraform-provider-aws/<ref>/website/docs/r/<name>.html.markdown`
   (`d/` for data sources, `guides/` for the upgrade guides; `<ref>` is a
-  tag such as `v6.63.0` or `main`).
+  tag such as `v6.66.0` or `main`).
 
 Read the argument list and the notes at the top of the page; that is
 where "conflicts with", "forces replacement" and "deprecated" live. The
@@ -108,6 +108,6 @@ answered rather than fixed.
 hashicorp/terraform-provider-aws `website/docs`: `index` (provider
 configuration), `guides/version-6-upgrade`, `guides/enhanced-region-support`,
 `r/iam_role`, `r/s3_bucket`, `r/security_group`, `d/region`; registry v1
-API for versions (6.63.0 latest on 2026-09-03); OpenTofu docs for the S3
+API for versions (6.66.0 latest on 2026-09-21); OpenTofu docs for the S3
 backend (`use_lockfile`, 1.10), dependency lock file (all-platform
-checksums, 1.12), settings. Fetched 2026-09-08.
+checksums, 1.12), settings. Fetched 2026-09-29 (first 2026-09-08; OpenTofu 1.12.6 current).

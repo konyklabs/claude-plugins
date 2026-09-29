@@ -100,7 +100,7 @@ per-worker resource keyed on `worker_id` (`"master"` when xdist is off).
 ## Sources
 
 pytest docs (good practices, how-to mark, fixtures, writing plugins),
-pytest-xdist how-to, plugin READMEs on PyPI; fetched 2026-09-02. Details and
+pytest-xdist how-to, plugin READMEs on PyPI; fetched 2026-09-29 (first 2026-09-02; pytest 9.1.1 is current and 9.0 added a native `[tool.pytest]` table as an alternative to `ini_options`, which is not deprecated). Details and
 quotes in `references/config.md`. One thing the docs do not say: pytest has
 no official position on unit/integration/e2e splitting; the tier layout above
 is this skill's convention, chosen because directories give each tier its own

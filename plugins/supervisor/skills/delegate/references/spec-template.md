@@ -37,3 +37,5 @@ $ <exact command>
 Return the report format your agent definition requires: `## Result` with
 DONE, PARTIAL or BLOCKED; `## Changed files`; `## Evidence` with the command
 on a `$ ` line and its output. Forty lines maximum.
+
+<!-- no external sources: a template of this repository's own making -->

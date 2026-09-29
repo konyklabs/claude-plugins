@@ -1,6 +1,6 @@
 # SQLAlchemy test fixtures reference
 
-Fetched 2026-09-02. Sources per section.
+Fetched 2026-09-29 (first 2026-09-02; re-verified: SQLAlchemy 2.1.1 is the stable release since 2026-09-25 and the joined-session recipe and SQLite pooling text are unchanged in its docs). Sources per section.
 
 ## Contents
 
@@ -14,7 +14,7 @@ Fetched 2026-09-02. Sources per section.
 
 ## 1. Official recipe
 
-https://docs.sqlalchemy.org/en/20/orm/session_transaction.html#joining-a-session-into-an-external-transaction-such-as-for-test-suites
+https://docs.sqlalchemy.org/en/21/orm/session_transaction.html#joining-a-session-into-an-external-transaction-such-as-for-test-suites
 
 ```python
 Session = sessionmaker()
@@ -77,7 +77,7 @@ fetch; standard CI practice).
 
 ## 4. SQLite pooling
 
-https://docs.sqlalchemy.org/en/20/dialects/sqlite.html#threading-pooling-behavior
+https://docs.sqlalchemy.org/en/21/dialects/sqlite.html#threading-pooling-behavior
 
 - `:memory:` exists only within one DBAPI connection; "not suitable for use
   with multiple concurrent threads or coroutines" without serialisation.

@@ -79,3 +79,5 @@ scanner collects every declared version and fails on a mismatch. Fix: one
 Published guide URLs move. Run `lychee` over the docs before a release;
 it makes network requests, so it is a deliberate step, not part of the
 offline scan.
+
+<!-- no external sources: checks distilled from this repository's own hardening pass, not from a vendor's docs -->
