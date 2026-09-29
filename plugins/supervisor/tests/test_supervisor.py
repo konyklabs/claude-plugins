@@ -2726,12 +2726,16 @@ def test_learning_kinds_calibrated_on_a_real_session():
         "No output until the build finishes, is that normal",
         "No more failures after the fix, the suite is green now",
         "No more than three retries?",
+        "No idea why it fails before the migration, can you look?",
+        "No luck until now with the flaky test, try the other fixture",
+        "No change before and after the patch, the latency is the same",
     ]:
         assert supervisor.learning_kind(p) is None, p
     # a pasted report quoting a correction is not the user correcting (2026-09-29)
     pasted = 'what can we do to take care of this\n\n<pasted_content id="10cf">\nNo, that is not what I asked - the hero text must be readable.\nSorry, I don\'t understand the rest.\n</pasted_content id="10cf">'
     assert supervisor.learning_kind(pasted) is None
-    assert supervisor.learning_kind('<pasted_content id="1">\nrule: always run the suite\n') is None  # unterminated block
+    # an unterminated block is stripped to the end: without the stripping the quoted correction would queue
+    assert supervisor.learning_kind('see the report below\n<pasted_content id="1">\nNo, that is not what I asked, read the file.\n') is None
     assert supervisor.learning_kind('From now on, run the tests first.\n<pasted_content id="2">\nlog line\n</pasted_content id="2">') == "standing-rule"
     # the broad lens's probes (2026-09-28): ordinary engineering statements and praise stay out
     for p in [

@@ -74,6 +74,13 @@ or, simpler, from a checkout:
 python3 plugins/supervisor/bin/supervisor.py statusline-snippet
 ```
 
+The snippet embeds the path it was run from, and a bare CLI call reads the
+state dir that path implies: an install path finds the install's data dir,
+a checkout path finds `supervisor-inline` or `~/.cache/supervisor`. A status
+line for installed sessions therefore uses the install path, or carries
+`--state-dir ~/.claude/plugins/data/supervisor-konyklabs-plugins` after
+`statusline` in the printed command.
+
 It prints something like:
 
 ```json
@@ -104,8 +111,11 @@ snippet command.
 ```
 python3 plugins/supervisor/bin/supervisor.py status \
   --session <id> --transcript ~/.claude/projects/<project-dir>/<id>.jsonl
-python3 plugins/supervisor/bin/supervisor.py budget history
+python3 plugins/supervisor/bin/supervisor.py budget history --state-dir ~/.claude/plugins/data/supervisor-konyklabs-plugins
 ```
+
+The second reads the installed plugin's ledgers; from a checkout the flag is
+what points it there (ARCHITECTURE.md gives the resolution order).
 
 The first prices any transcript, including subagents, whether or not the
 supervisor was installed at the time. The second lists the sessions the
