@@ -34,12 +34,13 @@ a repository may have configured away:
 
 | rule | severity | what it means |
 |---|---|---|
-| `uses-unpinned` | blocking | a `uses:` whose ref is not a 40-hex SHA (or a Docker image with no digest); `./local` paths and `--allow-unpinned` prefixes are exempt |
-| `uses-version-comment-missing` | minor | a SHA pin with no `# vN` comment, so Dependabot cannot bump it |
+| `parse` | blocking | `path:line parse-incomplete`: a line the scanner could not place (rules still ran on the rest); `path:1 parse-error`: the file could not be parsed at all (nesting deeper than 64, or a scanner fault). Never a silent pass |
+| `uses-unpinned` | blocking | a `uses:` whose ref is not a 40-hex SHA (or a Docker image with no digest), quoted or not; `./local` paths and `--allow-unpinned` prefixes are exempt. By SHA shape only: whether the commit exists in that repository is zizmor's impostor-commit audit |
+| `uses-version-comment-missing` | minor | a SHA pin with no `# vN` comment (after the value, quoted or not), so Dependabot cannot bump it |
 | `permissions-missing` | minor | no top-level `permissions:` and a job with none of its own |
 | `permissions-write-all` | blocking | `write-all` anywhere |
-| `pull-request-target-checkout` | blocking | the event grants the base repository's token and a checkout takes the PR's head |
-| `expression-injection` | blocking | event text (`github.event.*` titles, bodies, messages, refs, names; `github.head_ref`) inside `run:` or a script body |
+| `pull-request-target-checkout` | blocking | under `pull_request_target`, a checkout `ref:` that names the PR's head (`github.event.pull_request.head.*`, `github.head_ref`, `refs/pull/…/head` or `…/merge`), or a `repository:` that names the head repository (`github.event.pull_request.head.repo.*`), with or without a `ref:`; a `base.*` ref is not flagged |
+| `expression-injection` | blocking | any `${{ … }}` in a `run:` or `script:` body (inside `toJSON`, `format`, `\|\|`, `&&` too, bracket access read as dots) reading `github.head_ref`; a `github.event.*` path ending `.title`, `.body`, `.message`, `.page_name`, `.head_branch`, `.default_branch` or `.email`; `github.event.pull_request.head.ref` or `.head.label`; anything under `.head_commit` but `.id` and `.sha`; anything under `.commits`; a whole event object that carries such text (`github.event`, `.issue`, `.pull_request`, `.comment`, `.review`, `.review_comment`, `.discussion`, `.discussion_comment`, `.head_commit`, `.commits`), interpolated or passed to a function. Not flagged: `.number`, `.id`, `.sha`, `github.sha`, `github.event.repository.name` |
 | `inputs-in-run` | minor | `inputs.*` or `github.event.inputs.*` inside `run:`: the same class one trust level up |
 | `timeout-missing` | minor | a job with no `timeout-minutes` |
 | `concurrency-missing-on-deploy` | minor | a deploy, release, apply or publish job with no `concurrency` at either level |

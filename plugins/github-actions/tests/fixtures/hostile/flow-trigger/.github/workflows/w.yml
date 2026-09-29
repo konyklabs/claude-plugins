@@ -1,0 +1,13 @@
+on: {pull_request_target: {}}
+permissions: {}
+jobs:
+  j:
+    runs-on: x
+    timeout-minutes: 1
+    steps:
+      - uses: actions/checkout@0123456789abcdef0123456789abcdef01234567 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - run: >
+          echo ${{ github.event.issue.title }}
+      - uses: docker://img@sha256:abc

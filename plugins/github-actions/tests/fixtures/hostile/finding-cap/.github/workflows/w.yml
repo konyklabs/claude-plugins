@@ -1,0 +1,32 @@
+on: push
+permissions: {}
+jobs:
+  j:
+    runs-on: x
+    timeout-minutes: 1
+    steps:
+      - uses: a/b@v1
+      - uses: a/b@v2
+      - uses: a/b@v3
+      - uses: a/b@v4
+      - uses: a/b@v5
+      - uses: a/b@v6
+      - uses: a/b@v7
+      - uses: a/b@v8
+      - uses: a/b@v9
+      - uses: a/b@v10
+      - uses: a/b@v11
+      - uses: a/b@v12
+      - uses: a/b@v13
+      - uses: a/b@v14
+      - uses: a/b@v15
+      - uses: a/b@v16
+      - uses: a/b@v17
+      - uses: a/b@v18
+      - uses: a/b@v19
+      - uses: a/b@v20
+      - uses: a/b@v21
+      - uses: a/b@v22
+      - uses: a/b@v23
+      - uses: a/b@v24
+      - uses: a/b@v25

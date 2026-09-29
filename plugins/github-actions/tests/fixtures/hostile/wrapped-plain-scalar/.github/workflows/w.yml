@@ -1,0 +1,15 @@
+on: push
+permissions: {}
+jobs:
+  a:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: github.event_name == 'push' &&
+      github.ref == 'refs/heads/main'
+    steps:
+      - run: echo hi
+  b:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: evil/action@v1
+      - run: echo "${{ github.event.head_commit.message }}"

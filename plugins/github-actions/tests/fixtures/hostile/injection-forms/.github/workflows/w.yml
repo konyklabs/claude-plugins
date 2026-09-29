@@ -1,0 +1,13 @@
+on: [push, issues]
+permissions: {}
+jobs:
+  x:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - run: echo "${{ github.event.repository.name }}"
+      - run: echo "${{ github.event.head_commit.id }}"
+      - run: echo "${{ github.event.pull_request.number }} ${{ github.sha }}"
+      - run: echo '${{ toJSON(github.event.issue.title) }}'
+      - run: echo "${{ format('{0}', github.event.issue.body) }}"
+      - run: echo "${{ github.event.issue.title||'x' }}"
