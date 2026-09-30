@@ -5,7 +5,7 @@
     "name": "Oleg Konyk",
     "url": "https://olegkonyk.com"
   },
-  "description": "Claude Code plugins for expensive-model sessions on a budget: the supervisor harness, and domain skills for Python test engineering, production readiness, end-to-end sign-off, and OpenTofu on AWS, and the host side of agent-box.",
+  "description": "Claude Code plugins for expensive-model sessions on a budget: the supervisor harness, and domain skills for Python test engineering, production readiness, end-to-end sign-off, OpenTofu on AWS, Vitest and TypeScript projects, and the host side of agent-box.",
   "plugins": [
     {
       "name": "supervisor",
@@ -36,6 +36,12 @@
       "source": "./plugins/terrain",
       "description": "OpenTofu on AWS, authored and reviewed the way the Python work is: a deterministic preflight (fmt, validate, the linters on PATH reduced to counts, structural checks for the Fargate and Lambda traps no linter catches, a plan summary that fails closed on destroy), a Terraform review lens with an Opus reviewer agent, and docs-first authoring references for ECS Fargate, Lambda, IAM, networking and state.",
       "category": "infrastructure"
+    },
+    {
+      "name": "ts-testing",
+      "source": "./plugins/ts-testing",
+      "description": "Vitest and TypeScript project skills, the py-testing shape for the TypeScript side: config that shares vite.config.ts, mocking and fake-timer rules, test.extend fixtures, typecheck mode, CI reporters and sharding; tsconfig for Node with nodenext, the TypeScript 6 and 7 default changes, strictness adoption, project references, type stripping; and a Sonnet test-implementer with both skills preloaded.",
+      "category": "testing"
     },
     {
       "name": "agentbox-channel",

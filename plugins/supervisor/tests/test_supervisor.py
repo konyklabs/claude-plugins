@@ -787,6 +787,7 @@ def test_contract_lookup_respects_namespaces():
     cfg = supervisor.DEFAULTS
     assert supervisor.contract_for("supervisor:implementer", cfg) == "worker"
     assert supervisor.contract_for("py-testing:test-implementer", cfg) == "worker"
+    assert supervisor.contract_for("ts-testing:test-implementer", cfg) == "worker"  # the TypeScript twin is held to the same contract
     assert supervisor.contract_for("prod-readiness:scanner", cfg) == "worker"
     assert supervisor.contract_for("prod-readiness:auditor", cfg) == "reviewer"
     assert supervisor.contract_for("otherplugin:reviewer", cfg) is None

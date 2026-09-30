@@ -29,6 +29,11 @@
           "type": "json",
           "path": "plugins/terrain/.claude-plugin/plugin.json",
           "jsonpath": "$.version"
+        },
+        {
+          "type": "json",
+          "path": "plugins/ts-testing/.claude-plugin/plugin.json",
+          "jsonpath": "$.version"
         }
       ]
     }

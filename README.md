@@ -11,6 +11,7 @@ step that can be a script is a script.
 | **py-testing** | Python test engineering: pytest project layout, Playwright API and browser tests, SQLAlchemy test fixtures, and the workflow for untangling a large unmerged test suite, with a deterministic inventory script and a Sonnet worker that has the stack skills preloaded. | `py-testing@konyklabs-plugins` |
 | **prod-readiness** | Production-readiness and security scanning for API sample apps and developer portals: one deterministic scan emits a categorized report, external scanners are summarized to counts and never installed, an Opus auditor judges only the rows that need judgment. Twenty-five check classes from a real hardening pass, nineteen settled by the scanner. | `prod-readiness@konyklabs-plugins` |
 | **terrain** | OpenTofu on AWS: a preflight that runs fmt, validate and whatever linters are on PATH (never installed, reduced to counts), structural checks for the Fargate, Lambda, IAM, secrets and state-locking traps no linter catches, a plan summary that fails closed on destroy or replace, a review lens with an Opus reviewer agent, and authoring references that carry patterns and traps and leave the argument catalogue to the live docs. | `terrain@konyklabs-plugins` |
+| **ts-testing** | Vitest and TypeScript project skills, the py-testing shape for the TypeScript side: config shared with Vite, mocking and fake-timer rules, `test.extend` fixtures, typecheck mode, CI reporters and sharding; tsconfig for Node with `nodenext`, the TypeScript 6 and 7 default changes, strictness adoption, project references, type stripping; and a Sonnet test-implementer with both skills preloaded. | `ts-testing@konyklabs-plugins` |
 | **signoff** | Reconciles an application's end-to-end coverage against what it does: explore, mine, tile, fill, report, human-readable test cases. Tiling coverage, recording test cases and the sign-off report are built and script-driven; explore and mine have no agent yet, so nothing yet writes `.qa/map.json` or `.qa/rules.json` on its own. | `signoff@konyklabs-plugins` |
 
 Requirements: Claude Code 2.1.255 or later, `python3` 3.9 or later on PATH.
@@ -30,6 +31,7 @@ claude plugin install supervisor@konyklabs-plugins
 claude plugin install py-testing@konyklabs-plugins
 claude plugin install prod-readiness@konyklabs-plugins
 claude plugin install terrain@konyklabs-plugins
+claude plugin install ts-testing@konyklabs-plugins
 ```
 
 Until the first pull request has merged, add the branch instead:
@@ -40,7 +42,7 @@ has the checkout, copy the zips, load them directly.
 
 ```
 bash scripts/dist.sh                       # dist/<plugin>.zip, from the committed tree, each scanned
-claude --plugin-dir supervisor.zip --plugin-dir py-testing.zip --plugin-dir prod-readiness.zip --plugin-dir signoff.zip --plugin-dir terrain.zip
+claude --plugin-dir supervisor.zip --plugin-dir py-testing.zip --plugin-dir prod-readiness.zip --plugin-dir signoff.zip --plugin-dir terrain.zip --plugin-dir ts-testing.zip
 ```
 
 The zips are `git archive` output (nothing ignored can be inside) and each
@@ -52,7 +54,7 @@ An installed plugin is a versioned copy; edits in the checkout are not seen
 until `version` in its `plugin.json` changes, so use `--plugin-dir` while
 developing.
 
-Verify: `claude plugin list` shows the five as enabled; `claude plugin
+Verify: `claude plugin list` shows the six as enabled; `claude plugin
 details supervisor` shows 10 skills, 6 agents, 6 hooks and about 1,500
 always-on tokens per session.
 
@@ -132,6 +134,8 @@ Everything an agent needs to operate the plugins without reading the code.
 | `/terrain:preflighting-tofu` | before pushing OpenTofu or Terraform on AWS, or judging whether a plan is safe: fmt, validate, the linters on PATH, the structural checks, the plan summary |
 | `/terrain:reviewing-tofu` | reviewing a `.tf` diff: the nine classes in the order reviewers miss them, with the failure scenario each finding carries |
 | `/terrain:authoring-aws-tofu` | writing or changing `.tf` for AWS: docs first (Context7 or the raw provider markdown), then the ECS Fargate, Lambda, IAM, networking and state references |
+| `/ts-testing:testing-vitest` | writing or fixing Vitest tests and `vitest.config.ts`: a mock never hit, a timer test that hangs, a slow or order-dependent suite |
+| `/ts-testing:testing-typescript-projects` | tsconfig for Node, an import that resolves in the editor and fails at runtime, tests that type-check nothing, a TypeScript 6 or 7 upgrade |
 
 **Agents** (spawn by `subagent_type`; never pass `model`, the definition pins it):
 
@@ -147,6 +151,7 @@ Everything an agent needs to operate the plugins without reading the code.
 | `prod-readiness:scanner` | sonnet, medium | run the scan and the installed tools | worker |
 | `prod-readiness:auditor` | opus, medium | judge the scan's review rows | JSON findings with failure scenarios |
 | `terrain:tofu-reviewer` | opus, medium | the infrastructure lens on a `.tf` change, `reviewing-tofu` preloaded, read-only | JSON findings with failure scenarios, plus the checklist items walked |
+| `ts-testing:test-implementer` | sonnet, medium | Vitest and TypeScript slices, both skills preloaded | worker |
 
 The **worker contract**, enforced by a hook at `SubagentStop`: `## Result`
 with DONE, PARTIAL or BLOCKED; `## Changed files`; `## Evidence` with each
@@ -261,6 +266,21 @@ silently, a vendor key mode) are written as tests in the references and
 delegated as slices. External tools are documented with install-from-
 maintainer, pin-and-checksum guidance and are never installed by the plugin.
 
+## ts-testing in one minute
+
+Two skills and one agent. `testing-vitest`: one `vitest.config.ts` that
+shares `vite.config.ts`, `projects` not `workspace`, `vi.mock` hoisting and
+`vi.hoisted`, fake timers on in `beforeEach` and off in `afterEach`,
+`test.extend` fixtures with scopes, `*.test-d.ts` through `--typecheck`,
+`vitest run --shard` with `--merge-reports` in CI, and the flakiness order
+(timers left on, unawaited `resolves`, `isolate: false` with module state).
+`testing-typescript-projects`: `nodenext` with `.js` extensions, an editor
+config and a build config, `erasableSyntaxOnly` so Node can strip the
+types, `paths` only with a runtime resolver, `types: []` since TypeScript
+6, `tsc --noEmit` as the gate a Vitest run does not provide.
+`ts-testing:test-implementer` is Sonnet with both preloaded and the
+evidence contract: `vitest run` and `tsc --noEmit` output pasted.
+
 ## Development
 
 ```
@@ -302,6 +322,7 @@ plugins/supervisor/                      bin/supervisor.py, hooks/hooks.json, ag
 plugins/py-testing/                    skills/ (5, with references and scripts/inventory.py), agents/, tests/, evals/
 plugins/prod-readiness/                skills/ (3, with references and scripts/readiness.py), agents/, tests/, evals/
 plugins/signoff/                       formats.md, skills/ (4: exploring-app, tiling-coverage, recording-test-cases, signoff-report), tests/, evals/; no agents yet
+plugins/ts-testing/                   skills/ (2: testing-vitest, testing-typescript-projects, with references), agents/, evals/; no scripts
 scripts/                               validate.sh, audit-deps.sh, dist.sh
 docs/                                  ARCHITECTURE.md, COST-TRACKING.md, PLAYBOOK.md
 .github/workflows/                     validate (manifests, audit, hooks on 3.9 and 3.13) plus the org callers

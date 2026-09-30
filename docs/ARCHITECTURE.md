@@ -553,6 +553,21 @@ refresh. The refresh procedure (README, Development) therefore leaves a
 trail a lens can check: the PR that bumps a date carries the delta report
 (each claim confirmed or changed, with its URL), as the 2026-09-29 PR that
 introduced the check does for the nineteen files it re-dated.
+## ts-testing: the py-testing shape for TypeScript (2026-09-29)
+
+The org's TypeScript side (the site, vendorfake's TypeScript, tooling) had
+an `impl-ts` agent and no skill behind it. `ts-testing` mirrors
+`py-testing`: two skills of patterns and traps with dated references, and
+a Sonnet implementer with both preloaded. The facts were fetched the day
+the skills were written, and two of them would have been wrong a month
+earlier: Vitest 5 (2026-09-03) clears mocks between tests by default and
+fails an unawaited async assertion; TypeScript 7 (2026-07-08) is the
+native compiler with no programmatic API until 7.1, and 6.0 changed the
+defaults (`strict`, `types: []`, `baseUrl` deprecated) under every config
+that relied on them. The dated markers are what roadmap#156's digest check
+reads, so those facts cannot age silently once it lands. No preflight script: `vitest run` and `tsc --noEmit` are
+the deterministic checks, and the skills say when a green run proves
+nothing (a Vitest run type-checks nothing on its own).
 
 ## What was verified in the field, and what was not
 
