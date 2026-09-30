@@ -1,5 +1,14 @@
 # Changelog
 
+## [2.5.0](https://github.com/konyklabs/claude-plugins/compare/v2.4.2...v2.5.0) (2026-09-30)
+
+
+### Features
+
+* **github-actions:** workflows authored, preflighted and reviewed the terrain way (konyklabs/roadmap[#157](https://github.com/konyklabs/claude-plugins/issues/157)) ([8b9620a](https://github.com/konyklabs/claude-plugins/commit/8b9620a185c7b68238fd12da03fc898b9dc426b2))
+* **scripts:** enforce the 14-day skill-digest rule in CI and refresh every digest against current docs (konyklabs/roadmap[#156](https://github.com/konyklabs/claude-plugins/issues/156)) ([39aeafb](https://github.com/konyklabs/claude-plugins/commit/39aeafbc318ec89aa0ae989e82fcfc2a308da391))
+* **ts-testing:** Vitest and TypeScript project skills with a Sonnet test-implementer (konyklabs/roadmap[#158](https://github.com/konyklabs/claude-plugins/issues/158)) ([012c800](https://github.com/konyklabs/claude-plugins/commit/012c8001110938d4f74ba6720e1d407cb8b63556))
+
 ## [2.4.2](https://github.com/konyklabs/claude-plugins/compare/v2.4.1...v2.4.2) (2026-09-29)
 
 
