@@ -4,6 +4,7 @@ Claude Code plugin marketplace (`konyklabs-plugins`): `supervisor` (token
 guardrails for expensive-model sessions), `py-testing` (Python test
 engineering skills), `prod-readiness` (security and readiness scanning),
 `signoff` (end-to-end coverage reconciliation), `terrain` (OpenTofu on AWS),
+`github-actions` (workflows: preflight, review lens, authoring),
 `ts-testing` (Vitest and TypeScript project skills).
 `README.md` says how to install and use them; this file is for working on
 them.
@@ -83,4 +84,6 @@ Paste the output in the commit or PR; never say "tests pass" without it.
 - terrain scripts: `plugins/terrain/skills/preflighting-tofu/scripts/`
   (`preflight.py`, `hcl_checks.py`, `plan_summary.py`); planted-defect
   fixture and answer key in `plugins/terrain/tests/fixtures/planted-stack/`.
-- Driving tasks: konyklabs/roadmap#60, #61, #120, #130 and #158.
+- github-actions scripts: `plugins/github-actions/skills/preflighting-workflows/scripts/preflight.py`;
+  planted-defect fixture and answer key in `plugins/github-actions/tests/fixtures/planted-workflows/`.
+- Driving tasks: konyklabs/roadmap#60, #61, #120, #130, #157 and #158.

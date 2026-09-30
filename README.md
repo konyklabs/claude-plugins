@@ -11,6 +11,7 @@ step that can be a script is a script.
 | **py-testing** | Python test engineering: pytest project layout, Playwright API and browser tests, SQLAlchemy test fixtures, and the workflow for untangling a large unmerged test suite, with a deterministic inventory script and a Sonnet worker that has the stack skills preloaded. | `py-testing@konyklabs-plugins` |
 | **prod-readiness** | Production-readiness and security scanning for API sample apps and developer portals: one deterministic scan emits a categorized report, external scanners are summarized to counts and never installed, an Opus auditor judges only the rows that need judgment. Twenty-five check classes from a real hardening pass, nineteen settled by the scanner. | `prod-readiness@konyklabs-plugins` |
 | **terrain** | OpenTofu on AWS: a preflight that runs fmt, validate and whatever linters are on PATH (never installed, reduced to counts), structural checks for the Fargate, Lambda, IAM, secrets and state-locking traps no linter catches, a plan summary that fails closed on destroy or replace, a review lens with an Opus reviewer agent, and authoring references that carry patterns and traps and leave the argument catalogue to the live docs. | `terrain@konyklabs-plugins` |
+| **github-actions** | GitHub Actions workflows: a preflight that runs actionlint and zizmor when on PATH (never installed, reduced to counts) and eleven structural rules for the pinning, permissions, `pull_request_target` and injection traps, a review lens with an Opus reviewer agent, and authoring references for reusable workflows, permissions and OIDC, supply chain and runtime shape. | `github-actions@konyklabs-plugins` |
 | **ts-testing** | Vitest and TypeScript project skills, the py-testing shape for the TypeScript side: config shared with Vite, mocking and fake-timer rules, `test.extend` fixtures, typecheck mode, CI reporters and sharding; tsconfig for Node with `nodenext`, the TypeScript 6 and 7 default changes, strictness adoption, project references, type stripping; and a Sonnet test-implementer with both skills preloaded. | `ts-testing@konyklabs-plugins` |
 | **signoff** | Reconciles an application's end-to-end coverage against what it does: explore, mine, tile, fill, report, human-readable test cases. Tiling coverage, recording test cases and the sign-off report are built and script-driven; explore and mine have no agent yet, so nothing yet writes `.qa/map.json` or `.qa/rules.json` on its own. | `signoff@konyklabs-plugins` |
 
@@ -31,6 +32,7 @@ claude plugin install supervisor@konyklabs-plugins
 claude plugin install py-testing@konyklabs-plugins
 claude plugin install prod-readiness@konyklabs-plugins
 claude plugin install terrain@konyklabs-plugins
+claude plugin install github-actions@konyklabs-plugins
 claude plugin install ts-testing@konyklabs-plugins
 ```
 
@@ -42,7 +44,7 @@ has the checkout, copy the zips, load them directly.
 
 ```
 bash scripts/dist.sh                       # dist/<plugin>.zip, from the committed tree, each scanned
-claude --plugin-dir supervisor.zip --plugin-dir py-testing.zip --plugin-dir prod-readiness.zip --plugin-dir signoff.zip --plugin-dir terrain.zip --plugin-dir ts-testing.zip
+claude --plugin-dir supervisor.zip --plugin-dir py-testing.zip --plugin-dir prod-readiness.zip --plugin-dir signoff.zip --plugin-dir terrain.zip --plugin-dir github-actions.zip --plugin-dir ts-testing.zip
 ```
 
 The zips are `git archive` output (nothing ignored can be inside) and each
@@ -54,7 +56,7 @@ An installed plugin is a versioned copy; edits in the checkout are not seen
 until `version` in its `plugin.json` changes, so use `--plugin-dir` while
 developing.
 
-Verify: `claude plugin list` shows the six as enabled; `claude plugin
+Verify: `claude plugin list` shows the seven as enabled; `claude plugin
 details supervisor` shows 10 skills, 6 agents, 6 hooks and about 1,500
 always-on tokens per session.
 
@@ -134,6 +136,9 @@ Everything an agent needs to operate the plugins without reading the code.
 | `/terrain:preflighting-tofu` | before pushing OpenTofu or Terraform on AWS, or judging whether a plan is safe: fmt, validate, the linters on PATH, the structural checks, the plan summary |
 | `/terrain:reviewing-tofu` | reviewing a `.tf` diff: the nine classes in the order reviewers miss them, with the failure scenario each finding carries |
 | `/terrain:authoring-aws-tofu` | writing or changing `.tf` for AWS: docs first (Context7 or the raw provider markdown), then the ECS Fargate, Lambda, IAM, networking and state references |
+| `/github-actions:preflighting-workflows` | before pushing a workflow change or judging whether one is safe: actionlint and zizmor on PATH, the structural rules, exit 2 on a blocking row |
+| `/github-actions:reviewing-workflows` | reviewing a `.github/workflows` diff: the ten classes in the order reviewers miss them, with the failure scenario each finding carries |
+| `/github-actions:authoring-workflows` | writing or changing a workflow: docs first, then permissions and OIDC, SHA pins with version comments, reusable workflows, the two traps, caches and schedules |
 | `/ts-testing:testing-vitest` | writing or fixing Vitest tests and `vitest.config.ts`: a mock never hit, a timer test that hangs, a slow or order-dependent suite |
 | `/ts-testing:testing-typescript-projects` | tsconfig for Node, an import that resolves in the editor and fails at runtime, tests that type-check nothing, a TypeScript 6 or 7 upgrade |
 
@@ -151,6 +156,7 @@ Everything an agent needs to operate the plugins without reading the code.
 | `prod-readiness:scanner` | sonnet, medium | run the scan and the installed tools | worker |
 | `prod-readiness:auditor` | opus, medium | judge the scan's review rows | JSON findings with failure scenarios |
 | `terrain:tofu-reviewer` | opus, medium | the infrastructure lens on a `.tf` change, `reviewing-tofu` preloaded, read-only | JSON findings with failure scenarios, plus the checklist items walked |
+| `github-actions:workflow-reviewer` | opus, medium | the CI lens on a workflow change, `reviewing-workflows` preloaded, read-only | JSON findings with failure scenarios |
 | `ts-testing:test-implementer` | sonnet, medium | Vitest and TypeScript slices, both skills preloaded | worker |
 
 The **worker contract**, enforced by a hook at `SubagentStop`: `## Result`
@@ -266,6 +272,22 @@ silently, a vendor key mode) are written as tests in the references and
 delegated as slices. External tools are documented with install-from-
 maintainer, pin-and-checksum guidance and are never installed by the plugin.
 
+## github-actions in one minute
+
+```
+preflight.py .                                 # actionlint and zizmor when on PATH, reduced to counts; the structural rules always
+preflight.py . --allow-unpinned ORG/.github/   # your org's reusable workflows ride @main by policy
+```
+
+Stdout is a bounded table (`pass` / `fail` / `skip` per check); findings are
+`path:line rule`, never workflow text. Blocking rows (an unpinned action, a
+fork head checked out under `pull_request_target`, event text inside `run:`,
+`write-all`, secrets inherited across organisations) exit 2. The workflow:
+run the preflight, paste the table, ask `github-actions:workflow-reviewer`
+for what no tool sees (trust boundaries, token scope, secrets flow, caches
+across trust levels, a deploy that cancels itself). `authoring-workflows`
+carries the shape that passes, with OIDC instead of keys and SHA pins with
+version comments.
 ## ts-testing in one minute
 
 Two skills and one agent. `testing-vitest`: one `vitest.config.ts` that
@@ -322,6 +344,7 @@ plugins/supervisor/                      bin/supervisor.py, hooks/hooks.json, ag
 plugins/py-testing/                    skills/ (5, with references and scripts/inventory.py), agents/, tests/, evals/
 plugins/prod-readiness/                skills/ (3, with references and scripts/readiness.py), agents/, tests/, evals/
 plugins/signoff/                       formats.md, skills/ (4: exploring-app, tiling-coverage, recording-test-cases, signoff-report), tests/, evals/; no agents yet
+plugins/github-actions/               skills/ (3: authoring-workflows with references, preflighting-workflows with scripts/preflight.py, reviewing-workflows), agents/, tests/ (planted-workflows fixture), evals/
 plugins/ts-testing/                   skills/ (2: testing-vitest, testing-typescript-projects, with references), agents/, evals/; no scripts
 scripts/                               validate.sh, audit-deps.sh, dist.sh
 docs/                                  ARCHITECTURE.md, COST-TRACKING.md, PLAYBOOK.md

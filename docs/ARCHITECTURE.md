@@ -568,6 +568,46 @@ that relied on them. The dated markers are what roadmap#156's digest check
 reads, so those facts cannot age silently once it lands. No preflight script: `vitest run` and `tsc --noEmit` are
 the deterministic checks, and the skills say when a green run proves
 nothing (a Vitest run type-checks nothing on its own).
+## github-actions: the terrain shape for CI workflows (2026-09-29)
+
+The org runs on GitHub Actions (a reusable review gate, release-please,
+title lint, OIDC deploys) and had no skill for it. The traps are the ones
+reviewers find late in every CI review: an action pinned to a mutable tag
+(CVE-2025-30066 rewrote every tj-actions/changed-files tag), a fork's head
+checked out under `pull_request_target`, a PR title interpolated into
+`run:`, a token holding more than the job uses, a cache prefix shared across
+trust levels, a deploy job the next push cancels. `github-actions` mirrors
+`terrain`: a deterministic preflight, a review lens with an Opus agent,
+and docs-first authoring references with dated digests.
+
+`preflight.py` parses workflow YAML with a line-oriented indentation
+scanner (no PyYAML: the repository ships nothing but the standard library)
+and never evaluates an expression. It runs `actionlint` and `zizmor` when
+they are on PATH, reduced to counts and `path:line tool/rule`, and eleven
+structural rules always; five are blocking (`uses-unpinned`,
+`permissions-write-all`, `pull-request-target-checkout`,
+`expression-injection`, `secrets-inherit-external`) and exit 2, and so is a
+file the scanner could not fully parse: it fails closed rather than passing
+what it did not read. A job that calls a reusable workflow is exempt from
+`timeout-missing`, because a caller job takes no such key. The org's own
+reusable-workflow callers at `@main` are exempt from `uses-unpinned` by
+default (the org's callers ride `@main` on purpose, so the gate's
+anti-tamper check can compare them with the default branch); any other
+prefix is exempt only when told (`--allow-unpinned`), and the tension with
+release-please at `@main` is roadmap#159's to settle.
+
+**The baseline.** A five-workflow fixture with sixteen planted defects and
+one clean workflow, kept as
+`plugins/github-actions/tests/fixtures/planted-workflows/` with its answer
+key; the tests parse the key, so it is the contract. On 2026-09-29 the
+structural rules reported all sixteen; `actionlint` and `zizmor` were not
+installed on the authoring machine, so their rows were `skip` and their
+parsing is covered by stubbed JSON only. Run on the org's own `.github`
+repository the same day, the preflight found 32 tag-pinned actions
+(`actions/checkout@v6`, `anthropics/claude-code-action@v1`) across the
+reusable workflows, four workflows with no top-level `permissions`, seven
+jobs with no timeout, two release jobs with no `concurrency`, and one
+`inputs.*` inside `run:`; filed as roadmap#159, not fixed here.
 
 ## What was verified in the field, and what was not
 

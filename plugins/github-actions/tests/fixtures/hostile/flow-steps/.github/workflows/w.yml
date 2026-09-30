@@ -1,0 +1,16 @@
+on: push
+permissions: {contents: read}
+jobs:
+  a:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - {uses: actions/checkout@v4}
+      - uses:
+          actions/setup-node@v4
+      - run: echo "${{github.event.issue.title||'x'}}"
+      - run: echo "${{ format('{0}', github.event.issue.title) }}"
+      - run: echo "${{ github['event']['issue']['title'] }}"
+      - run: echo "${{ toJSON(github.event.issue) }}"
+      - run: >-
+          echo ${{ github.event.issue.body }}

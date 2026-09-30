@@ -1,0 +1,20 @@
+{
+  "name": "github-actions",
+  "version": "2.4.2",
+  "description": "GitHub Actions workflows authored, preflighted and reviewed the way the infrastructure work is: a deterministic preflight (actionlint and zizmor on PATH reduced to counts, structural checks for the pinning, permissions, pull_request_target and injection traps), a workflow review lens, and docs-first authoring references.",
+  "author": {
+    "name": "Oleg Konyk",
+    "url": "https://olegkonyk.com"
+  },
+  "homepage": "https://github.com/konyklabs/claude-plugins",
+  "repository": "https://github.com/konyklabs/claude-plugins",
+  "license": "MIT",
+  "keywords": [
+    "github-actions",
+    "workflows",
+    "ci",
+    "oidc",
+    "supply-chain",
+    "review"
+  ]
+}
