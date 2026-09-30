@@ -568,6 +568,7 @@ that relied on them. The dated markers are what roadmap#156's digest check
 reads, so those facts cannot age silently once it lands. No preflight script: `vitest run` and `tsc --noEmit` are
 the deterministic checks, and the skills say when a green run proves
 nothing (a Vitest run type-checks nothing on its own).
+<<<<<<< HEAD
 ## github-actions: the terrain shape for CI workflows (2026-09-29)
 
 The org runs on GitHub Actions (a reusable review gate, release-please,
@@ -608,6 +609,8 @@ repository the same day, the preflight found 32 tag-pinned actions
 reusable workflows, four workflows with no top-level `permissions`, seven
 jobs with no timeout, two release jobs with no `concurrency`, and one
 `inputs.*` inside `run:`; filed as roadmap#159, not fixed here.
+=======
+>>>>>>> origin/main
 
 ## What was verified in the field, and what was not
 
