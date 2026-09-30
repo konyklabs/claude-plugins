@@ -129,4 +129,4 @@ and `formatter/json.go` (issue shape, exit codes 0/1/2); trivy config and
 checkov CLI docs (JSON shapes verified by running 0.74.0 and 3.3.16); AWS
 ECS developer guide (Fargate CPU/memory table, `awsvpc` requirement, `ip`
 target type, `AmazonECSTaskExecutionRolePolicy` actions); AWS Lambda docs
-(SQS visibility timeout). All fetched 2026-09-08.
+(SQS visibility timeout). All fetched 2026-09-29 (first 2026-09-08; checkov 3.3.20 is current, its JSON shape was not re-run).

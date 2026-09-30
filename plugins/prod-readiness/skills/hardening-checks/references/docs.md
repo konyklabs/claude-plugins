@@ -43,3 +43,5 @@ describes. Readers built to it.
 **Rule.** Every claim about what the API does traces to a line in its
 specification or reference documentation, cited. The auditor's question
 for any unsourced claim is "where does the provider say this".
+
+<!-- no external sources: checks recorded from this repository's own hardening pass -->

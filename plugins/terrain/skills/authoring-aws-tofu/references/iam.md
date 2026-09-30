@@ -150,4 +150,4 @@ hashicorp/terraform-provider-aws docs `d/iam_policy_document`
 `principals`), `r/iam_role` (deprecations), `r/iam_role_policies_exclusive`,
 `r/iam_role_policy_attachments_exclusive`, `r/iam_openid_connect_provider`;
 GitHub docs "Configuring OpenID Connect in Amazon Web Services" (claims,
-ID-pinned subject form). Fetched 2026-09-08.
+ID-pinned subject form). Fetched 2026-09-29 (first 2026-09-08).

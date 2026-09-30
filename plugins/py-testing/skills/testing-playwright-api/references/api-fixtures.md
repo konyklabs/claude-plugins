@@ -1,6 +1,6 @@
 # APIRequestContext fixtures and helpers
 
-Fetched 2026-09-02 from https://playwright.dev/python/docs/api-testing and
+Fetched 2026-09-29 (first 2026-09-02) from https://playwright.dev/python/docs/api-testing and
 https://playwright.dev/python/docs/test-runners.
 
 ## Contents

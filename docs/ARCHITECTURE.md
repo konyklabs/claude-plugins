@@ -524,6 +524,36 @@ structural checker, and skill script paths that did not resolve when
 installed. All fixed with a test each or a documented change; the
 dispositions are in the pull request body.
 
+## Digest freshness, enforced (2026-09-29)
+
+The workspace's skills strategy has said since the first skills that a skill
+depending on external documentation keeps a dated digest in `references/`
+and re-fetches it after 14 days. On 2026-09-29 every digest in the
+repository but one (reflect's, two days old) was between 21 and 27 days
+old, and only one skill said how to reach live docs at all. A rule with no
+check is a wish; `scripts/digests.py` is the check, its own command and its
+own CI job (not a step of `validate.sh`, so a stale digest is one red job
+with its own name, and the dependency audit still runs).
+
+What it judges: every `plugins/*/skills/*/SKILL.md` and `references/*.md`.
+A marker is the words `fetched YYYY-MM-DD` in any case next to a source; a
+file with several is as old as its oldest, because every source in it must
+be fresh; a claim the note says was not re-read is labelled in the same
+sentence, which is the honest form and what a lens reads. A references
+file must carry a marker or the comment `<!-- no external sources: why -->`
+(the prod-readiness checklists distilled from the repository's own
+hardening pass, the brief and spec templates); the phrase in prose does not
+count, a nested file is still scanned, and a SKILL.md with a Sources
+section and no date is missing, not `none`. Stale, missing or malformed
+exits 1.
+
+What it cannot judge: whether the re-read happened. A bumped date is the
+cheapest possible edit, and nothing in a script distinguishes it from a
+refresh. The refresh procedure (README, Development) therefore leaves a
+trail a lens can check: the PR that bumps a date carries the delta report
+(each claim confirmed or changed, with its URL), as the 2026-09-29 PR that
+introduced the check does for the nineteen files it re-dated.
+
 ## What was verified in the field, and what was not
 
 Captured with `SUPERVISOR_DEBUG=1` (the engine appends every raw hook input to

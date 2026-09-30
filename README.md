@@ -265,16 +265,27 @@ maintainer, pin-and-checksum guidance and are never installed by the plugin.
 
 ```
 bash scripts/validate.sh                              # strict manifest, skill and agent validation
+python3 scripts/digests.py                            # every skill digest fresh (14 days), table per file; --json; its own CI job
 bash scripts/audit-deps.sh                            # stdlib-only imports, no network code, what CI pulls
-uv run --with pytest python -m pytest -q plugins      # hook engine, inventory and scanner tests
-uv run --python 3.9 --with pytest python -m pytest -q plugins   # the floor the scripts promise
+uv run --with pytest python -m pytest -q plugins scripts   # hook engine, inventory, scanner and digest-check tests
+uv run --python 3.9 --with pytest python -m pytest -q plugins scripts   # the floor the scripts promise
 bash scripts/dist.sh                                  # zips for machines with no git access
 claude --plugin-dir ./plugins/supervisor                # try a plugin without installing
 SUPERVISOR_DEBUG=1 claude ...                           # record hook input shapes (redacted) to the state dir
 ```
 
-CI runs the first three plus the org's review gate, proprietary scan and
-title lint. `evals/` under each plugin holds `claude plugin eval` cases in
+CI runs the first five (validate, digests, audit, the tests on 3.13 and on
+the 3.9 floor) plus the org's review gate, proprietary scan and title lint;
+the last three are local. The digest check is the 14-day rule from the workspace's skills
+strategy made enforceable: a skill that depends on external documentation
+keeps a dated digest (`fetched YYYY-MM-DD` next to its sources in
+`references/*.md`, and in `SKILL.md` when it cites docs itself), and a digest
+older than 14 days is a red check. Refreshing one means re-reading the cited
+pages (Context7 when its MCP server is present, the raw source otherwise),
+applying what changed, and only then writing today's date; a bumped date
+with no re-read is what a lens round is for. A references file that is the
+repository's own material, such as a template, carries the comment
+`<!-- no external sources: why -->` instead of a date. `evals/` under each plugin holds `claude plugin eval` cases in
 the early-access layout; run them with `claude plugin eval plugins/<name>
 --runs 1 --model sonnet --judge-model haiku --max-cost-usd 5 --no-publish`
 once the feature is enabled for the account.

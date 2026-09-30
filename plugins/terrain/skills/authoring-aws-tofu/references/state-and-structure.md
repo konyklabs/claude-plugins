@@ -134,4 +134,4 @@ false`, dynamic `prevent_destroy`); AWS Prescriptive Guidance for the
 Terraform AWS Provider (structure, backend per environment, no shared
 workspaces); Google Cloud Terraform best practices (root modules, state
 size, default workspace only); HashiCorp Terraform style guide. Fetched
-2026-09-08.
+2026-09-29 (first 2026-09-08).
