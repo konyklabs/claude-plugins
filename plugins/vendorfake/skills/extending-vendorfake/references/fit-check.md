@@ -88,13 +88,14 @@ The static check says what the table serves; these say what the consumer actuall
 
 ## 4. Known non-fits
 
-<!-- this section: the repository's own distillation of a first adoption; no vendorfake page states it as a list -->
+<!-- this section: the repository's own distillation; no vendorfake page states it as a list -->
 
 - **Lightspeed.** vendorfake models Lightspeed Retail X-Series (seed.md's section
-  is titled "Lightspeed Retail X-Series"). A consumer of the Restaurant K-Series
-  API needs a new vendor package, not a missing route.
-- **Square's SDK.** It has to be constructed with a base URL the test controls; if
-  the consumer hard-wires the vendor host, the seam is the consumer's to add.
+  is titled "Lightspeed Retail X-Series"). A consumer of any other Lightspeed API
+  needs a new vendor package, not a missing route.
+- **A hard-wired vendor host.** A vendor SDK or client has to be constructed with
+  a base URL the test controls; if the consumer hard-wires the vendor host, the
+  seam is the consumer's to add, not a gap in the fake.
 - **A route missing at one tag.** Check the next tag and `main` before filing:
   Square's `GET /v2/channels` (`ListChannels`) arrived in 0.8.0.
 

@@ -17,7 +17,7 @@ Fetched 2026-10-29 (first 2026-10-29) from the vendorfake repository at tag v0.8
 | --- | --- | --- |
 | 1. Authorize, redirects off | `GET /oauth/v2/authorize` (`Authorize`) | the consumer builds the vendor's URL; the fake answers 302 to the pinned callback with `code`, `merchant_id`, `client_id`, `state` |
 | 2. Call the consumer's callback with `code`, `merchant_id`, `state` | `POST /oauth/v2/token` (`ExchangeToken`), called by the consumer | the consumer exchanges the code and redirects to its success path |
-| 3. Read the stored POS connection row | none | the consumer persisted the merchant id and token it was given |
+| 3. Read the consumer's stored connection row | none | the consumer persisted the merchant id and token it was given |
 | 4. Present the stored token | `GET /v3/merchants/{mId}` (`GetMerchant`) | the stored token is a live one, not a placeholder |
 | 5. Read the request log | `GET /__unit/requests` | the service called exactly what the test thinks it called |
 
@@ -130,7 +130,7 @@ https://github.com/konyklabs/vendorfake/blob/v0.8.0/docs/start/quickstart.md
 
 - **An idempotent seed.** The consumer's own test-data command runs at init and
   must be safe to run again: the record the journey connects (a company with no
-  POS connection yet) has to exist on every `compose up`, and a second run must
+  vendor connection yet) has to exist on every `compose up`, and a second run must
   not fail on a unique key or leave the first run's connection in place.
 - **A post-callback redirect base.** A consumer that redirects a browser after
   its callback reads a front-end base URL the fake has no answer for; set an

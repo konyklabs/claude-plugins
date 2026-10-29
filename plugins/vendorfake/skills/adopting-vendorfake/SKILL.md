@@ -7,7 +7,7 @@ description: Wires one vendor's vendorfake into a consumer's end-to-end stack â€
 
 A unit is one process faking one vendor: a seeded scenario on the vendor's own
 routes, plus a control plane at `/__unit/*` for state, chaos and the request log.
-The steps below are the order that worked on a first adoption; do them in order.
+Do the steps below in order: each one is what the next depends on.
 Argument-level facts come from `vendorfake explain --json profile no-faults --vendor clover`
 when vendorfake is installed (`route` and `profile` need `--vendor` or
 `VENDORFAKE_VENDOR`; `fault`, `error` and `header` do not), else the pages in Sources.
@@ -17,16 +17,17 @@ when vendorfake is installed (`route` and `profile` need `--vendor` or
 Inventory the consumer's outbound vendor calls from its production code, not its
 docs, one `METHOD /path` per line. Run the `extending-vendorfake` skill's
 `fit_check.py` against `vendorfake routes --vendor <v> --json`. Known non-fits:
-vendorfake's Lightspeed is Retail X-Series, not the Restaurant K-Series API;
-Square's SDK needs a consumer-side `base_url` seam; a route missing at one tag
+vendorfake's Lightspeed is the Retail X-Series API only (any other Lightspeed API
+is a new vendor package); a client that hard-wires the vendor host needs a
+consumer-side base-URL seam first; a route missing at one tag
 may be in the next (`GET /v2/channels` arrived in 0.8.0). Any `missing` or
 `method` row: stop and go to `extending-vendorfake`. Exit 2 with no rows means the
 inventory matched nothing: redo it, never read it as a fit.
 
 ## 1. The image
 
-Nothing is published to a registry, and the workplace machine needs no checkout,
-git access or token: install from the release's source archive behind one ARG,
+Nothing is published to a registry, and the machine that builds the image needs no
+checkout, git access or token: install from the release's source archive behind one ARG,
 `ARG VENDORFAKE_REF=v0.8.0` â†’ `pip install "vendorfake[serve] @ https://github.com/konyklabs/vendorfake/archive/${VENDORFAKE_REF}.tar.gz"`.
 The ARG is the one place to bump. A tag normally; `refs/heads/<branch>` or a sha
 to consume a branch before its tag, and then `__version__` reports the previous
@@ -86,7 +87,7 @@ the company the journey connects (one with no merchant yet) exists on every
 1. Authorize with redirects off; read `code` from the `Location` query (302).
 2. Call the consumer's callback with `code`, `merchant_id`, `state`; assert the
    success redirect, not the failure one.
-3. Read the stored POS connection row; assert its merchant id.
+3. Read the consumer's stored connection row; assert its merchant id.
 4. Present the stored token to `GET /v3/merchants/{id}`; expect 200.
 5. Read the request log (section 7) and assert what the service actually called.
 
@@ -95,7 +96,7 @@ authorize = GET {fake}/oauth/v2/authorize?client_id=UNITCLOVERAPP&redirect_uri={
 code      = query(authorize.headers["Location"])["code"]           # 302; merchant_id is in the query too
 callback  = GET {app}{callback}?code={code}&merchant_id=HRVSTRYE12345&state=s1   (redirects off)
 assert callback.headers["Location"] ends with the success path, not the failure path
-row       = the consumer's stored POS connection for that company
+row       = the consumer's stored connection for that company
 assert row.merchant_id == "HRVSTRYE12345"
 assert GET {fake}/v3/merchants/HRVSTRYE12345 with "Authorization: Bearer " + row.access_token  -> 200
 assert [r.operation_id for r in GET {fake}/__unit/requests] starts with ["GetMerchant", "ExchangeToken", "Authorize"]   # newest first
@@ -138,5 +139,5 @@ clover/surface/webhooks.py, clover/config.py); fetched 2026-10-29. The docs are 
 release-archive install form (install.md documents the git+ tag pin; the archive form was
 verified by building the image) and on whether the control-plane subscription route enforces
 https (it does not: read from core/control/plane.py and core/webhooks/models.py). The journey
-shape, the two red runs and the settings list are this repository's own distillation of a first
-adoption, not a vendorfake page. Details and quotes in `references/`.
+shape, the two red runs and the settings list are this repository's own distillation, not a
+vendorfake page. Details and quotes in `references/`.

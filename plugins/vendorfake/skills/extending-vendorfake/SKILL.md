@@ -26,9 +26,9 @@ the operation id), `method` (the path is served under other methods, listed),
 calls left after comments: fail closed, never a fit). `--mount V` only for a
 multi-vendor process. Then confirm at run time: `GET /__unit/requests?unmatched=true`,
 `GET /__unit/requests/unmatched/near-misses`, the `Vendorfake-Near-Miss` header.
-Known non-fits: Lightspeed in vendorfake is Retail X-Series, and the Restaurant
-K-Series API is a new vendor package, not a gap; Square's SDK `base_url` seam is
-consumer-side; check the next tag first (`GET /v2/channels` arrived in 0.8.0).
+Known non-fits: Lightspeed in vendorfake is the Retail X-Series API only, and any
+other Lightspeed API is a new vendor package, not a gap; a client that hard-wires
+the vendor host needs a base-URL seam, which is consumer-side; check the next tag first (`GET /v2/channels` arrived in 0.8.0).
 
 ## 2. File it
 
