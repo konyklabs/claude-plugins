@@ -94,7 +94,9 @@ consistency. They catch the migration bugs a feature test never exercises.
   without per-factory wiring.
 - **polyfactory** `SQLAlchemyFactory` when models are typed and random
   valid data is wanted (`__set_relationships__`, `create_sync` /
-  `create_async`).
+  `create_async`). Give it the test session via `__session__`; it commits by
+  default (`__persistence_method__ = SQLAlchemyPersistenceMethod.FLUSH` to
+  flush), which the savepoint fixture absorbs.
 - Either way: factories build, tests assert. A test that reads a factory's
   default value is asserting the factory.
 
@@ -113,8 +115,8 @@ Full code, the async fixture, container fixture and factory setup in
 
 ## Sources
 
-SQLAlchemy 2.1 docs, 2.1.1 stable since 2026-09-25, recipe unchanged from 2.0 (session_transaction "Joining a Session into an External
+SQLAlchemy 2.1 docs, 2.1.6 current (2.1.0 final 2026-09-24), recipe unchanged from 2.0 (session_transaction "Joining a Session into an External
 Transaction", sqlite dialect "Threading/Pooling Behavior"), sqlalchemy
 discussion #10857 (async recipe, maintainer-endorsed), Alembic cookbook,
 pytest-alembic README, testcontainers-python Postgres module, factory_boy ORM
-docs, polyfactory SQLAlchemyFactory docs; fetched 2026-09-29 (first 2026-09-02).
+docs, polyfactory SQLAlchemyFactory docs; fetched 2026-10-29 (first 2026-09-02).

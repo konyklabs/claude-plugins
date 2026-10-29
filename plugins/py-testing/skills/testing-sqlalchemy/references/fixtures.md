@@ -1,6 +1,6 @@
 # SQLAlchemy test fixtures reference
 
-Fetched 2026-09-29 (first 2026-09-02; re-verified: SQLAlchemy 2.1.1 is the stable release since 2026-09-25 and the joined-session recipe and SQLite pooling text are unchanged in its docs). Sources per section.
+Fetched 2026-10-29 (first 2026-09-02; re-verified: SQLAlchemy 2.1.6 is the current release and the joined-session recipe is unchanged in its docs; SQLite pooling and pytest-alembic enabling text corrected below). Sources per section.
 
 ## Contents
 
@@ -56,7 +56,9 @@ async def session():
 ```
 
 Needs `pytest-asyncio` (or anyio) with the fixture loop scope matching the
-engine's; dispose the engine at session end.
+engine's; dispose the engine at session end, or build it with `NullPool`,
+which the maintainer suggested in the same thread (no pooled connection
+outlives its loop, so no "attached to a different loop" error).
 
 ## 3. Postgres via testcontainers
 
@@ -80,11 +82,15 @@ fetch; standard CI practice).
 https://docs.sqlalchemy.org/en/21/dialects/sqlite.html#threading-pooling-behavior
 
 - `:memory:` exists only within one DBAPI connection; "not suitable for use
-  with multiple concurrent threads or coroutines" without serialisation.
+  with multiple concurrent threads or coroutines" without serialisation. Its
+  default pool is `SingletonThreadPool` (one connection per thread).
 - `StaticPool`: one connection shared by all sessions, "only appropriate
   when access to the engine is fully serialized, such as in single-threaded
   test suites".
-- `SingletonThreadPool`: one connection per thread.
+- File databases use `QueuePool` (since 2.0; `NullPool` before) and SQLAlchemy
+  sets `check_same_thread=False` for them itself.
+- `mode=memory` URLs (SQLAlchemy 2.1): the implicit single-connection pool
+  is deprecated; pick a pool explicitly.
 
 ```python
 engine = create_engine("sqlite://", poolclass=StaticPool,
@@ -116,12 +122,19 @@ with engine.begin() as connection:
 with `env.py` checking `config.attributes.get("connection")` before creating
 its own engine.
 
-pytest-alembic (https://github.com/schireson/pytest-alembic) built-in tests:
+pytest-alembic (https://github.com/schireson/pytest-alembic,
+https://pytest-alembic.readthedocs.io/en/latest/running.html) built-in tests:
 `test_single_head_revision`, `test_upgrade`,
 `test_model_definitions_match_ddl`, `test_up_down_consistency`; experimental
 opt-ins `test_all_models_register_on_metadata`,
-`test_downgrade_leaves_no_trace`. Enable with `from pytest_alembic.tests
-import *` in a test module and an `alembic_engine` fixture.
+`test_downgrade_leaves_no_trace`, enabled with the ini option
+`pytest_alembic_include_experimental` (e.g. `'downgrade_leaves_no_trace'`).
+Run the built-ins with `pytest --test-alembic`, or import the four names from
+`pytest_alembic.tests` into a test module; do not do both (they run twice).
+Both need an `alembic_engine` fixture: an engine on an empty database, not
+inside a manually created transaction. Alembic commits internally, so these
+tests cannot ride the savepoint-rollback session fixture; give them their own
+database.
 
 ## 6. Factories
 
