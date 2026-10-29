@@ -146,10 +146,10 @@ applies.
 
 ## Sources
 
-Fetched 2026-09-29 (first 2026-09-05). `AskUserQuestion` reference: one to four questions per
-call, two to four options each, "Other" always available, unavailable inside
-subagents. Skill frontmatter: `model:` applies to the invoking turn only,
-which is why brief runs on Sonnet and hands the next turn back; this skill
-stays on the session model so the triage and the cut are where they belong.
-The brief, triage and decompose skills in this plugin: the rubrics above are
-theirs, restated in one line each so this file loads without them.
+Fetched 2026-10-29 (first 2026-09-05). `AskUserQuestion` reference: one to four questions per call, two to
+four options each, "Other" always available, unavailable inside subagents. Questions stay open until answered
+unless the user set `askUserQuestionTimeout`, which closes one and lets the session proceed on its own
+judgment. Skill frontmatter: `model:` applies to the invoking turn only, which is why brief runs on Sonnet and
+hands the next turn back; this skill stays on the session model so the triage and the cut are where they
+belong. The brief, triage and decompose skills in this plugin: the rubrics above are theirs, restated in one
+line each so this file loads without them.
