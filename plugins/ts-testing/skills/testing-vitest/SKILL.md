@@ -5,7 +5,7 @@ description: Testing TypeScript projects with Vitest — the config that shares 
 
 # Vitest for TypeScript projects
 
-Vitest 5 is current (5.0.0 on 2026-09-03; Node 22.12+ and Vite 6.4+). A
+Vitest 5 is current (5.0.5 on 2026-10-15, 5.1 in beta; Node 22.12+, Vite 6.4+). A
 suite written from memory of Vitest 2 or 3 fails on three things first:
 the `workspace` file is gone, mocks are cleared between tests by default,
 and an `expect(...).resolves` you forgot to `await` is now a failing test.
@@ -19,7 +19,7 @@ keys between 3 and 5. Before writing a key you have not written this month:
   `vitest` once, then query the option by name (`vitest config pool`).
 - **Otherwise the raw markdown the docs site renders**, one file per option:
   `https://raw.githubusercontent.com/vitest-dev/vitest/main/docs/config/<option>.md`
-  (`guide/`, `api/` for the rest; `vitest.dev/guide/migration` for the
+  (`guide/`, `api/` for the rest; `guide/migration/index.md` for the
   version you are leaving).
 
 `references/config.md` carries the defaults and renames; `mocking.md` the
@@ -29,8 +29,8 @@ mocking rules; `fixtures-and-structure.md` fixtures, tables and the CLI.
 
 ```ts
 // vite.config.ts — Vitest reads it by default, so plugins and aliases are
-// shared. A separate vitest.config.ts REPLACES it rather than extending it:
-// add one only when test config must diverge, and repeat the plugins there
+// shared. A vitest.config.ts REPLACES it rather than extending it: add one
+// only when test config must diverge, and repeat the plugins there
 /// <reference types="vitest/config" />
 import { defineConfig } from "vitest/config";
 import tsconfigPaths from "vite-tsconfig-paths";
@@ -41,27 +41,26 @@ export default defineConfig({
     environment: "node",             // the default; jsdom/happy-dom per file with a docblock
     setupFiles: ["test/setup.ts"],   // runs in each worker before each test file
     coverage: { provider: "v8", include: ["src/**"] },
-    reporters: process.env.CI ? ["default", "github-actions"] : ["default"],
   },
 });
 ```
 
 - `projects` replaces the `vitest.workspace.ts` file (removed in 4): one
-  root config with a `projects` array, which itself runs no tests.
-- `setupFiles` run inside the worker per test file; `globalSetup` runs once
-  in the main thread with no test globals and hands data over through
-  `provide()` / `inject()`. A database container is `globalSetup`; a
-  matcher registration is `setupFiles`.
+  root config with a `projects` array, which runs no tests itself. Since 5
+  an inline project inherits the root config (arrays like `setupFiles` are
+  appended); `extends: false` opts out. Config-file projects inherit nothing.
+- `setupFiles` run in the worker per test file (a matcher registration);
+  `globalSetup` runs once in the main thread, no test globals, data via
+  `provide()` / `inject()` (a database container).
 - `pool` is `forks` by default: full process API, native modules safe.
   `threads` spawns faster, cannot `process.chdir`, can segfault on native
   modules. The `vm*` pools ignore `isolate`.
-- `isolate: false` shares module state between test files in one worker: a
-  module-level singleton leaks across files. Turn it off per project, never
-  for the suite that owns state.
+- `isolate: false` shares module state between files in one worker, so a
+  module-level singleton leaks. Per project only, never where state lives.
 - `vite-tsconfig-paths` reads `paths` from tsconfig; a hand-written
-  `resolve.alias` drifts. Vite 8's own `resolve.tsconfigPaths` was reported
-  as not honoured by Vitest (an open issue on 2026-09-29, unverified), so
-  the plugin stays.
+  `resolve.alias` drifts. Vitest's common-errors page still names the
+  plugin; Vite 8's `resolve.tsconfigPaths` was reported as not honoured in
+  tests (unverified), so the plugin stays.
 
 ## 3. Mocking: what hoists, what cannot be spied
 
@@ -87,17 +86,20 @@ import { register } from "./register.js";   // sees the mocked mailer
   `mockRestore` also puts the original back for spies. `clearMocks` is on by
   default since 5 and can strip history from a mock a concurrent test holds.
 - Fake timers: `vi.useFakeTimers()` in `beforeEach`, `vi.useRealTimers()` in
-  `afterEach`, always. `advanceTimersByTime(ms)` runs what is due;
-  `runAllTimersAsync()` drains async callbacks too (10,000-iteration cap);
-  `vi.setSystemTime` moves the clock without firing; `vi.waitFor` advances
-  fake timers while it polls.
+  `afterEach`, always. Since 5 they fake `Temporal` too (`toNotFake` opts
+  out). `advanceTimersByTime(ms)` runs what is due; `runAllTimersAsync()`
+  drains async callbacks too (10,000-iteration cap); `vi.setSystemTime`
+  moves the clock without firing; `vi.waitFor` advances them while polling.
 
 ## 4. Fixtures, tables, types
 
 ```ts
 import { test as base } from "vitest";
-export const test = base.extend<{ db: Db }>({
-  db: [async ({}, use) => { const db = await openTestDb(); await use(db); await db.close(); }, { scope: "file" }],
+// builder form (4.1+): types inferred; the object form with `use` still works
+export const test = base.extend("db", { scope: "file" }, async ({}, { onCleanup }) => {
+  const db = await openTestDb();
+  onCleanup(() => db.close());
+  return db;
 });
 test("saves an order", async ({ db, expect }) => { /* ... */ });
 ```
@@ -105,8 +107,7 @@ test("saves an order", async ({ db, expect }) => { /* ... */ });
 - Fixtures are per test by default; `scope: "file"` or `"worker"` share
   them; `auto: true` runs one no test asks for. A fixture may depend only
   on fixtures of its own or a longer scope.
-- `test.each(table)("name %s", fn)` for parameter tables; `test.for` when
-  the test needs the context object.
+- `test.each(table)` for parameter tables; `test.for` for the context object.
 - `test.concurrent` tests take `expect` from the context argument, never the
   module import. `test.sequential` is gone in 5: `{ concurrent: false }`.
 - Type tests live in `*.test-d.ts`, are checked by `tsc` (never executed)
@@ -116,18 +117,19 @@ test("saves an order", async ({ db, expect }) => { /* ... */ });
 ## 5. Running in CI
 
 ```
-vitest run --reporter=default --reporter=github-actions   # one pass, annotations
+vitest run                                                 # one pass, annotations
 vitest run --shard=1/4 --reporter=blob                     # per runner
 vitest run --merge-reports --reporter=junit                # after the shards
 vitest run --changed origin/main                           # what a PR touched
 ```
 
-- `vitest` alone is watch mode; CI runs `vitest run`. `--shard` refuses
-  watch mode. `retry` in config is a measurement tool, not a fix.
+- The `github-actions` reporter joins on GitHub by itself; a `reporters` key
+  replaces the default list. Bare `vitest` is watch mode, which `--shard`
+  refuses. `retry` in config is a measurement tool, not a fix.
 - Coverage: `v8` by default, no instrumentation; `istanbul` for Firefox or
   Bun. `test.exclude` does not affect coverage; `coverage.exclude` does.
-- Default timeout is 5 s (15 s in browser mode). A test that needs more has
-  a slow dependency to mock, not a longer timeout.
+- Default timeout is 5 s (15 s in browser mode): a test that needs more has
+  a slow dependency to mock.
 
 ## 6. Flakiness, in the order to check
 
@@ -135,15 +137,13 @@ vitest run --changed origin/main                           # what a PR touched
 2. An unawaited `expect(p).resolves` or `rejects`; 5 fails these outright.
 3. `isolate: false` with module-level state; `clearMocks` with
    `test.concurrent` sharing a mock.
-4. A `vi.mock` factory reading a variable declared after it (not hoisted;
-   use `vi.hoisted`).
+4. A `vi.mock` factory reading a variable declared after it (`vi.hoisted`).
 
 ## Sources
 
 vitest.dev guide (getting started, mocking, test context, testing types,
-coverage, CLI), the `docs/config/` pages in the vitest-dev/vitest
+coverage, CLI, reporters), the `docs/config/` pages in the vitest-dev/vitest
 repository, the migration guides for 4 and 5, the release posts for 4.0,
-4.1 and 5.0, and the npm registry (5.0.2); fetched 2026-09-29. Not
-confirmed that day and left out: the exact `coverage.thresholds` shape,
-`--bail` count semantics, and `esbuild` target and decorator interplay.
-Details and quotes in `references/`.
+4.1 and 5.0, and the npm registry (5.0.5); fetched 2026-10-29. Left out as
+unconfirmed: the exact `coverage.thresholds` shape, `--bail` count
+semantics, `esbuild` target and decorator interplay. Quotes: `references/`.

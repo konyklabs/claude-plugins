@@ -41,7 +41,10 @@ tests/
 
 The block below is the whole of it; `references/config.md` has each option
 with its source. `--strict-markers` turns an unregistered marker into an
-error instead of a warning, and is the single most effective config line.
+error instead of a warning (since 9.2 it also checks marker names inside `-m`
+expressions), and is the single most effective config line. In
+`[tool.pytest.ini_options]` keep string options strings (`minversion = "8.0"`,
+not `8.0`): 9.2 warns on a non-string value and pytest 10 will raise.
 
 ```toml
 [tool.pytest.ini_options]
@@ -100,7 +103,7 @@ per-worker resource keyed on `worker_id` (`"master"` when xdist is off).
 ## Sources
 
 pytest docs (good practices, how-to mark, fixtures, writing plugins),
-pytest-xdist how-to, plugin READMEs on PyPI; fetched 2026-09-29 (first 2026-09-02; pytest 9.1.1 is current and 9.0 added a native `[tool.pytest]` table as an alternative to `ini_options`, which is not deprecated). Details and
+pytest-xdist how-to, plugin READMEs on PyPI; fetched 2026-10-29 (first 2026-09-02; pytest 9.2.0 is current and 9.0 added a native `[tool.pytest]` table as an alternative to `ini_options`, which is not deprecated). Details and
 quotes in `references/config.md`. One thing the docs do not say: pytest has
 no official position on unit/integration/e2e splitting; the tier layout above
 is this skill's convention, chosen because directories give each tier its own

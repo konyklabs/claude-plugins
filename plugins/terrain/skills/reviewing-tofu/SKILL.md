@@ -33,14 +33,15 @@ defect: a new push produces no diff, so nothing deploys.
 **2. The start-up chain.** Walk what a task or function needs before its
 first log line: the image (ECR endpoints `ecr.api`, `ecr.dkr`, the S3
 gateway, or a NAT route; `assign_public_ip` is not a substitute in a
-private subnet), the log group (must exist, with retention; the managed
-execution policy cannot create it), the secrets (execution role needs
-`ssm:GetParameters` or `secretsmanager:GetSecretValue`, plus `kms:Decrypt`
-for a customer key), the health check (`health_check_grace_period_seconds`
-for anything that warms up; a target group with `target_type = "ip"`), and
-the Lambda log group and `AWSLambdaBasicExecutionRole` or equivalent. A
-missing link is `blocking`: the service loops on failed placements and
-never reaches steady state.
+private subnet; with no internet route the `awslogs` driver also needs the
+`logs` interface endpoint), the log group (must exist, with retention; the
+managed execution policy cannot create it), the secrets (execution role
+needs `ssm:GetParameters` or `secretsmanager:GetSecretValue`, plus
+`kms:Decrypt` for a customer key), the health check
+(`health_check_grace_period_seconds` for anything that warms up; a target
+group with `target_type = "ip"`), and the Lambda log group and
+`AWSLambdaBasicExecutionRole` or equivalent. A missing link is `blocking`:
+the service loops on failed placements and never reaches steady state.
 
 **3. Reachability.** Trace one request: DNS or listener port, the load
 balancer's subnets (internet-facing needs public subnets; `internal =
@@ -76,9 +77,11 @@ reordered. Stateful resources (databases, buckets with data, queues with
 messages) carry `prevent_destroy` or the PR says why not.
 
 **7. Async plumbing.** SQS visibility timeout at least six times the
-consumer's timeout; a dead-letter queue with a redrive policy; the event
-source mapping with `function_response_types = ["ReportBatchItemFailures"]`
-and the function returning partial failures; encryption on the queue.
+consumer's timeout, plus `MaximumBatchingWindowInSeconds` when a batch
+window is set; a dead-letter queue with a redrive policy
+(`maxReceiveCount` of at least 5); the event source mapping with
+`function_response_types = ["ReportBatchItemFailures"]` and the function
+returning partial failures; encryption on the queue.
 
 **8. Provider drift.** Arguments that moved in provider 4 to 6: inline
 bucket settings, `aws_region` data `name`, inline security group rules
@@ -127,4 +130,4 @@ batch responses, log groups), hashicorp/aws provider docs for
 `aws_ecs_service` (`ignore_changes` on `desired_count`), `aws_iam_role`
 (deprecations), `aws_security_group` (inline rules discouraged), version 6
 upgrade guide; OpenTofu docs (ephemerality, `moved`, `removed`, `tofu
-test`). All fetched 2026-09-29 (first 2026-09-08).
+test`). All fetched 2026-10-29 (first 2026-09-08).

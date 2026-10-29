@@ -63,7 +63,9 @@ removed {
 
 `from` takes no instance key. OpenTofu 1.12 also accepts `lifecycle {
 destroy = false }` directly on a managed resource; the plan action is
-`forget` and the plan summary lists it as such.
+`forget` and the plan summary lists it as such. Use 1.13.2 or later:
+earlier releases failed `plan -out` when such a resource needed replacing
+and crashed when `destroy` was an expression with references.
 
 ## `import`: adopt what exists
 
@@ -76,7 +78,7 @@ import {
 
 `for_each` on import blocks since 1.7. `tofu plan -generate-config-out=
 generated.tf` writes HCL for imported resources without configuration
-(experimental; not with `for_each`). Provider 6 imports a regional
+(experimental; the file must not already exist; not with `for_each`). Provider 6 imports a regional
 resource in another region with `<id>@<region>`.
 
 ## A replace you did not ask for
@@ -89,6 +91,7 @@ Read the plan summary's `reason` column:
   Either accept it (and say so in the PR) or find the rename path (a new
   resource plus `moved` for the address, or `name_prefix`).
 - `replace_by_request`: someone ran with `-replace`.
+- `replace_by_triggers`: a `replace_triggered_by` reference changed.
 - `replace_because_tainted`: a failed create left a tainted object.
 - `delete_because_no_resource_config` / `_each_key` / `_count_index`: the
   configuration no longer names it. A key change means `moved`; a removal
@@ -108,8 +111,9 @@ without a decision.
 
 ## `tofu test`
 
-`tests/*.tftest.hcl` with `run` blocks (`command = plan` by default
-applies; use `plan` for schema and assertion checks without AWS),
+`tests/*.tftest.hcl` with `run` blocks (`command` defaults to `apply`,
+which creates and then destroys real resources; set `command = plan` for
+schema and assertion checks without AWS),
 `assert { condition, error_message }`, `expect_failures` for variable
 validation, and `mock_provider "aws" {}` since 1.8 so a test needs no
 credentials. Worth having for a module's input validation and the plan
@@ -118,7 +122,8 @@ shape it promises; not a substitute for the preflight on a root module.
 ## State encryption
 
 OpenTofu-only: an `encryption` block in `terraform {}` with a
-`key_provider "aws_kms"` (`kms_key_id`, `region`, `key_spec = "AES_256"`),
+`key_provider "aws_kms"` (`kms_key_id`, `region`, `key_spec = "AES_256"`,
+optional `encryption_context` since 1.13), one KMS key per state file,
 a `method "aes_gcm"`, and `state { method = ..., enforced = true }`. The
 exact wiring is in the OpenTofu state encryption page; verify there
 before enabling, and note that Terraform cannot read an encrypted state.
@@ -129,9 +134,10 @@ OpenTofu docs: refactoring (`moved`, 1.10 cross-type), resource syntax
 (`removed`), import (`for_each` 1.7, `identity` 1.12), plan
 (`-generate-config-out`, `-detailed-exitcode`), JSON format (`action_reason`
 values), test command (mocking since 1.8), state encryption, settings
-(`language` block, 1.12); OpenTofu 1.12 changelog (resource `destroy =
+(`language` block, 1.12); OpenTofu 1.13 changelog (`encryption_context`,
+`destroy` fixes); OpenTofu 1.12 changelog (resource `destroy =
 false`, dynamic `prevent_destroy`); AWS Prescriptive Guidance for the
 Terraform AWS Provider (structure, backend per environment, no shared
 workspaces); Google Cloud Terraform best practices (root modules, state
 size, default workspace only); HashiCorp Terraform style guide. Fetched
-2026-09-29 (first 2026-09-08).
+2026-10-29 (first 2026-09-08).

@@ -1,6 +1,6 @@
 # External scanners
 
-Fetched 2026-09-29 from each tool's GitHub README or releases page and PyPI page as cited below (first written without a date; every command and field re-verified on that date, current versions: gitleaks 8.30.1, pip-audit 2.10.1, bandit 1.9.4, semgrep 1.178.0, osv-scanner 2.6.0, trivy 0.74.0, lychee 0.24.2; trivy's `Severity` field name not re-read from a live page).
+Fetched 2026-10-29 from each tool's GitHub README or releases page, PyPI page and documentation as cited below (first written without a date; every command and field re-verified on that date, current versions: gitleaks 8.30.1, pip-audit 2.10.1, bandit 1.9.4, semgrep 1.182.1, osv-scanner 2.7.0, trivy 0.76.1, lychee 0.24.2; `npm audit --json`'s `metadata.vulnerabilities` is not documented on npm's command page and was not re-verified).
 
 What the `tools` check runs, how each is installed from its maintainer,
 and how its output is kept small. The scanner never installs anything: a
@@ -91,7 +91,7 @@ scanner at them:
 ```
 
 ```
-semgrep --json --config tools/semgrep-rules src
+semgrep scan --json --config tools/semgrep-rules src
 ```
 
 Summarize by `check_id` and `extra.severity` (ERROR, WARNING, INFO);
@@ -124,8 +124,9 @@ trivy image --format json <image:tag>
 ```
 
 Summarize by `Severity`. Note that `trivy` downloads its vulnerability
-database on first run; in an air-gapped CI, use `--skip-db-update` with a
-pre-fetched database.
+database on first run; in an air-gapped CI, pre-fetch the database and pass
+`--skip-db-update` (add `--skip-java-db-update` and `--skip-check-update`
+for the Java database and the checks bundle).
 
 ## 8. npm audit
 

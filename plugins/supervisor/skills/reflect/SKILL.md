@@ -57,12 +57,14 @@ the recommended option for every row.
 
 For each accepted row, write a memory file in the auto-memory directory in
 its format: frontmatter with `name` (kebab-case slug), `description` (one
-line, used for recall), `metadata.type`; the body with the fact, then
+line, used for recall), `type` (`user`, `feedback`, `project` or `reference`,
+the four kinds the docs name; the `modified` timestamp is added by Claude Code
+on write, never typed); the body with the fact, then
 `**Why:**` and `**How to apply:**` lines; `[[links]]` to related memories.
 A superseding row edits the existing file instead. Add one index line to
 `MEMORY.md` (`- [Title](file.md) — hook`) and keep the index under 200
 lines: Claude Code loads only the first 200 lines or 25 KB of it at session
-start (code.claude.com/docs/en/memory, fetched 2026-09-27), so a line past
+start (code.claude.com/docs/en/memory, fetched 2026-10-29), so a line past
 the cap is a memory nobody reads. Near the cap, merge or drop the stalest
 line first.
 

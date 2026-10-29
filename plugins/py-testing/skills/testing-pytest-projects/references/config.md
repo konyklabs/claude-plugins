@@ -1,6 +1,6 @@
 # pytest configuration reference
 
-Fetched 2026-09-29 (first 2026-09-02) from docs.pytest.org (stable, pytest 9.1.1), pytest-xdist docs, and PyPI.
+Fetched 2026-10-29 (first 2026-09-02) from docs.pytest.org (stable, pytest 9.2.0), pytest-xdist docs, and PyPI.
 
 ## Contents
 
@@ -20,26 +20,38 @@ Fetched 2026-09-29 (first 2026-09-02) from docs.pytest.org (stable, pytest 9.1.1
 - "For new projects, we recommend to use `importlib`" — `sys.path` is not
   changed when importing test modules; test files may share basenames without
   `__init__.py`. Same page.
-- rootdir for prepend/append: "the first upward directory not containing an
-  `__init__.py`". Adding `__init__.py` to test dirs "introduces side effects
-  with sys.path manipulation".
+- `prepend` (the default, and "for the foreseeable future": the plan to make
+  `importlib` the default was dropped) searches upward for "the last directory
+  which still contains an `__init__.py`" and puts its parent on `sys.path`.
+  With `__init__.py` in test dirs, pytest prepends the repository root to
+  `sys.path`, so the package under test also imports from the checkout.
+  https://docs.pytest.org/en/stable/explanation/pythonpath.html
+- `importlib` mode: "pytest will not change `sys.path` at all" and module
+  names need not be unique, but test modules cannot import each other; share
+  helpers through `conftest.py` fixtures or an installed package.
 
 ## 2. `[tool.pytest.ini_options]` keys
 
-https://docs.pytest.org/en/stable/reference/customize.html (TOML form needs
-pytest >= 6.0).
+https://docs.pytest.org/en/stable/reference/customize.html and
+https://docs.pytest.org/en/stable/reference/reference.html. Two tables:
+`[tool.pytest.ini_options]` (INI-style, values are strings, since 6.0) and
+the native `[tool.pytest]` (pytest >= 9.0, real TOML arrays, e.g.
+`addopts = ["-ra", "-q"]`). Use one, not both; a floor below 9 needs
+`ini_options`.
 
 | key | use |
 |---|---|
 | `minversion` | fail early on an old pytest |
-| `addopts` | default CLI flags; keep `-ra` (summary of non-passing), `--strict-markers`, `--strict-config` |
+| `addopts` | default CLI flags; keep `-ra` (summary of non-passing) |
+| `strict` | 9.0+: one switch for `strict_config`, `strict_markers`, `strict_parametrization_ids`, `strict_xfail`; an explicit individual option wins; it also enables strictness options added later, so use it only with a pinned pytest |
+| `strict_config` / `strict_markers` | warnings parsing the config / unregistered markers become errors (the `--strict-config` / `--strict-markers` flags do the same) |
 | `testpaths` | directories collected when none are given |
 | `markers` | registered markers, `name: description` |
 | `filterwarnings` | `error::DeprecationWarning` turns warnings into failures |
-| `xfail_strict = true` | an XPASS fails, so xfails cannot rot |
+| `strict_xfail = true` | an XPASS fails, so xfails cannot rot; renamed in 9.0, `xfail_strict` still works as an alias |
 
-Default collection patterns (well known, not re-quoted this fetch):
-`test_*.py` / `*_test.py`, classes `Test*`, functions `test_*`.
+Default collection patterns: `python_files` `["test_*.py", "*_test.py"]`,
+`python_classes` `["Test"]` (a name prefix), functions `test_*`.
 
 ## 3. Markers
 
@@ -54,8 +66,10 @@ markers = [
 ]
 ```
 
-`--strict-markers`: unregistered `@pytest.mark.<name>` is an error. `-m
-"expr"` selects by marker expression (`-m "not slow and not serial"`).
+`--strict-markers` (or `strict_markers = true`): an unregistered
+`@pytest.mark.<name>` is an error, and so is an unregistered name inside a `-m`
+expression. `-m "expr"` selects by marker expression (`-m "not slow and not
+serial"`).
 
 ## 4. conftest discovery and `pytest_plugins`
 
@@ -65,7 +79,8 @@ https://docs.pytest.org/en/stable/how-to/writing_plugins.html
   the directory part of the test path, if exist. Before a `conftest.py` file is
   loaded, load `conftest.py` files in all of its parent directories."
 - "Requiring plugins using `pytest_plugins` variable in non-root `conftest.py`
-  files is deprecated."
+  files is deprecated." A `pytest_plugins` outside the tests root raises a
+  warning; keep it in the root `conftest.py`.
 
 ## 5. Fixture scope and autouse
 
@@ -81,7 +96,7 @@ fixture functions.
 
 https://pytest-xdist.readthedocs.io/en/stable/how-to.html
 
-- `pip install pytest-xdist`; `pytest -n auto`.
+- `pip install pytest-xdist`; `pytest -n auto` (one worker per available CPU).
 - "each worker process will perform its own collection and execute a subset
   of all tests ... tests in different processes requesting a high-level scoped
   fixture (for example session) will execute the fixture code more than
@@ -92,13 +107,20 @@ https://pytest-xdist.readthedocs.io/en/stable/how-to.html
 ## 7. Flakiness plugins
 
 - pytest-rerunfailures — `--reruns 5 --reruns-delay 1`;
-  `@pytest.mark.flaky(reruns=5, reruns_delay=2)`; `only_rerun` / `rerun_except`
-  regex filters. https://pypi.org/project/pytest-rerunfailures/
+  `@pytest.mark.flaky(reruns=5, reruns_delay=2)`; `--only-rerun REGEX` /
+  `--rerun-except REGEX` filter which failures rerun (marker args `only_rerun=`
+  / `rerun_except=` override the flags). Precedence: marker, then CLI, then
+  ini. https://pypi.org/project/pytest-rerunfailures/
 - pytest-randomly — shuffles module, class, function order; reseeds
   `random` before each test; prints the seed; `--randomly-seed=1234` or
-  `=last`; works with xdist. https://pypi.org/project/pytest-randomly/
-- pytest-timeout — `--timeout=300`; `@pytest.mark.timeout(60)`; method
-  `signal` (teardown runs, may interfere with SIGALRM users) or `thread`
-  (kills the process, no teardown). https://pypi.org/project/pytest-timeout/
+  `=last` (needs the cacheprovider); works with xdist; `-p no:randomly`
+  disables it. To chase pollution, rerun the failing module with the printed
+  seed. https://pypi.org/project/pytest-randomly/
+- pytest-timeout — `--timeout=300` (also the `timeout` ini key and
+  `PYTEST_TIMEOUT`; `0` disables); `@pytest.mark.timeout(60)`; method
+  `signal` (the default where SIGALRM exists; teardown runs, may interfere
+  with SIGALRM users) or `thread` (kills the process, no teardown).
+  2.5.0 was yanked as a breaking change; 2.4.0 was the latest usable release.
+  https://pypi.org/project/pytest-timeout/
 - Hypothesis — `@given(st.integers(0, 200))` on a plain test function; pytest
   collects it normally. https://hypothesis.readthedocs.io/en/latest/quickstart.html
