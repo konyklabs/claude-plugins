@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.6.0](https://github.com/konyklabs/claude-plugins/compare/v2.5.0...v2.6.0) (2026-10-29)
+
+
+### Features
+
+* **vendorfake:** adopting, testing-against and extending skills with evals and a route fit check (konyklabs/roadmap[#180](https://github.com/konyklabs/claude-plugins/issues/180)) ([50221d6](https://github.com/konyklabs/claude-plugins/commit/50221d65a52b86c4a11a45b42cb8ecfad290f147))
+
 ## [2.5.0](https://github.com/konyklabs/claude-plugins/compare/v2.4.2...v2.5.0) (2026-09-30)
 
 
