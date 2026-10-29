@@ -32,8 +32,15 @@ data "aws_iam_policy_document" "task" {
 }
 ```
 
-`condition` needs all three of `test`, `variable`, `values`. `principals`
-types: `AWS`, `Service`, `Federated`, `CanonicalUser`, `*`.
+`condition` needs all three of `test`, `variable`, `values`. Several
+`condition` blocks on one statement are ANDed; several `values` in one block
+are ORed. `source_policy_documents` requires unique `sid`s across the
+documents; only `override_policy_documents` replaces by `sid`. `principals`
+types: `AWS`, `Service`, `Federated`, `CanonicalUser`, `*`; `type = "*"` with
+`identifiers = ["*"]` renders `"Principal": "*"`, `type = "AWS"` renders
+`{"AWS": "*"}`, and they behave differently in a trust policy. An AWS policy
+variable such as `${aws:username}` is written `&{aws:username}`, or Terraform
+interpolates it.
 
 ## A role, the current way
 
@@ -116,8 +123,14 @@ data "aws_iam_policy_document" "deploy_trust" {
 }
 ```
 
-Use the ID-pinned subject form (`org@id/repo@id`); the name-only form is
-subject to rename hijacking. `StringLike` with a `*` on `sub` is what
+Use the ID-pinned subject form (`org@id/repo@id`); a recycled org or repo
+name lets a different owner mint the same name-only subject. The token's
+format follows the repository, not the policy: repositories created after
+2026-07-15, and older ones that opted in (organization or repository OIDC
+settings), emit the ID form; others keep name-only until they opt in, and a
+rename or transfer moves a repository to the ID form. A trust policy written
+for the other format never matches, so check which one the repository emits
+before the first apply. `StringLike` with a `*` on `sub` is what
 turns one repository's role into the organization's. Separate roles for
 plan (read-only) and apply (write), with the apply subject restricted to
 the default branch.
@@ -129,7 +142,8 @@ the default branch.
 ownership of everything on the role: anything not listed is removed at
 apply, an empty list removes all. Every `aws_iam_role_policy` and
 `_attachment` in the module for that role must be listed or it drifts.
-Destroying the exclusive resource does not remove the policies.
+Destroying the exclusive resource does not remove the policies. Nor does it
+prevent out-of-band attachments; it reconciles only when an apply runs.
 
 ## Least-privilege habits
 
@@ -149,5 +163,6 @@ hashicorp/terraform-provider-aws docs `d/iam_policy_document`
 (`source_policy_documents`, `override_policy_documents`, `condition`,
 `principals`), `r/iam_role` (deprecations), `r/iam_role_policies_exclusive`,
 `r/iam_role_policy_attachments_exclusive`, `r/iam_openid_connect_provider`;
-GitHub docs "Configuring OpenID Connect in Amazon Web Services" (claims,
-ID-pinned subject form). Fetched 2026-09-29 (first 2026-09-08).
+GitHub docs "Configuring OpenID Connect in Amazon Web Services" and the OIDC
+reference "Immutable subject claims" (claims, ID-pinned subject form, which
+repositories emit it). Fetched 2026-10-29 (first 2026-09-08).

@@ -112,15 +112,22 @@ and the triage belongs on the session model.
 
 ## Sources
 
-Fetched 2026-09-29 (first 2026-09-03). Claude Code best practices, "let Claude interview you":
-ask the questions before writing the plan. spec-kit `clarify`: five
-questions at most, one at a time, ordered by impact times uncertainty.
-`AskUserQuestion` reference: one to four questions per call, two to four
-options each, "Other" always available; not available inside subagents,
-which is why this skill has no `context: fork`. Skill frontmatter: `model:`
-applies to the invoking turn. The docs are silent on whether that override
-survives the AskUserQuestion round-trips within one turn, and on how
-AskUserQuestion behaves in `-p` mode; neither has been verified here. One
-indirect data point since: the headless docs say `--permission-prompts none`
-removes the tools that need a person, AskUserQuestion among them, which
-implies it otherwise blocks for input in `-p`; still not a direct statement.
+Fetched 2026-10-29 (first 2026-09-03). Claude Code best practices, "Brainstorm
+with Claude first" (the heading was "let Claude interview you"): ask Claude to
+interview you with multiple-choice questions, write the spec to a file, build
+from it in a fresh session. spec-kit `clarify`: five questions at most, one at
+a time, ordered by impact times uncertainty; each answerable by a short choice
+or a few words. `AskUserQuestion` (Agent SDK user-input page, "Question
+limits"): one to four questions per call, two to four options each, "Other"
+always available; removed from every subagent, which is why this skill has no
+`context: fork`. A question stays open until answered unless the user set
+`askUserQuestionTimeout`; on expiry Claude proceeds on its own judgment, so a
+"done" the user never typed is possible and the assumptions list must carry
+what was not answered. Skill frontmatter: `model:` applies to the invoking
+turn only, and in auto mode a model the classifier does not support (or one the
+organization's `availableModels` excludes) is silently not used, so the turn may
+run on the session model. The docs are silent on whether the override survives
+the AskUserQuestion round-trips within one turn; not verified here. Headless:
+`--permission-prompts none` removes AskUserQuestion from the tool set, and
+`dontAsk` denies it even when an allow rule matches; a plain `-p` run is still
+not stated directly, so assume the skill cannot interview there.

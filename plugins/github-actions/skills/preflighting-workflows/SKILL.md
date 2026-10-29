@@ -27,7 +27,11 @@ runner labels, shell errors through shellcheck when present) and `zizmor`
 permissions, unpinned uses, impostor commits, cache poisoning, secrets
 inherit and more). Both are reduced to a count and `path:line tool/rule`
 rows; their messages are not printed. Install them once per machine;
-`zizmor` is offline by default and needs no token.
+`zizmor` runs offline unless `GH_TOKEN`, `GITHUB_TOKEN` or
+`ZIZMOR_GITHUB_TOKEN` is in the environment, which switches it online and adds
+the online-only audits (impostor-commit, known-vulnerable-actions,
+ref-confusion, stale-action-refs); the preflight passes no flag, so a token in
+the shell changes what runs. `--offline` or `ZIZMOR_OFFLINE` forces offline.
 
 **Structural rules, always.** These are the traps a linter does not own or
 a repository may have configured away:
@@ -35,7 +39,7 @@ a repository may have configured away:
 | rule | severity | what it means |
 |---|---|---|
 | `parse` | blocking | `path:line parse-incomplete`: a line the scanner could not place (rules still ran on the rest); `path:1 parse-error`: the file could not be parsed at all (nesting deeper than 64, or a scanner fault). Never a silent pass |
-| `uses-unpinned` | blocking | a `uses:` whose ref is not a 40-hex SHA (or a Docker image with no digest), quoted or not; `./local` paths and `--allow-unpinned` prefixes are exempt. By SHA shape only: whether the commit exists in that repository is zizmor's impostor-commit audit |
+| `uses-unpinned` | blocking | a `uses:` whose ref is not a 40-hex SHA (or a Docker image with no digest), quoted or not; `./local` paths and `--allow-unpinned` prefixes are exempt. By SHA shape only: whether the commit exists in that repository is zizmor's impostor-commit audit, which is online-only and does not run offline |
 | `uses-version-comment-missing` | minor | a SHA pin with no `# vN` comment (after the value, quoted or not), so Dependabot cannot bump it |
 | `permissions-missing` | minor | no top-level `permissions:` and a job with none of its own |
 | `permissions-write-all` | blocking | `write-all` anywhere |
@@ -75,9 +79,9 @@ the table attached. The lens's mandate starts where this table ends.
 
 ## Sources
 
-actionlint usage docs (`-format`, exit codes 0/1/2, SARIF), the zizmor
+actionlint usage docs (`-format`, exit codes 0 clean / 1 findings / 2 bad option / 3 fatal, SARIF), the zizmor
 docs (offline audits, personas, audit catalogue as summarised there), and
 the docs.github.com pages the structural rules encode (security
 hardening, `pull_request_target`, permissions, reusing workflows, limits);
-fetched 2026-09-29. The rule set was calibrated on the planted fixture in
+fetched 2026-10-29. The rule set was calibrated on the planted fixture in
 `../../tests/fixtures/planted-workflows/` with its answer key.

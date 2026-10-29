@@ -50,8 +50,10 @@ terraform {
 }
 ```
 
-Commit `.terraform.lock.hcl`. OpenTofu 1.12 writes checksums for every
-platform, so a lockfile made on macOS works in Linux CI. Never commit
+Commit `.terraform.lock.hcl`. From OpenTofu 1.12 the registry reports a
+full hash set and `init` records it for every platform, so a lockfile made
+on macOS works in Linux CI (a filesystem or network mirror records only the
+local platform; run `tofu providers lock` then). Never commit
 `terraform.tfvars` with values, and never a `.tfstate`.
 
 ## 3. Data sources, not literals
@@ -77,12 +79,13 @@ ends with its sources and fetch date. Load the one the task needs.
 ## Provider 6 facts that change how you write
 
 - **`region` on a resource** selects that resource's region; one provider
-  block serves many regions. Adding it to an existing resource forces
-  replacement. Global services (IAM, CloudFront, Route 53) have none.
-  Import with `<id>@<region>`.
+  block serves many regions. Changing its value forces replacement;
+  removing it does not (state keeps the prior value). Global services
+  (IAM, CloudFront, Route 53) have none. Import with `<id>@<region>`.
 - **`aws_s3_bucket` is a shell.** ACL, versioning, encryption, policy,
   lifecycle, logging, website, CORS are each their own resource. The
-  inline arguments still parse with a deprecation warning and are gone in 7.
+  inline arguments still parse with a deprecation warning and are slated
+  for removal in a future major version.
 - **`aws_iam_role`**: `inline_policy` and `managed_policy_arns` are
   deprecated. Use `aws_iam_role_policy` and `aws_iam_role_policy_attachment`;
   add `aws_iam_role_policies_exclusive` or `_policy_attachments_exclusive`
@@ -108,6 +111,6 @@ answered rather than fixed.
 hashicorp/terraform-provider-aws `website/docs`: `index` (provider
 configuration), `guides/version-6-upgrade`, `guides/enhanced-region-support`,
 `r/iam_role`, `r/s3_bucket`, `r/security_group`, `d/region`; registry v1
-API for versions (6.66.0 latest on 2026-09-21); OpenTofu docs for the S3
+API for versions (6.71.0 latest on 2026-10-29); OpenTofu docs for the S3
 backend (`use_lockfile`, 1.10), dependency lock file (all-platform
-checksums, 1.12), settings. Fetched 2026-09-29 (first 2026-09-08; OpenTofu 1.12.6 current).
+checksums, 1.12), settings. Fetched 2026-10-29 (first 2026-09-08; OpenTofu 1.13.2 current, 1.12.9 latest 1.12).

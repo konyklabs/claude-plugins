@@ -62,12 +62,17 @@ Trace it in this order when writing and when reviewing:
 1. **Placement.** Internet-facing load balancer in public subnets (a
    route to an internet gateway). `internal = true` in private subnets.
    An internet-facing ALB in private subnets applies and answers nothing.
+   Its subnets must cover every AZ the tasks run in.
 2. **Listener.** Port and protocol; HTTPS with an ACM certificate and an
    HTTP listener that redirects. The load balancer's security group admits
    the listener port.
 3. **Target group.** `target_type = "ip"` for Fargate, port equals the
    container port, health check path the application actually serves,
-   `deregistration_delay` shorter than the default 300 s for fast rollouts.
+   `deregistration_delay` shorter than the default 300 s for fast rollouts
+   (AWS suggests 5 s only for sub-second responses; long uploads or streams
+   need longer). One target group per service, never shared. A target
+   passes after one check when new; the healthy threshold (default 3)
+   applies to recovery.
 4. **Service.** Security group admits the container port from the load
    balancer's group by reference; `health_check_grace_period_seconds`
    covers start-up.
@@ -103,10 +108,14 @@ resource "aws_lb_target_group" "app" {
 
 A private subnet with no NAT route needs interface endpoints for every
 AWS API the workload calls, each with its own security group admitting
-443 from the subnets, plus the S3 gateway endpoint (free) for image layers
-and S3 access. For a Fargate service that pulls from ECR, logs, and reads
-secrets: `ecr.api`, `ecr.dkr`, `s3` (gateway), `logs`, `ssm` or
-`secretsmanager`. Interface endpoints cost per hour per AZ; a NAT gateway
+443 from the subnets (omit it and the VPC default group is attached), plus
+the S3 gateway endpoint (free; needs `route_table_ids`, type `Gateway` is
+the default) for image layers and S3 access. For a Fargate service that
+pulls from ECR, logs, and reads secrets: `ecr.api`, `ecr.dkr`, `s3`
+(gateway), `logs` (only with the `awslogs` driver), `ssm` or
+`secretsmanager`. Fargate needs no `ecs`, `ecs-agent` or `ecs-telemetry`
+endpoints. The first pull through an ECR pull-through cache rule still
+needs a NAT route. Interface endpoints cost per hour per AZ; a NAT gateway
 costs per hour plus per GB. The docs fetched give no cost comparison;
 decide on data volume and the number of APIs, and record it.
 
@@ -117,14 +126,15 @@ resource "aws_vpc_endpoint" "ecr_dkr" {
   vpc_endpoint_type   = "Interface"
   subnet_ids          = var.private_subnet_ids
   security_group_ids  = [aws_security_group.endpoints.id]
-  private_dns_enabled = true             # required for ECR
+  private_dns_enabled = true             # required for ecr.dkr
 }
 ```
 
 ## Data sources instead of literals
 
 `data.aws_availability_zones.available` (`state = "available"`) for AZ
-names; `data.aws_region.current.region` for the region string; VPC and
+names (it also lists Local Zones; add a `filter` on `opt-in-status` =
+`opt-in-not-required` to keep Availability Zones only); `data.aws_region.current.region` for the region string; VPC and
 subnet ids as typed variables or `data.aws_vpc` / `data.aws_subnets` with
 tag filters, never pasted ids. A `count` over a list of subnets recreates
 resources when the list reorders; use `for_each` over a map keyed by AZ.
@@ -135,6 +145,7 @@ hashicorp/terraform-provider-aws docs `r/security_group` (inline rules
 discouraged, default egress removed), `r/vpc_security_group_ingress_rule`,
 `r/lb`, `r/lb_target_group` (`target_type`, health check ranges,
 `deregistration_delay`), `r/vpc_endpoint`, `d/availability_zones`,
-`d/region`; AWS ECS developer guide: load balancer target type for
-`awsvpc`, VPC endpoints for Fargate; AWS ECR VPC endpoints page. Fetched
-2026-09-29 (first 2026-09-08).
+`d/region`; AWS ECS developer guide: Application Load Balancer page
+(target type for `awsvpc`), connection draining and health check
+optimisation pages, interface VPC endpoints for Fargate; AWS ECR interface
+VPC endpoints page. Fetched 2026-10-29 (first 2026-09-08).

@@ -25,7 +25,12 @@ pytest-playwright provides them; do not create your own browser.
 
 Options come from the CLI or `addopts`: `--browser chromium`, `--headed`,
 `--base-url`, `--tracing retain-on-failure`, `--screenshot only-on-failure`,
-`--video retain-on-failure`, `--output test-results`.
+`--video retain-on-failure`, `--output test-results`. Since pytest-playwright
+0.10 the plugin provides `--base-url` and the `base_url` fixture itself;
+the pytest-base-url extra (`pytest-playwright[base-url]`) is needed only for
+`--verify-base-url`. These options apply only
+to the default `page`/`context`; a context from `browser.new_context()` gets
+no trace, video or screenshot.
 
 ## Locators and assertions
 
@@ -71,8 +76,10 @@ class LoginPage:
 
 ## Log in once
 
-`storage_state` persists cookies, local storage and IndexedDB (not session
-storage). Log in once per run, save the state, load it into every context:
+`storage_state` persists cookies and local storage; IndexedDB only when saved
+with `indexed_db=True` (opt-in); never session storage. Log in once per run
+(per worker under xdist: a session fixture runs in each), save the state, load
+it into every context:
 
 ```python
 @pytest.fixture(scope="session")
@@ -80,7 +87,7 @@ def auth_state(browser, base_url, tmp_path_factory):
     path = tmp_path_factory.mktemp("auth") / "state.json"
     ctx = browser.new_context(base_url=base_url)
     LoginPage(ctx.new_page()).login(os.environ["USER"], os.environ["PASS"])
-    ctx.storage_state(path=str(path)); ctx.close()
+    ctx.storage_state(path=str(path)); ctx.close()  # indexed_db=True if the app keeps its token there
     return str(path)
 
 @pytest.fixture(scope="session")
@@ -115,6 +122,6 @@ Fuller fixture code, the CLI table and sources in
 ## Sources
 
 playwright.dev/python/docs: test-runners, locators, test-assertions, auth,
-network, pom, debug; pytest-xdist how-to; fetched 2026-09-29 (first 2026-09-02; pytest-playwright 0.9.0 current). The `auth_state`
+network, pom, debug; pytest-xdist how-to; fetched 2026-10-29 (first 2026-09-02; pytest-playwright 0.10.0 current). The `auth_state`
 fixture above composes documented pieces (`storage_state`,
 `browser_context_args`); the docs show the pieces, not this exact fixture.

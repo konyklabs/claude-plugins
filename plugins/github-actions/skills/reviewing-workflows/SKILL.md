@@ -27,8 +27,10 @@ the change touches or behaviour those lines change.
 and secrets on input a stranger controls. Walk from the trigger to every
 `checkout` and every `run:`: a checkout of `github.event.pull_request.head.*`
 or `github.head_ref`, an `npm install` or `pip install` from that tree, a
-`Makefile` target from it, is `blocking` (checkout v7 refuses the head by
-default; `allow-unsafe-pr-checkout: true` in a diff is the finding). The
+`Makefile` target from it, is `blocking` (checkout v7 refuses a fork's PR
+code under `pull_request_target` and `workflow_run` by default, and covers
+nothing else, not `git fetch`, `gh pr checkout` or a downloaded artifact;
+`allow-unsafe-pr-checkout: true` in a diff is the finding). The
 safe shape is `pull_request` with no secrets for the untrusted half and a
 `workflow_run` job that reads artifacts only.
 
@@ -44,8 +46,9 @@ or a job holding `contents: write` to run tests, or `id-token: write` on
 a job that does not assume a role. Compare each job's scopes with what its
 steps do; a scope no step uses is `minor`, `write-all` and a write scope
 on a job that runs untrusted input is `blocking`. Since 2023-02-02 new
-repositories default to read-only, so a workflow that silently relied on
-the permissive default now fails on an older repository that upgraded.
+repositories default to read-only (existing ones were not touched), so a
+workflow that silently relied on the permissive default fails when it is
+copied into a new repository.
 
 **4. Pins and provenance.** Every `uses:` is a full SHA with a version
 comment, or a same-repository path, or an org-internal reusable workflow
@@ -56,17 +59,26 @@ tags or default branch is an impostor commit and `blocking`. A Docker
 image without a digest is a tag pin.
 
 **5. Where secrets flow.** `secrets: inherit` to a callee outside the
-organisation cannot work and inside it over-shares; a secret passed to a
+organisation (or its enterprise) cannot work and inside it over-shares; a
+secret passed to a
 step that echoes its inputs, writes them to a summary or an artifact, or
 sets them as an output, leaves the runner (masking covers exact matches
 only). A reusable-workflow chain deeper than one hop that assumes
-secrets propagate finds none at the bottom.
+secrets propagate finds none at the bottom: secrets reach only the
+directly called workflow.
 
 **6. Caches across trust levels.** A cache key derived from a lockfile
-hash is fine; a `restore-keys` prefix that a workflow on a lower trust
-level (a `pull_request` from a fork, on the default branch) also writes
-lets it seed what the privileged workflow restores and executes. Look for
-the same prefix in two workflows with different triggers.
+hash is fine. Runs on `pull_request_target`, `issue_comment` and
+`workflow_run` get read-only access to the default branch's cache scope
+by default, and a `pull_request` run writes only to its own merge ref, so
+the finding is the way around that: an explicit `cache-mode: write` or
+`write-only` (github.com only) on a job with a low-trust trigger, a
+default-scope writer (`push`, `workflow_dispatch`, `schedule`) that checks
+out an untrusted revision and then saves a cache, or a reusable workflow
+called without a `cache-mode: read` cap that requests `write`. The victim
+is the privileged workflow that restores the same key or `restore-keys`
+prefix and executes it; look for that prefix in two workflows with
+different triggers.
 
 **7. The deploy that cancels itself.** `concurrency` with
 `cancel-in-progress: true` on a deploy or apply job: the next push cancels
@@ -78,8 +90,8 @@ A matrix with `fail-fast` masking which leg failed.
 **8. The reusable contract.** Caller `with:` keys that the callee does
 not declare, an output referenced through `needs` that the callee never
 sets, a typed input passed as the wrong type, a callee that expects a
-secret the caller does not name. A fifth nesting level, which GitHub
-Enterprise Server (four levels) refuses.
+secret the caller does not name. A nesting level past the limit (ten
+levels on github.com, four on GitHub Enterprise Server, loops refused).
 
 **9. The schedule nobody watches.** A `schedule:` trigger that implements
 a gate, a rotation or a cleanup, in a public repository with no other
@@ -121,7 +133,7 @@ job needs the token) is in `authoring-workflows` under section 4.
 Built from the same pages as `authoring-workflows` (docs.github.com on
 `pull_request_target`, security hardening, permissions, reusing
 workflows, caching, limits; the GitHub Security Lab on pwn requests;
-CISA and Wiz on CVE-2025-30066; the CodeQL query help on cache
-poisoning) and the zizmor audit catalogue for what a tool already
-reports; fetched 2026-09-29. The planted-defect fixture the tests use is
+CISA and Wiz on CVE-2025-30066; the checkout v7 README; the CodeQL
+query help on cache poisoning) and the zizmor audit catalogue for what a tool already
+reports; fetched 2026-10-29. The planted-defect fixture the tests use is
 `../../tests/fixtures/planted-workflows/` with its answer key.

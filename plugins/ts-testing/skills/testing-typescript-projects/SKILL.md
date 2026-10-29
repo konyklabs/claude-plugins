@@ -6,11 +6,11 @@ description: How a TypeScript project is configured so its tests and builds beha
 # TypeScript projects that test and build the same way
 
 TypeScript 7.0 is current (7.0.2 on npm, announced 2026-07-08): the native
-compiler, 7 to 12 times faster, with no stable programmatic API until 7.1,
-so tools that embed the compiler (Vue, Angular, Svelte, Astro editor
-checking) still pin 6.0. TypeScript 6.0 (2026-03-23) changed the defaults
-under every config that relied on them. Both are what an upgrade PR reads
-first.
+compiler, typically 8 to 12 times faster on full builds, with no
+programmatic API (7.1, in beta since 2026-10-20, adds one), so tools that
+embed the compiler (Vue, Angular, Svelte, Astro, typescript-eslint) stay on
+6.0 for now. TypeScript 6.0 (2026-03-23) changed the defaults under every
+config that relied on them; an upgrade PR reads both first.
 
 ## 1. Options come from the docs, not from memory
 
@@ -65,7 +65,8 @@ rules.
   specifiers. An import that resolves in the editor and throws `Cannot find
   module` at runtime is `paths` without a runtime resolver (a bundler,
   `vite-tsconfig-paths` in tests, or package.json `imports`, which needs no
-  mapping). `baseUrl` is deprecated in 6.0: drop it.
+  mapping). `baseUrl` is deprecated in 6.0 (an error in 7): drop it and
+  prefix `paths` targets with `./`.
 - `exclude` only narrows `include`; a file reached through an import is in
   the program regardless. `composite` additionally requires every
   implementation file to be matched, or it is silently invisible to the
@@ -94,9 +95,8 @@ Node strips types itself: behind a flag from 22.6, on by default from
 `erasableSyntaxOnly` so `tsc` refuses that syntax before Node does. Node
 also rewrites nothing else: a `.ts` file run directly imports its siblings
 as `.ts` (section 2). Run through `node` on 24+, or `tsx` (4.23.x) on an
-older runtime; `ts-node` (10.9.2) is for existing setups, its last release
-date not confirmed. Node 24 is the active LTS on 2026-09-29, Node 26 is
-Current.
+older runtime; `ts-node` (10.9.2, last released 2023-12-08) is for existing
+setups. Node 26 is the active LTS since 2026-10-28; Node 24 is in maintenance.
 
 ## 5. Project references for anything with two packages
 
@@ -118,8 +118,9 @@ vitest run --typecheck                 # the *.test-d.ts files, through tsc
   types; a Vitest run type-checks nothing on its own (esbuild strips
   types), so a suite can be green with a broken type.
 - `typescript-eslint` with `parserOptions.projectService` (stable since 8.0)
-  gives type-aware rules without a lint-only tsconfig. `knip` before a
-  package is published.
+  gives type-aware rules without a lint-only tsconfig; its peer range stops
+  below TypeScript 6.1, so under 7.0 it needs the `@typescript/typescript6`
+  alias. `knip` before a package is published.
 
 ## 7. Traps, in the order they are found late
 
@@ -131,18 +132,18 @@ vitest run --typecheck                 # the *.test-d.ts files, through tsc
    compiles, then `x()` throws because a namespace is an object. Leave it on.
 5. TypeScript 6 upgrade: `strict` and `types: []` now on, `baseUrl`
    deprecated, `rootDir` now the config's directory (a build config without
-   `rootDir: "src"` emits `dist/src/`), `node10` and `classic` resolution
-   gone; 7 drops `target: es5` and `downlevelIteration`.
+   `rootDir: "src"` emits `dist/src/`), `classic` resolution gone; `node10`,
+   `target: es5`, `downlevelIteration` deprecated (`ignoreDeprecations:
+   "6.0"` mutes them), all errors in 7 along with `baseUrl`.
 
 ## Sources
 
 typescriptlang.org tsconfig reference and handbook (project references,
 release notes 5.0), the TypeScript blog posts for 5.8, 5.9, 6.0 and 7.0,
-the npm registry (typescript 7.0.2, tsx 4.23.15, ts-node 10.9.2),
-nodejs.org (typescript, packages, the release schedule), typescript-eslint
+the npm registry (typescript 7.0.2, 7.1.0-beta; tsx 4.23.15; ts-node
+10.9.2; typescript-eslint 8.72.1), nodejs.org (typescript, packages, the release schedule), typescript-eslint
 (project service), publint.dev, the arethetypeswrong and knip
-repositories, the Biome v2 and 2026 roadmap posts; fetched 2026-09-29.
-Not confirmed that day and left out: the exact 5.8 release date,
-`skipLibCheck`'s reference wording, publint's flags, the `@types/node`
+repositories, the Biome v2 and 2026 roadmap posts; fetched 2026-10-29.
+Not confirmed that day and left out: publint's flags, the `@types/node`
 versioning statement, tsx's transpile-only claim (blog only). Details and
 quotes in `references/`.

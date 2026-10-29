@@ -1,7 +1,8 @@
 # APIRequestContext fixtures and helpers
 
-Fetched 2026-09-29 (first 2026-09-02) from https://playwright.dev/python/docs/api-testing and
-https://playwright.dev/python/docs/test-runners.
+Fetched 2026-10-29 (first 2026-09-02) from https://playwright.dev/python/docs/api-testing,
+https://playwright.dev/python/docs/test-runners and
+https://playwright.dev/python/docs/api/class-browsercontext.
 
 ## Contents
 
@@ -84,9 +85,12 @@ def assert_shape(obj: dict, **fields):
 
 ## 5. Combining with browser tests
 
-`context.request` shares cookies with the browser context (docs: "you can
-reuse the browser context's APIRequestContext"). Setup through the API,
-assert in the UI, or act in the UI and assert through the API:
+`context.request` shares cookies with the browser context (BrowserContext.request:
+"Requests made with this API will use context cookies"). A separate
+`playwright.request.new_context()` does not; carry its login across with
+`api.storage_state()` into `browser.new_context(storage_state=...)` (storage state
+is interchangeable between the two). Setup through the API, assert in the UI, or
+act in the UI and assert through the API:
 
 ```python
 def test_pay_marks_order_paid(page, context, orders):

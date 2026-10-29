@@ -1,8 +1,8 @@
 # Vitest fixtures, tables, types, and CLI reference
 
-Fetched 2026-09-29 from the vitest.dev test-context and testing-types
+Fetched 2026-10-29 from the vitest.dev test-context and testing-types
 guides, the `test`/`expect` API pages in the vitest-dev/vitest repository,
-the 4.1 release post, and the CLI guide.
+the 4.1 release post, and the CLI guide and its reporters/config pages.
 
 ## Contents
 
@@ -37,9 +37,15 @@ test("saves an order", async ({ db, expect }) => {
 A fixture is per-test by default; `{ auto: true }` makes it run for every
 test whether or not a test asks for it; `scope` can widen it to `"file"` or
 `"worker"`. A fixture may only depend on other fixtures of its own scope or
-a longer one — https://vitest.dev/guide/test-context.html. v4.1 added
-`onCleanup()` for fixture teardown and gave hooks access to the fixture
-context — https://vitest.dev/blog/vitest-4-1.html.
+a longer one — https://vitest.dev/guide/test-context.html. Since v4.1 the
+recommended form is the builder, `test.extend('db', { scope: "file" }, async
+({}, { onCleanup }) => { ...; onCleanup(() => db.close()); return db })`, which
+infers fixture types from the return value; `onCleanup` may be called once
+per fixture (split into several fixtures for several teardowns). The
+`use`-style object form above still works. `file` and `worker` fixtures are
+also passed to `test.beforeAll`/`afterAll` — a v4.1 change to what those hooks
+receive as their first argument. With isolation off, `worker` fixtures are
+shared across files in one worker — https://vitest.dev/blog/vitest-4-1.html.
 
 ## 2. test.each and test.for
 
@@ -91,13 +97,16 @@ https://raw.githubusercontent.com/vitest-dev/vitest/main/docs/config/typecheck.m
 `vite-tsconfig-paths` is the recommended plugin so a tsconfig `paths` map
 is honoured inside tests; a hand-written `resolve.alias` has to be kept in
 sync by hand when the plugin is not used. Vite 8's built-in
-`resolve.tsconfigPaths: true` is not picked up by Vitest as of this fetch —
-open issue, unverified — https://github.com/vitest-dev/vitest/issues/10054.
+`resolve.tsconfigPaths: true` failed to apply under Vitest on Vite 8.0.0;
+the issue was closed 2026-04-08 as fixed upstream on Vite 8.0.7, so use a
+current Vite before reaching for the plugin —
+https://github.com/vitest-dev/vitest/issues/10054.
 
 ## 8. CLI for CI: run, shard, merge, changed
 
-The bare `vitest` command is watch mode; CI runs `vitest run` for a single
-pass — https://vitest.dev/guide/cli.html.
+The bare `vitest` command is watch mode in a dev terminal and falls back to
+a single run in CI or a non-interactive terminal; write `vitest run`
+anyway so the intent is explicit — https://vitest.dev/guide/cli.html.
 
 ```bash
 vitest run --reporter=default --reporter=github-actions   # one pass, PR annotations
@@ -106,15 +115,24 @@ vitest run --merge-reports --reporter=junit                 # after every shard 
 vitest run --changed origin/main                             # only what a PR touched
 ```
 
-- `--changed` runs the tests covering changed source files, walked through
-  the import graph — cli.html.
-- `--shard=<index>/<count>` refuses to run under watch mode.
+- `--changed` (no value: uncommitted changes; or a ref such as
+  `origin/main`) runs the tests affected by changed files. A change to
+  `setupFiles`, `globalSetup`, a custom environment, the config file or its
+  imports reruns every test in that project —
+  https://raw.githubusercontent.com/vitest-dev/vitest/main/docs/config/changed.md.
+- `--shard=<index>/<count>` refuses to run under watch mode; a blob report
+  written without an output file gets a shard-specific default path.
   `--merge-reports[=dir]` defaults to `.vitest/blob/` and works with any
   reporter except `blob` itself —
   https://raw.githubusercontent.com/vitest-dev/vitest/main/docs/guide/cli.md.
-- `--reporter=github-actions` emits PR annotations and can be repeated
-  alongside another reporter — cli.html.
-- `--bail` stops the run after failures; the exact count semantics were not
-  confirmed this fetch (unverified).
+- `--reporter=github-actions` emits PR annotations; it is added by default
+  when `GITHUB_ACTIONS=true`, but naming any `--reporter` replaces the default
+  list, so repeat `default` alongside it —
+  https://raw.githubusercontent.com/vitest-dev/vitest/main/docs/guide/reporters.md.
+- `--bail <n>` stops the run once `n` tests have failed (default `0`, never) —
+  https://raw.githubusercontent.com/vitest-dev/vitest/main/docs/config/bail.md.
+- `--last-failed` reruns only the previous run's failures; `--since-last-run`
+  (experimental, v5.1) reruns tests whose loaded files changed on disk by
+  modification time, so a checkout that resets mtimes is not detected — cli.html.
 - `--coverage.include`, `--ui`, `--typecheck` are also CLI flags, not only
   config keys — cli.html.

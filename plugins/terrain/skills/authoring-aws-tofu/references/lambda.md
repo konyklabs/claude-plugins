@@ -41,7 +41,7 @@ Lambda's own base64 SHA-256, so `output_md5` and `output_sha` never match
 and force an update on every plan. `source_code_hash` is the older form and
 is now documented as a synthetic trigger the provider never compares with
 Lambda's hash: any digest works, and an out-of-band deploy is not caught
-(provider docs, 2026-09-29; the 2026-09-08 digest had the two the other way
+(provider docs, 2026-10-29; the 2026-09-08 digest had the two the other way
 round). The
 archive is built at plan time and must exist at apply; in a multi-stage
 pipeline persist the zip or build it in a step before plan. Artifacts
@@ -57,7 +57,8 @@ permissions and weighted rollouts; permissions cannot be attached to
 
 The valid identifier list and the deprecation schedule live in the AWS
 Lambda runtimes page. Deprecation blocks create after about 30 days and
-update after about 60; `tflint`'s `aws_lambda_function_deprecated_runtime`
+update after about 60 (AWS sometimes delays both for a runtime);
+`tflint`'s `aws_lambda_function_deprecated_runtime`
 rule tracks the schedule. Pick the newest supported major of the language
 and pin the minor in code, not in the runtime string.
 
@@ -87,8 +88,9 @@ via `logging_config.log_group` must not start with `aws/`. The role trusts
 Only when the function must reach something private. `vpc_config {
 subnet_ids, security_group_ids }` needs the ENI permissions
 (`AWSLambdaVPCAccessExecutionRole`), loses internet access unless the
-subnet has a NAT route, and holds ENIs for up to 20 minutes after delete;
-destroy the role after the function.
+subnet has a NAT route, and holds ENIs for up to 20 minutes after delete
+(the provider allows 45 minutes for the subnets and security groups to
+delete); destroy the role after the function.
 
 ## Triggers
 
@@ -110,7 +112,7 @@ resource "aws_sqs_queue" "jobs_dlq" {
 
 resource "aws_sqs_queue" "jobs" {
   name                       = "app-jobs-${var.environment}"
-  visibility_timeout_seconds = 360        # at least 6 x the function timeout
+  visibility_timeout_seconds = 360        # at least 6 x the function timeout (+ the batching window, if set)
   sqs_managed_sse_enabled    = true
   redrive_policy = jsonencode({
     deadLetterTargetArn = aws_sqs_queue.jobs_dlq.arn
@@ -131,9 +133,12 @@ The function returns `{"batchItemFailures": [{"itemIdentifier": messageId}]}`
 for the records that failed, or the whole batch is retried. Visibility
 below the function timeout delivers the same message twice; the preflight
 flags that case. `batch_size` above 10 requires
-`maximum_batching_window_in_seconds`. The role needs `sqs:ReceiveMessage`,
+`maximum_batching_window_in_seconds`, and the visibility timeout should
+then be six times the function timeout plus that window.
+`maximum_concurrency` must not exceed the function's reserved concurrency
+or messages are throttled. The role needs `sqs:ReceiveMessage`,
 `sqs:DeleteMessage`, `sqs:GetQueueAttributes` on the queue
-(`AWSLambdaSQSQueueExecutionRole` covers them).
+(`AWSLambdaSQSQueueExecutionRole` covers them, plus the log actions).
 
 ## Sources
 
@@ -145,6 +150,6 @@ CloudWatch logging example with `depends_on`), `r/lambda_alias`,
 `data-sources/file` (plan-time build, `output_file_mode`); AWS Lambda
 developer guide: runtimes and deprecation policy, VPC networking,
 CloudWatch log groups, SQS event source parameters and error handling;
-terraform-aws-modules/terraform-aws-lambda README. Fetched 2026-09-29 (first 2026-09-08; `code_sha256` versus `source_code_hash` corrected on 2026-09-29 against provider 6.66.0).
-The `AWSLambdaSQSQueueExecutionRole` action list is from memory of the
-AWS managed policy reference and was not re-fetched.
+terraform-aws-modules/terraform-aws-lambda README. Fetched 2026-10-29 (first 2026-09-08; `code_sha256` versus `source_code_hash` corrected on 2026-09-29 against provider 6.66.0; re-read 2026-10-29 against 6.71.0).
+The `AWSLambdaSQSQueueExecutionRole` action list was checked against the
+AWS managed policy reference on 2026-10-29.
