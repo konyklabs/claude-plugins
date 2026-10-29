@@ -609,6 +609,33 @@ reusable workflows, four workflows with no top-level `permissions`, seven
 jobs with no timeout, two release jobs with no `concurrency`, and one
 `inputs.*` inside `run:`; filed as roadmap#159, not fixed here.
 
+## vendorfake: the consumer side of a public fake (2026-10-29)
+
+vendorfake's own `AGENTS.md` serves a contributor; a consumer had only its
+docs, and wiring a fake into compose by hand means finding the working order
+by trial. That order is now three skills: `adopting-vendorfake` (fit check,
+an image from the release archive so the building machine needs no checkout
+or token, the redirect pin, seeded settings, one journey with two red runs,
+the request log as oracle), `testing-against-vendorfake` and
+`extending-vendorfake`; argument-level facts come from `vendorfake explain`
+when installed, else the tagged docs. `fit_check.py` is a by-hand fit check
+as a script over two local files (`vendorfake routes --json` and the
+consumer's calls): fit, method mismatch or missing, exit 1 on any gap and 2
+on a malformed or empty inventory. No agent: the consumer's language and
+framework are unknown, so a pinned worker would still need its stack skills.
+The adopting eval scaffolds a generic consumer (files only) so the
+cold-session claim has something to wire.
+
+The plugin names the vendors vendorfake models and vendorfake itself, which
+`CLAUDE.md`'s Cleanroom bullet does not yet allow. The decision is a
+carve-out: a vendor named to describe a publicly documented API, and the
+open-source tool a plugin exists for, are technology names, as vendorfake's
+`AGENTS.md` says and as `terrain` (AWS) and `github-actions` (GitHub)
+already assumed; a consumer stays generic. Writing it into `CLAUDE.md` is a
+guard-rail change, which a session does not commit, so the hunk travels in
+roadmap#180 and the PR body for Oleg to apply, and the plugin does not merge
+before `CLAUDE.md` carries it.
+
 ## What was verified in the field, and what was not
 
 Captured with `SUPERVISOR_DEBUG=1` (the engine appends every raw hook input to

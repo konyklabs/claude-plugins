@@ -8,9 +8,11 @@ cd "$(dirname "$0")/.."
 ref="${1:-HEAD}"
 mkdir -p dist
 scanner=plugins/prod-readiness/skills/readiness-review/scripts/readiness.py
+flags=""
 for p in plugins/*/; do
   name=$(basename "$p")
   out="dist/$name.zip"
+  flags+=" --plugin-dir dist/$name.zip"
   git archive --worktree-attributes --format=zip -o "$out" "$ref:plugins/$name"
   if [ -f "$scanner" ]; then
     status=$(python3 "$scanner" --only archive-hygiene --archive "$out" --json 2>/dev/null \
@@ -19,4 +21,5 @@ for p in plugins/*/; do
   fi
   printf '%s  %s  %s\n' "$(shasum -a 256 "$out" | cut -c1-16)" "$(du -h "$out" | cut -f1)" "$out"
 done
-echo "install on any machine, no git needed:  claude --plugin-dir dist/supervisor.zip --plugin-dir dist/py-testing.zip --plugin-dir dist/prod-readiness.zip"
+# Built from the loop, so a new plugin can never be missing from the line.
+echo "install on any machine, no git needed:  claude$flags"

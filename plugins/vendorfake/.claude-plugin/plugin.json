@@ -1,0 +1,23 @@
+{
+  "name": "vendorfake",
+  "version": "2.5.0",
+  "description": "Skills for a consumer of vendorfake, the fake vendor APIs: wiring one vendor's fake into an e2e compose stack pinned to a release, writing tests against an installed fake, and extending the fake when it lacks a route, with a deterministic route fit check.",
+  "author": {
+    "name": "Oleg Konyk",
+    "url": "https://olegkonyk.com"
+  },
+  "homepage": "https://github.com/konyklabs/claude-plugins",
+  "repository": "https://github.com/konyklabs/claude-plugins",
+  "license": "MIT",
+  "keywords": [
+    "vendorfake",
+    "fakes",
+    "e2e",
+    "docker-compose",
+    "webhooks",
+    "clover",
+    "square",
+    "toast",
+    "lightspeed"
+  ]
+}

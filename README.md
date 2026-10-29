@@ -13,6 +13,7 @@ step that can be a script is a script.
 | **terrain** | OpenTofu on AWS: a preflight that runs fmt, validate and whatever linters are on PATH (never installed, reduced to counts), structural checks for the Fargate, Lambda, IAM, secrets and state-locking traps no linter catches, a plan summary that fails closed on destroy or replace, a review lens with an Opus reviewer agent, and authoring references that carry patterns and traps and leave the argument catalogue to the live docs. | `terrain@konyklabs-plugins` |
 | **github-actions** | GitHub Actions workflows: a preflight that runs actionlint and zizmor when on PATH (never installed, reduced to counts) and eleven structural rules for the pinning, permissions, `pull_request_target` and injection traps, a review lens with an Opus reviewer agent, and authoring references for reusable workflows, permissions and OIDC, supply chain and runtime shape. | `github-actions@konyklabs-plugins` |
 | **ts-testing** | Vitest and TypeScript project skills, the py-testing shape for the TypeScript side: config shared with Vite, mocking and fake-timer rules, `test.extend` fixtures, typecheck mode, CI reporters and sharding; tsconfig for Node with `nodenext`, the TypeScript 6 and 7 default changes, strictness adoption, project references, type stripping; and a Sonnet test-implementer with both skills preloaded. | `ts-testing@konyklabs-plugins` |
+| **vendorfake** | Skills for a consumer of vendorfake, the fake vendor APIs (Clover, Square, Toast, Lightspeed): adopting one into an e2e compose stack pinned to a release archive, testing against an installed fake, and extending the fake when it lacks a route, with a deterministic route fit check and evals that prove each skill triggers. | `vendorfake@konyklabs-plugins` |
 | **signoff** | Reconciles an application's end-to-end coverage against what it does: explore, mine, tile, fill, report, human-readable test cases. Tiling coverage, recording test cases and the sign-off report are built and script-driven; explore and mine have no agent yet, so nothing yet writes `.qa/map.json` or `.qa/rules.json` on its own. | `signoff@konyklabs-plugins` |
 
 Requirements: Claude Code 2.1.255 or later, `python3` 3.9 or later on PATH.
@@ -34,6 +35,7 @@ claude plugin install prod-readiness@konyklabs-plugins
 claude plugin install terrain@konyklabs-plugins
 claude plugin install github-actions@konyklabs-plugins
 claude plugin install ts-testing@konyklabs-plugins
+claude plugin install vendorfake@konyklabs-plugins
 ```
 
 Until the first pull request has merged, add the branch instead:
@@ -44,7 +46,7 @@ has the checkout, copy the zips, load them directly.
 
 ```
 bash scripts/dist.sh                       # dist/<plugin>.zip, from the committed tree, each scanned
-claude --plugin-dir supervisor.zip --plugin-dir py-testing.zip --plugin-dir prod-readiness.zip --plugin-dir signoff.zip --plugin-dir terrain.zip --plugin-dir github-actions.zip --plugin-dir ts-testing.zip
+claude --plugin-dir supervisor.zip --plugin-dir py-testing.zip --plugin-dir prod-readiness.zip --plugin-dir signoff.zip --plugin-dir terrain.zip --plugin-dir github-actions.zip --plugin-dir ts-testing.zip --plugin-dir vendorfake.zip
 ```
 
 The zips are `git archive` output (nothing ignored can be inside) and each
@@ -56,7 +58,7 @@ An installed plugin is a versioned copy; edits in the checkout are not seen
 until `version` in its `plugin.json` changes, so use `--plugin-dir` while
 developing.
 
-Verify: `claude plugin list` shows the seven as enabled; `claude plugin
+Verify: `claude plugin list` shows the eight as enabled; `claude plugin
 details supervisor` shows 10 skills, 6 agents, 6 hooks and about 1,500
 always-on tokens per session.
 
@@ -141,6 +143,9 @@ Everything an agent needs to operate the plugins without reading the code.
 | `/github-actions:authoring-workflows` | writing or changing a workflow: docs first, then permissions and OIDC, SHA pins with version comments, reusable workflows, the two traps, caches and schedules |
 | `/ts-testing:testing-vitest` | writing or fixing Vitest tests and `vitest.config.ts`: a mock never hit, a timer test that hangs, a slow or order-dependent suite |
 | `/ts-testing:testing-typescript-projects` | tsconfig for Node, an import that resolves in the editor and fails at runtime, tests that type-check nothing, a TypeScript 6 or 7 upgrade |
+| `/vendorfake:adopting-vendorfake` | wiring a vendor fake into compose or an e2e tier |
+| `/vendorfake:testing-against-vendorfake` | a test against an installed fake, a 404, a missing webhook, a flaky shared unit |
+| `/vendorfake:extending-vendorfake` | the fake lacks a route: fit check, file, build, consume before the tag |
 
 **Agents** (spawn by `subagent_type`; never pass `model`, the definition pins it):
 
@@ -303,6 +308,21 @@ types, `paths` only with a runtime resolver, `types: []` since TypeScript
 `ts-testing:test-implementer` is Sonnet with both preloaded and the
 evidence contract: `vitest run` and `tsc --noEmit` output pasted.
 
+## vendorfake in one minute
+
+Three skills, no agent. `adopting-vendorfake`: the fit check first, an image
+installed from the release archive behind one `VENDORFAKE_REF` ARG, a
+compose service on `no-faults` with its health check and a loopback port,
+the seeded settings, the first journey and its two red runs, `GET
+/__unit/requests` as the oracle. `testing-against-vendorfake`: the four
+bindings, the driver, webhooks, chaos and provenance, seeds, and what a 404
+means. `extending-vendorfake`: `scripts/fit_check.py` over `vendorfake
+routes --json` (fit, method mismatch, missing; exit 1 on any gap, 2 on an
+empty or malformed inventory), then
+file, build in the fake's conventions, and consume the branch before its
+tag. Three evals, one per skill; `adopt-clover-compose` scaffolds a small
+generic consumer first, so it runs with `--scaffold`.
+
 ## Development
 
 ```
@@ -346,6 +366,7 @@ plugins/prod-readiness/                skills/ (3, with references and scripts/r
 plugins/signoff/                       formats.md, skills/ (4: exploring-app, tiling-coverage, recording-test-cases, signoff-report), tests/, evals/; no agents yet
 plugins/github-actions/               skills/ (3: authoring-workflows with references, preflighting-workflows with scripts/preflight.py, reviewing-workflows), agents/, tests/ (planted-workflows fixture), evals/
 plugins/ts-testing/                   skills/ (2: testing-vitest, testing-typescript-projects, with references), agents/, evals/; no scripts
+plugins/vendorfake/                    skills/ (3: adopting-vendorfake, testing-against-vendorfake, extending-vendorfake with scripts/fit_check.py), tests/, evals/; no agents
 scripts/                               validate.sh, audit-deps.sh, dist.sh
 docs/                                  ARCHITECTURE.md, COST-TRACKING.md, PLAYBOOK.md
 .github/workflows/                     validate (manifests, audit, hooks on 3.9 and 3.13) plus the org callers
