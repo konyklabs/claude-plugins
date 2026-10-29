@@ -25,9 +25,13 @@ run is a model call on the account. Results land in `evals/results/`
 Each case carries one `tool_used: Skill` grader naming its skill: under the
 default with/without ablation that grader is with-only, a plugin-fired
 indicator rather than part of the score. The scored graders read the
-workspace's `compose.yaml` (adopting), the trace (the names a correct test
-must use) or the last message (the procedure), and grader intent is stated in
-each grader file so it can be checked by hand.
+workspace's `compose.yaml` (adopting), the test file the testing prompt names
+(`tests/test_clover_modifier_webhook.py`: the names a correct test must call)
+or the last message (the procedure), and grader intent is stated in each
+grader file so it can be checked by hand. No scored grader reads the trace:
+the Skill tool writes the loaded SKILL.md into it before the model acts, so a
+trace regex on a name the skill mentions passes whenever the skill fires and
+measures nothing `skill-fired` does not.
 
 `adopt-clover-compose` allows 20 turns and 600 seconds: it reads a scaffold,
 writes two files and answers. `test-clover-modifier-webhook` allows 12 and

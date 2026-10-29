@@ -1,7 +1,8 @@
 ---
 type: regex
-target: trace
-pattern: "webhook_receiver"
+target: { source: file, path: tests/test_clover_modifier_webhook.py }
+pattern: "webhook_receiver\\(|vendorfake_webhook_receiver\\b"
 ---
-The delivery is received by a real loopback endpoint (`webhook_receiver()` or the
-`vendorfake_webhook_receiver` fixture), not mocked.
+The test file receives the delivery on a real loopback endpoint (a
+`webhook_receiver()` call or the `vendorfake_webhook_receiver` fixture), not a
+mock. It reads the written file, not the trace, which carries the skill's text.
