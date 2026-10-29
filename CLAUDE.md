@@ -5,7 +5,8 @@ guardrails for expensive-model sessions), `py-testing` (Python test
 engineering skills), `prod-readiness` (security and readiness scanning),
 `signoff` (end-to-end coverage reconciliation), `terrain` (OpenTofu on AWS),
 `github-actions` (workflows: preflight, review lens, authoring),
-`ts-testing` (Vitest and TypeScript project skills).
+`ts-testing` (Vitest and TypeScript project skills), `vendorfake` (the
+consumer side of the fake vendor APIs).
 `README.md` says how to install and use them; this file is for working on
 them.
 
@@ -53,7 +54,11 @@ Paste the output in the commit or PR; never say "tests pass" without it.
   what the job needs.
 - **Cleanroom.** No company, product, vertical, hostname or account
   identifier anywhere, including examples and fixtures. Technology names
-  are fine. Placeholders are obvious placeholders.
+  are fine. Placeholders are obvious placeholders. A vendor named to
+  describe a publicly documented API, and the open-source tool a plugin
+  exists for (vendorfake, its GitHub URL), are technology names —
+  vendorfake's own `AGENTS.md` makes the same carve-out; a consumer of such
+  a tool is still described only generically.
 
 ## Conventions
 
@@ -86,4 +91,6 @@ Paste the output in the commit or PR; never say "tests pass" without it.
   fixture and answer key in `plugins/terrain/tests/fixtures/planted-stack/`.
 - github-actions scripts: `plugins/github-actions/skills/preflighting-workflows/scripts/preflight.py`;
   planted-defect fixture and answer key in `plugins/github-actions/tests/fixtures/planted-workflows/`.
-- Driving tasks: konyklabs/roadmap#60, #61, #120, #130, #157 and #158.
+- vendorfake script: plugins/vendorfake/skills/extending-vendorfake/scripts/fit_check.py;
+  evals scaffold a generic consumer in plugins/vendorfake/evals/adopt-clover-compose/fixture.sh.
+- Driving tasks: konyklabs/roadmap#60, #61, #120, #130, #157, #158 and #180.
