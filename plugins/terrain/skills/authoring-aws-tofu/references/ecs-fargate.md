@@ -20,7 +20,7 @@ resource "aws_ecs_cluster_capacity_providers" "this" {
   default_capacity_provider_strategy {
     capacity_provider = "FARGATE"
     base              = 1                  # only one provider may set base
-    weight            = 1
+    weight            = 1                  # default 0; a strategy needs one weight above 0
   }
 }
 ```
@@ -60,8 +60,8 @@ resource "aws_ecs_task_definition" "app" {
 ```
 
 The CPU tier fixes the allowed memory range (256 units allow only 512,
-1024 or 2048 MiB; each larger tier a range in fixed steps). The table
-lives in `preflighting-tofu/scripts/hcl_checks.py` next to the check that
+1024 or 2048 MiB; each larger tier a range in fixed steps; the 8, 16 and
+32 vCPU tiers need Linux platform 1.4.0 or later). The table lives in `preflighting-tofu/scripts/hcl_checks.py` next to the check that
 enforces it, and in the ECS developer guide; anything else fails at apply
 with "No Fargate configuration exists for given values".
 
@@ -114,7 +114,8 @@ resource "aws_ecs_service" "app" {
   cluster         = aws_ecs_cluster.this.id
   task_definition = aws_ecs_task_definition.app.arn
   desired_count   = 2
-  capacity_provider_strategy {            # or launch_type = "FARGATE"; the two conflict
+  capacity_provider_strategy {            # or launch_type = "FARGATE"; the two conflict;
+                                          # changing it needs force_new_deployment = true
     capacity_provider = "FARGATE"
     weight            = 1
   }
@@ -141,6 +142,11 @@ resource "aws_ecs_service" "app" {
 
 `deployment_minimum_healthy_percent` and `_maximum_percent` have no
 documented default in the provider; the community module uses 66 and 200.
+The circuit breaker works only with the rolling (`ECS`) deployment
+controller, which the provider's default `strategy = "ROLLING"` is; its
+threshold is 50% of the desired count clamped to 3 to 200 failed tasks, and
+the provider exposes only `enable` and `rollback`. Fargate Spot gives a
+two-minute SIGTERM warning; set `stopTimeout` (120 s at most) to match.
 `wait_for_steady_state = true` makes apply wait (20 minute timeout) and is
 worth it in CI so a failed rollout fails the apply.
 
@@ -183,4 +189,4 @@ CPU and memory, task definition parameters (awslogs options, secrets),
 task execution IAM role and `AmazonECSTaskExecutionRolePolicy`, deployment
 circuit breaker, Fargate capacity providers, VPC endpoints for Fargate,
 ECR VPC endpoints; terraform-aws-modules/terraform-aws-ecs README
-(`ignore_task_definition_changes`, defaults). All fetched 2026-09-29 (first 2026-09-08).
+(`ignore_task_definition_changes`, defaults). All fetched 2026-10-29 (first 2026-09-08).
