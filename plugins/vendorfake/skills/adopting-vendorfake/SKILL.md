@@ -44,7 +44,7 @@ caches on the ARG string. The Dockerfile is in `references/compose-stack.md`.
     environment:
       VENDORFAKE_VENDOR: clover
       VENDORFAKE_PROFILE: no-faults    # happy paths only; `full` carries chaos
-      VENDORFAKE_VENDOR_REDIRECT_URI: http://app:8000/oauth/clover/callback   # your callback
+      VENDORFAKE_VENDOR_REDIRECT_URI: http://app:8000/oauth/clover/callback   # your callback; never on Toast
     ports:
       - "127.0.0.1:${VENDORFAKE_HOST_PORT:-8080}:8080"   # loopback only
     healthcheck:
@@ -67,8 +67,13 @@ caches on the ARG string. The Dockerfile is in `references/compose-stack.md`.
 - Redirect: the consumer's own callback, pinned on the fake with
   `VENDORFAKE_VENDOR_REDIRECT_URI`; authorize answers 400 to any other.
 - What the fake cannot supply (a post-callback redirect base, say): set a placeholder host.
-- Square, Toast, Lightspeed: read the seeded values from `GET /__unit/manifest` or
-  seed.md; the shape is the same.
+- Square and Lightspeed: the same shape (redirect pin, authorize → code → callback;
+  Lightspeed's authorize is the `GET /connect` stand-in); read the seeded values from
+  `GET /__unit/manifest` or seed.md.
+- Toast has no redirect flow: drop `VENDORFAKE_VENDOR_REDIRECT_URI`, which Toast's
+  config refuses at startup (`extra_forbidden`, so the health check never passes).
+  Its journey is the machine-client `POST /authentication/v1/authentication/login`,
+  then the bearer on one read; steps 1-2 of section 5 do not apply.
 
 ## 4. Seed the consumer, idempotently
 
