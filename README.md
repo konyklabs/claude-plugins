@@ -317,7 +317,8 @@ the seeded settings, the first journey and its two red runs, `GET
 /__unit/requests` as the oracle. `testing-against-vendorfake`: the four
 bindings, the driver, webhooks, chaos and provenance, seeds, and what a 404
 means. `extending-vendorfake`: `scripts/fit_check.py` over `vendorfake
-routes --json` (fit, method mismatch, missing; exit 1 on any gap), then
+routes --json` (fit, method mismatch, missing; exit 1 on any gap, 2 on an
+empty or malformed inventory), then
 file, build in the fake's conventions, and consume the branch before its
 tag. Three evals, one per skill; `adopt-clover-compose` scaffolds a small
 generic consumer first, so it runs with `--scaffold`.

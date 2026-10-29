@@ -103,3 +103,13 @@ def test_json_output_has_the_counts(routes, tmp_path):
     assert [r["verdict"] for r in report["rows"]] == ["fit", "method", "missing"]
     assert set(report["rows"][0]) == {"call", "verdict", "operation_id", "methods"}
     assert done.returncode == 1
+
+
+@pytest.mark.parametrize("text", ["", "\n\n", "# only a comment\n\n# and another\n"])
+def test_an_empty_inventory_fails_closed_with_exit_2(routes, tmp_path, text):
+    calls = write_calls(tmp_path, text)
+    for extra in ((), ("--json",)):
+        done = run(routes, calls, *extra)
+        assert done.returncode == 2, (extra, done.stdout)
+        assert done.stdout == ""
+        assert "no calls" in done.stderr

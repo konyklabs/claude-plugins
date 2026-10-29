@@ -36,13 +36,15 @@ python3 "${CLAUDE_SKILL_DIR}/scripts/fit_check.py" --routes routes.json --calls 
   Machine output: one JSON document on stdout, nothing else on stdout." —
   https://github.com/konyklabs/vendorfake/blob/v0.8.0/docs/reference/cli.md (the startup log goes to stderr, so a redirect of stdout is clean).
 - `--calls`: one `METHOD /path[?query]` per line; `#` lines and blank lines are
-  ignored; a line without a method or with a path not starting `/` exits 2 naming the line.
+  ignored; a line without a method or with a path not starting `/` exits 2 naming the line,
+  and so does a file with no calls left after that (fail closed: an inventory that
+  matched nothing is not a fit).
 - Matching: method upper-cased; query string dropped; trailing slash ignored; each
   `{placeholder}` in a template matches exactly one segment.
 - Verdicts: `fit` with the operation id (two matching routes print both, joined by
   `|`); `method` when the path is served only under other methods, which are
   listed; `missing`.
-- Exit codes: 0 every call fits; 1 any `method` or `missing`; 2 malformed input.
+- Exit codes: 0 every call fits; 1 any `method` or `missing`; 2 malformed input or no calls.
 - `--mount V` strips a leading `/V` from every call, for a process that mounts
   several vendors under `/<vendor>/`. It is never guessed: a prefixed call without
   it is `missing`, which is the right answer for a wrong base URL.

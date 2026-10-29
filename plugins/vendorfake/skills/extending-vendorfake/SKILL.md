@@ -22,7 +22,8 @@ python3 "${CLAUDE_SKILL_DIR}/scripts/fit_check.py" --routes /tmp/routes.json --c
 `calls.txt` is one `METHOD /path` per line, inventoried from the consumer's production
 code (not its docs); `#` comments and blank lines are ignored. Verdicts: `fit` (with
 the operation id), `method` (the path is served under other methods, listed),
-`missing`. Exit 1 on any non-fit, 2 on a malformed line. `--mount V` only for a
+`missing`. Exit 1 on any non-fit, 2 on a malformed line or an empty inventory (no
+calls left after comments: fail closed, never a fit). `--mount V` only for a
 multi-vendor process. Then confirm at run time: `GET /__unit/requests?unmatched=true`,
 `GET /__unit/requests/unmatched/near-misses`, the `Vendorfake-Near-Miss` header.
 Known non-fits: Lightspeed in vendorfake is Retail X-Series, and the Restaurant

@@ -20,7 +20,8 @@ docs, one `METHOD /path` per line. Run the `extending-vendorfake` skill's
 vendorfake's Lightspeed is Retail X-Series, not the Restaurant K-Series API;
 Square's SDK needs a consumer-side `base_url` seam; a route missing at one tag
 may be in the next (`GET /v2/channels` arrived in 0.8.0). Any `missing` or
-`method` row: stop and go to `extending-vendorfake`.
+`method` row: stop and go to `extending-vendorfake`. Exit 2 with no rows means the
+inventory matched nothing: redo it, never read it as a fit.
 
 ## 1. The image
 

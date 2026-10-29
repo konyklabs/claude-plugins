@@ -13,7 +13,8 @@ Two local inputs, no network, no subprocess:
 Each call gets one verdict: ``fit`` (a route serves it; its operation id is
 printed), ``method`` (the path is served, but only under other methods, which
 are listed) or ``missing``. The run exits 1 when any call is not a fit, 0 when
-every call is, and 2 on a malformed input, naming the line.
+every call is, and 2 on a malformed input (naming the line) or a calls file
+with no calls in it, which fails closed rather than reading as a full fit.
 
 Usage:
     python3 fit_check.py --routes routes.json --calls calls.txt [--mount VENDOR] [--json]
@@ -97,6 +98,9 @@ def load_calls(path: Path, mount: Optional[str]) -> List[Tuple[str, str]]:
         if prefix and (path_only == prefix or path_only.startswith(prefix + "/")):
             path_only = path_only[len(prefix):] or "/"
         calls.append((method, path_only))
+    if not calls:
+        # Fail closed: an inventory that matched nothing is not evidence that every call fits.
+        raise InputError(f"{path}: no calls (empty, or only blank and `#` lines); an empty inventory is not a fit")
     return calls
 
 
