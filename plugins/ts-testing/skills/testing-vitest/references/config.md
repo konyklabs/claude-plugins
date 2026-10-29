@@ -1,6 +1,6 @@
 # Vitest configuration reference
 
-Fetched 2026-09-29 from vitest.dev, the vitest-dev/vitest repository's
+Fetched 2026-10-29 from vitest.dev, the vitest-dev/vitest repository's
 `docs/config/` pages, the v4 and v5 migration guides, the 4.0/4.1/5.0
 release posts, and the npm registry.
 
@@ -18,8 +18,9 @@ release posts, and the npm registry.
 
 ## 1. Versions and what a v3-era config gets wrong
 
-v5.0.0 shipped 2026-09-03, needs Node ≥22.12.0 and Vite ≥6.4.0; npm's
-current release is 5.0.2 — https://vitest.dev/blog/vitest-5.html,
+v5.0.0 shipped 2026-09-03, needs Node ≥22.12.0 and Vite ≥6.4.0 (`vite` is
+now a required peer dependency, not a direct one); npm's current release is
+5.0.5 — https://vitest.dev/blog/vitest-5.html,
 https://registry.npmjs.org/vitest. v3→v4 (2025-10-22) removed the
 `workspace` key and the `vitest.workspace.ts` file (deprecated since 3.2)
 in favor of `projects`; flattened `poolOptions.*` to top level;
@@ -33,7 +34,10 @@ Vite ≥6 — https://v4.vitest.dev/guide/migration. v4→v5 flipped `clearMocks
 from `false` to `true` and requires hoisted `vi.mock`/`vi.unmock`/
 `vi.hoisted` calls to sit at file top level (a nested one now throws), and
 fails an unawaited `resolves`, `rejects` or `toMatchFileSnapshot` assertion
-that earlier versions passed silently —
+that earlier versions passed silently; inline `projects` now inherit the
+root config (`extends` defaults to `true`), config lookup no longer searches
+parent directories (pass `--config` from a subdirectory), and `-t` joins suite
+and test names with `' > '` —
 https://vitest.dev/guide/migration.html. A config copied from a v3 project
 that still declares `workspace` or `poolOptions.threads.singleThread` is
 the first thing to fix on an upgrade.
@@ -41,8 +45,11 @@ the first thing to fix on an upgrade.
 ## 2. Config file precedence and the shared Vite config
 
 Vitest reads `vite.config.*` by default, so Vite plugins and aliases are
-already in effect for tests; `vitest.config.*` overrides `vite.config.*`
-when both exist — https://vitest.dev/guide/. One file is enough for most
+already in effect for tests; `vitest.config.*` is looked up first and
+overrides `vite.config.*` when both exist, so every option in the Vite file
+is ignored, not merged (merge them with `mergeConfig` if both are needed) —
+https://vitest.dev/guide/,
+https://raw.githubusercontent.com/vitest-dev/vitest/main/docs/config/index.md. One file is enough for most
 projects: put `test` inside the same `defineConfig` Vite already uses, and
 add a second `vitest.config.ts` only when the two need to diverge.
 
@@ -74,7 +81,11 @@ that declares `projects` is a container and runs no tests of its own —
 https://raw.githubusercontent.com/vitest-dev/vitest/main/docs/config/projects.md.
 This is the direct replacement for the removed `vitest.workspace.ts` file:
 list each package's config (or a glob to its config file) under `projects`
-in the root config instead of a separate workspace file.
+in the root config instead of a separate workspace file. As of v5 a
+referenced config file that itself declares `projects` becomes a container
+of nested projects, so spreading a root config that has `projects` into a
+project config is a startup-error trap; `projects` is not supported inside
+an inline project.
 
 ## 5. pool and isolate
 
@@ -109,9 +120,14 @@ Default provider is `v8`; it needs no pre-transpile step and, since 3.2.0,
 matches istanbul's accuracy through AST remapping, but only runs on V8
 engines (not Firefox, not Bun). `istanbul` is instrumentation-based, runs
 anywhere, and is slower for a full run —
-https://vitest.dev/guide/coverage.html. The exact shape of
-`coverage.thresholds` was not confirmed this fetch (NOT FOUND); check the
-current coverage guide before writing one.
+https://vitest.dev/guide/coverage.html. `coverage.thresholds` takes
+`lines`, `functions`, `branches`, `statements` (a negative number means a
+maximum count of uncovered items), `perFile`, `100: true`, and glob keys; a
+glob key does not inherit the top-level `perFile` (v5), and its files still
+count toward the global numbers —
+https://raw.githubusercontent.com/vitest-dev/vitest/main/docs/config/coverage.md.
+Coverage `include`/`exclude` match relative paths in v5, so a bare directory
+name matches everything inside it.
 
 ## 8. testTimeout, retry, clearMocks, passWithNoTests
 
@@ -133,7 +149,9 @@ current coverage guide before writing one.
 
 Built-in reporters: `default`, `verbose`, `tree`, `dot`, `junit`, `json`,
 `html`, `tap`, `tap-flat`, `hanging-process`, `github-actions`, `minimal`
-(alias `agent`), `blob`; default is `'default'` —
+(alias `agent`), `blob`; default is `'default'`. As of v5 the `json` and
+`junit` reporters write to a file by default instead of stdout (`stdout: true`
+restores it) —
 https://raw.githubusercontent.com/vitest-dev/vitest/main/docs/config/reporters.md.
 `github-actions` is additive (it emits annotations alongside another
 reporter); see `fixtures-and-structure.md` for how CI combines these with
