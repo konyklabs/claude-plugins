@@ -50,8 +50,9 @@ Per-test launch options: parametrize `browser_type_launch_args` with
 {on,off,retain-on-failure}`, `--screenshot {on,off,only-on-failure}`,
 `--full-page-screenshot` (needs `--screenshot`), `--base-url`. Defaults:
 headless, chromium, tracing/video/screenshot all `off`. The options configure
-only the built-in `browser`/`context`/`page`; a context made by hand with
-`browser.new_context()` or `new_context` ignores `--tracing` and friends.
+the built-in `browser`/`context`/`page` and contexts from the `new_context`
+fixture (which `context` itself calls); a context made by hand with
+`browser.new_context()` ignores `--tracing` and friends.
 
 ## 4. Config in pyproject
 

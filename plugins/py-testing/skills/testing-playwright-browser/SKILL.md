@@ -25,9 +25,10 @@ pytest-playwright provides them; do not create your own browser.
 
 Options come from the CLI or `addopts`: `--browser chromium`, `--headed`,
 `--base-url`, `--tracing retain-on-failure`, `--screenshot only-on-failure`,
-`--video retain-on-failure`, `--output test-results`. `--base-url` comes
-from the pytest-base-url plugin, an optional extra since pytest-playwright
-0.10 (`pip install "pytest-playwright[base-url]"`). These options apply only
+`--video retain-on-failure`, `--output test-results`. Since pytest-playwright
+0.10 the plugin provides `--base-url` and the `base_url` fixture itself;
+the pytest-base-url extra (`pytest-playwright[base-url]`) is needed only for
+`--verify-base-url`. These options apply only
 to the default `page`/`context`; a context from `browser.new_context()` gets
 no trace, video or screenshot.
 

@@ -89,7 +89,8 @@ jobs:
   calling job cannot set `environment:`, the callee job names its own.
 - Permissions only narrow down the chain. Secrets travel one hop: a
   three-level chain re-passes them at every level or the last finds none.
-- Ten levels (the caller plus nine reusable), 50 unique reusable workflows
+- Ten levels on github.com (the caller plus nine reusable), four on
+  Enterprise Server (the caller plus three); 50 unique reusable workflows
   per file; a matrix in the caller multiplies one in the callee against the
   256-jobs-per-run cap.
 - Pin an external callee to a SHA. An org-internal `@main` callee is a
@@ -146,4 +147,5 @@ docs.github.com (reusing workflows, workflow syntax, OIDC in AWS, secure
 use, `pull_request_target`, caching, lockfiles, limits), github.blog
 changelogs (2023-02-02 to 2026-10-28), the GitHub Security Lab, CISA,
 GHSA-mrrh-fwg8-r2c3 and Wiz on CVE-2025-30066, actionlint and zizmor docs;
-fetched 2026-10-29. Not stated by the docs: nesting depth on Enterprise Server.
+fetched 2026-10-29. The four-level Enterprise Server limit is from that
+version's reusing-workflows page (enterprise-server@3.17 to 3.20).

@@ -98,7 +98,9 @@ it moves with the caller's own commit.
 GitHub.com allows 10 levels of reusable-workflow nesting (the caller plus
 9 more) and, since the November 2025 changelog, up to 50 workflow calls in
 total from one run (previously 4 levels and 20 calls). The docs page's
-GHES variant still says 4 levels (the caller plus 3). Loops are not allowed —
+GHES variant still says 4 levels (the caller plus 3). The 50-calls count is
+per run; the reusing-workflow-configurations page separately caps one
+workflow file at 50 unique reusable workflows. Loops are not allowed —
 https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows,
 corroborated by community discussion https://github.com/orgs/community/discussions/8488
 (older posts there quote 2, then 4 levels; the accepted answer is the
